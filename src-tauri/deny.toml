@@ -1,0 +1,103 @@
+# cargo-deny configuration: https://embarkstudios.github.io/cargo-deny/
+# Run with: cargo deny check   (from src-tauri/, where the crate lives)
+
+[advisories]
+version = 2
+ignore = [
+  # Status-only "unmaintained" advisories (no vulnerability, no patched
+  # version available) for crates that are transitive dependencies of the
+  # Tauri 2 framework itself:
+  #
+  # rust-unic family — via `urlpattern` -> `tauri-utils`:
+  "RUSTSEC-2025-0098",  # unic-ucd-version
+  "RUSTSEC-2025-0100",  # unic-ucd-ident
+  "RUSTSEC-2025-0081",  # unic-char-property
+  "RUSTSEC-2025-0080",  # unic-common
+  "RUSTSEC-2025-0075",  # unic-char-range
+  #
+  # gtk-rs GTK3 bindings — Tauri 2 on Linux builds on GTK3/webkit2gtk:
+  "RUSTSEC-2024-0411",
+  "RUSTSEC-2024-0412",
+  "RUSTSEC-2024-0413",
+  "RUSTSEC-2024-0414",
+  "RUSTSEC-2024-0415",
+  "RUSTSEC-2024-0416",
+  "RUSTSEC-2024-0417",
+  "RUSTSEC-2024-0418",
+  "RUSTSEC-2024-0419",
+  "RUSTSEC-2024-0420",
+  #
+  # proc-macro-error — build-time macro helper of the gtk-rs stack:
+  "RUSTSEC-2024-0370",
+]
+
+[licenses]
+version = 2
+# This project is GPL-3.0-or-later, so only licenses compatible with GPLv3
+# may be linked in. The list is deliberately strict: it contains exactly the
+# licenses currently present in the dependency tree (Cargo.lock). If a new
+# dependency introduces another license, cargo-deny fails and it must be
+# reviewed before being added here. Permissive and GPLv3-compatible copyleft
+# licenses are acceptable; AGPL, GPL-2.0-only, and proprietary licenses are
+# not compatible and must not be added.
+allow = [
+  "MIT",
+  "Apache-2.0",
+  "Apache-2.0 WITH LLVM-exception",
+  "BSD-3-Clause",
+  "Zlib",
+  "Unicode-3.0",
+  "CC0-1.0",
+  "Unlicense",
+  "MPL-2.0",
+  "GPL-3.0-or-later",
+  "LGPL-2.1-or-later",
+]
+confidence-threshold = 0.8
+
+[bans]
+multiple-versions = "warn"
+# Duplicate versions of these crates are intentional and harmless. Each
+# version is pinned by a different (often platform- or tooling-specific)
+# dependency edge of the Tauri 2 toolchain; they cannot be unified. Skipping
+# them silences the duplicate-version warnings. Note that skipping here only
+# affects the bans check — every version is still covered by the [licenses]
+# check above.
+#
+# Windows-only crates (never compiled in this Linux/macOS desktop build):
+skip = [
+  { name = "windows-link" },
+  { name = "windows-sys" },
+  { name = "windows-targets" },
+  { name = "windows_aarch64_gnullvm" },
+  { name = "windows_aarch64_msvc" },
+  { name = "windows_i686_gnu" },
+  { name = "windows_i686_gnullvm" },
+  { name = "windows_i686_msvc" },
+  { name = "windows_x86_64_gnu" },
+  { name = "windows_x86_64_gnullvm" },
+  { name = "windows_x86_64_msvc" },
+  # Shared build-time and macro crates whose versions are pinned independently
+  # by unrelated toolchain dependencies (e.g. tauri-build, gtk-rs macros):
+  { name = "base64" },
+  { name = "bitflags" },
+  { name = "getrandom" },
+  { name = "hashbrown" },
+  { name = "heck" },
+  { name = "indexmap" },
+  { name = "png" },
+  { name = "proc-macro-crate" },
+  { name = "r-efi" },
+  { name = "serde_spanned" },
+  { name = "syn" },
+  { name = "thiserror" },
+  { name = "thiserror-impl" },
+  { name = "toml" },
+  { name = "toml_datetime" },
+  { name = "toml_edit" },
+  { name = "winnow" },
+]
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
