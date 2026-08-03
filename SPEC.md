@@ -33,9 +33,11 @@ User-visible behaviour:
 
 ```
 ┌─────────────────────────── WebView (frontend) ───────────────────────────┐
-│  CodeMirror 6 (markdown)   → debounce 200ms → invoke("render_preview")    │
+│  React 19 + Mantine 8                                                  │
+│  CodeMirror 6 (markdown, via @uiw/react-codemirror) → debounce 200ms    │
+│      → invoke("render_preview")                                         │
 │  Preview pane: <div> of inline SVG pages (one per printed page)          │
-│  Toolbar / status bar / error banner                                     │
+│  Mantine Toolbar / status bar / error banner                            │
 └───────────────▲──────────────────────────────────────────┬───────────────┘
         invoke()│  (JSON over Tauri IPC)                    │invoke()
 ┌───────────────┴──────────────────────────────────────────▼───────────────┐
@@ -77,47 +79,61 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 anyhow = "1"
 
-comrak = "0.35"            # CommonMark/GFM parser
-typst = "0.15"             # the Typst compiler (library)
-typst-pdf = "0.15"         # PDF export backend
-typst-svg = "0.15"         # SVG export backend (preview pages)
-typst-as-lib = "0.15"      # high-level TypstWorld wrapper (avoids hand-writing World)
+comrak = "0.54"             # CommonMark/GFM parser
+typst = "0.15"              # the Typst compiler (library)
+typst-layout = "0.15"       # the paged document type (re-exported as typst_layout::PagedDocument)
+typst-pdf = "0.15"          # PDF export backend
+typst-svg = "0.15"          # SVG export backend (preview pages)
+typst-as-lib = "0.16"       # high-level TypstWorld wrapper (avoids hand-writing World)
 ```
 
-**Version pinning rule:** `typst`, `typst-pdf`, `typst-svg`, `typst-as-lib` must **all share the same minor version** (they are released in lockstep). Pin exact versions in `Cargo.lock`. Before implementing, read the docs.rs pages for these four crates at the pinned version — the API names below are correct for the 0.15 line but you must confirm signatures against the exact version you lock (see §6.4).
+**Version pinning rule:** `typst`, `typst-layout`, `typst-pdf`, `typst-svg` must **all share the same minor version** (they are released in lockstep). `typst-as-lib` follows its own versioning but pins `typst ^0.15` — 0.16 is the first line compatible with Typst 0.15 (0.15.x of typst-as-lib pins Typst 0.14; do not mix them). Pin exact versions in `Cargo.lock`. **MSRV:** Typst 0.15 requires **Rust ≥ 1.92**. Before implementing, read the docs.rs pages for the four crates at the pinned version — the API names below are correct for the 0.15/0.16 line but you must confirm signatures against the exact version you lock (see §6.4).
+
+> **Note on comrak's built-in Typst formatter:** comrak briefly shipped a `format_typst` / `markdown_to_typst` API (0.51.0) but **removed it again in 0.52.0** after the code turned out to be LLM-generated (comrak CHANGELOG, PR #781). Do **not** rely on it. The custom converter in §6.2 is the supported path.
 
 ### 4.2 Frontend (`package.json`)
+
+React 19 + Mantine 8, bundled by Vite. No CSS framework beyond Mantine's own styles. No frontend Markdown renderer — the preview is Typst SVG, not HTML. The editor is CodeMirror 6 wrapped for React via `@uiw/react-codemirror`.
 
 ```json
 {
   "name": "tauri-md-editor",
   "private": true,
   "version": "0.1.0",
+  "license": "GPL-3.0-or-later",
   "type": "module",
   "scripts": {
     "dev": "vite",
     "build": "vite build",
-    "tauri": "tauri"
+    "preview": "vite preview",
+    "tauri": "tauri",
+    "check:licenses": "node scripts/check-licenses.mjs"
   },
   "dependencies": {
+    "@fontsource/iosevka": "^5",
+    "@fontsource/pt-sans-narrow": "^5",
+    "@mantine/core": "^8",
+    "@mantine/hooks": "^8",
+    "@tabler/icons-react": "^3",
     "@tauri-apps/api": "^2",
-    "@codemirror/state": "^6",
-    "@codemirror/view": "^6",
-    "@codemirror/language": "^6",
-    "@codemirror/commands": "^6",
-    "@codemirror/lang-markdown": "^6"
+    "@uiw/react-codemirror": "^4.25",
+    "@codemirror/lang-markdown": "^6",
+    "react": "^19",
+    "react-dom": "^19"
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2",
+    "@vitejs/plugin-react": "^4",
     "vite": "^6"
   }
 }
 ```
 
-No CSS framework. No frontend Markdown renderer — the preview is Typst SVG, not HTML.
+The `@codemirror/*` packages come transitively through `@uiw/react-codemirror`; add `@codemirror/lang-markdown` (the markdown language extension) explicitly. Fonts are self-hosted via `@fontsource` (bundled by Vite, no external requests). `scripts/check-licenses.mjs` enforces an SPDX allow-list on the frontend dependency tree (part of `./check.sh`).
 
 ### 4.3 System prerequisites (per platform)
 
+- **Rust** ≥ 1.92 (Typst 0.15 MSRV).
 - **Linux**: `libwebkit2gtk-4.1-dev`, `libgtk-3-dev`, plus a C linker and `pkg-config` (see Tauri docs). `build-essential`, `libssl-dev` may also be required.
 - **macOS**: Xcode Command Line Tools.
 - **Windows**: WebView2 runtime (preinstalled on Windows 11 / updated Windows 10).
@@ -128,13 +144,22 @@ No CSS framework. No frontend Markdown renderer — the preview is Typst SVG, no
 tauri-md-editor/
 ├── package.json
 ├── vite.config.js               # port 1420, strictPort (standard Tauri template)
-├── index.html                   # single page: toolbar + split panes + status bar
-├── src/                         # ── frontend ──
-│   ├── main.js                  # bootstrap: CM editor, preview, IPC wiring
-│   ├── editor.js                # CodeMirror 6 setup + debounced change hook
-│   ├── preview.js               # SVG page rendering, stale-response guard
-│   ├── settings.js              # localStorage-backed settings
-│   ├── api.js                   # thin invoke() wrappers + payload types
+├── index.html                   # single page: <div id="root"> + module script
+├── scripts/check-licenses.mjs   # SPDX allow-list check for frontend deps
+├── src/                         # ── frontend (React 19 + Mantine 8) ──
+│   ├── main.jsx                 # bootstrap: MantineProvider + <App/>
+│   ├── App.jsx                  # layout shell: toolbar + panes + status bar
+│   ├── components/
+│   │   ├── Toolbar.jsx          # New/Open/Save, flavor/paper/margins/align,
+│   │   │                        #   Template…, Export PDF
+│   │   ├── Editor.jsx           # CodeMirror 6 via @uiw/react-codemirror
+│   │   ├── Preview.jsx          # SVG page rendering, stale-response guard
+│   │   ├── StatusBar.jsx        # page count / warnings / Ready
+│   │   └── ErrorBanner.jsx      # transient error display
+│   ├── lib/
+│   │   ├── api.js               # thin invoke() wrappers + payload types
+│   │   ├── settings.js          # localStorage-backed settings (useSettings hook)
+│   │   └── presets.js           # flavor/paper/margin/align option tables
 │   └── styles.css
 ├── src-tauri/
 │   ├── Cargo.toml
@@ -153,7 +178,7 @@ tauri-md-editor/
 │       │   └── escape.rs        # Typst markup escaping helpers
 │       └── typst_engine/
 │           ├── mod.rs
-│           ├── template.rs      # default.typ embedding, compose()
+│           ├── template.rs      # default.typ embedding, compose(), build_source()
 │           └── engine.rs        # TypstEngine build, compile → SVG pages / PDF
 └── tests/                       # optional: integration tests (plain Rust)
 ```
@@ -216,58 +241,67 @@ Flavor → `comrak::Options` mapping (in `markdown/mod.rs`):
 | math (`$...$`) | — | — | ✅ |
 | YAML front matter | — | — | ✅ |
 
+comrak ≥ 0.50 renamed the option structs: the umbrella `Options<'c>` now has fields `extension: Extension`, `parse: Parse`, `render: Render` (previously `ExtensionOptions`/`ParseOptions`/`RenderOptions`). All of them derive `Default` and have a `bon`-based builder (default feature), so either mutate fields on a default or use `Extension::builder().table(true)…build()`. Verified against comrak 0.54.0 source (`src/parser/options.rs`):
+
 ```rust
-pub fn comrak_options(flavor: Flavor) -> comrak::Options {
-    // comrak ≥0.30 uses ExtensionOptionsBuilder; verify exact field names
-    // against the docs for the pinned version.
-    let ext = comrak::ExtensionOptionsBuilder::default()
-        .strikethrough(matches!(flavor, Flavor::Gfm | Flavor::Custom))
-        .table(matches!(flavor, Flavor::Gfm | Flavor::Custom))
-        .autolink(matches!(flavor, Flavor::Gfm | Flavor::Custom))
-        .tasklist(matches!(flavor, Flavor::Gfm | Flavor::Custom))
-        .footnotes(flavor == Flavor::Custom)
-        .math_dollars(flavor == Flavor::Custom)
-        .build()
-        .expect("valid extension options");
+pub fn comrak_options(flavor: Flavor) -> comrak::Options<'static> {
+    let mut ext = comrak::Extension::default();
+    ext.strikethrough = matches!(flavor, Flavor::Gfm | Flavor::Custom);
+    ext.table = matches!(flavor, Flavor::Gfm | Flavor::Custom);
+    ext.autolink = matches!(flavor, Flavor::Gfm | Flavor::Custom);
+    ext.tasklist = matches!(flavor, Flavor::Gfm | Flavor::Custom);
+    ext.footnotes = flavor == Flavor::Custom;
+    ext.math_dollars = flavor == Flavor::Custom;
+    ext.front_matter_delimiter = (flavor == Flavor::Custom).then(|| "---".to_owned());
     comrak::Options { extension: ext, ..comrak::Options::default() }
 }
 ```
 
+Notes: `front_matter_delimiter` is the only knob that turns YAML front matter parsing on (comrak 0.54, field on `Extension`); `None` (the default) leaves `---` blocks as thematic breaks / paragraphs. Do not enable `parse.smart` — smart quotes would re-type the `"` that §6.2 deliberately leaves untouched.
+
 ### 6.2 Markdown → Typst converter (`markdown/convert.rs`) — the core of the app
 
-Signature:
+Signature (returns the Typst body plus any front-matter metadata so the template can render a title/author block, §6.3):
 
 ```rust
-pub fn md_to_typst(markdown: &str, flavor: Flavor) -> Result<String, ConvertError>
+pub struct ConvertedDocument {
+    pub body: String,             // Typst markup (escaped), placed inside the template's content block
+    pub title: Option<String>,    // YAML front-matter `title:` value, if any
+    pub author: Option<String>,   // YAML front-matter `author:` value, if any
+}
+
+pub fn md_to_typst(markdown: &str, flavor: Flavor) -> Result<ConvertedDocument, ConvertError>
 ```
 
-Implementation sketch: parse with `comrak::parse_document(&arena, markdown, &opts)` and recursively walk the `NodeValue` tree. **Never call `comrak::markdown_to_html`.** Map nodes as follows:
+Implementation sketch: parse with `comrak::parse_document(&arena, markdown, &opts)` and recursively walk the `NodeValue` tree (`node.data().value`, `node.children()`, `node.next_sibling()` — comrak 0.54 `Node` API). **Never call `comrak::markdown_to_html`.** Map nodes as follows. The parenthetical notes give the exact comrak 0.54 payload shapes (verified against `src/nodes.rs`):
+
+> **comrak 0.54 node type:** `pub type Node<'a> = &'a AstNode<'a>` — `Node` **is already a reference** (it aliases `&AstNode`). Pass nodes by value everywhere (they are `Copy`); do **not** write `&Node` or `&mut Node` in signatures, and read `node.data()` (not `node.data.borrow_mut()` as in the older docs example). `AstNode<'a>` is `arena_tree::Node<'a, RefCell<Ast>>`. The codebase consistently uses `Node` (never `AstNode`) — e.g. `fn render_block(node: Node) -> String` in `convert.rs`.
 
 | Markdown node (comrak `NodeValue`) | Typst output |
 |---|---|
 | `Document` | concatenation of children (blocks separated by blank lines) |
-| `Heading { level, .. }` | `"="` × level + space + inline content |
+| `Heading(NodeHeading { level, .. })` | `"="` × level + space + inline content |
 | `Paragraph` | inline content, followed by `\n` |
-| `Text` | **escaped** text (see table below) |
+| `Text(Cow<'static, str>)` | **escaped** text (see table below) |
 | `SoftBreak` | space |
 | `LineBreak` | `\ ` (escaped space = hard break in Typst) |
 | `Strong` | `*…*` |
 | `Emph` | `_…_` |
 | `Strikethrough` | `#strike[…]` |
-| `Code` (inline) | backtick raw: `` `code` `` (see backtick rule below) |
-| `CodeBlock { info, .. }` | fenced raw block: ``` `````lang````` ⏎ code ⏎ ````` ``` |
-| `Link { url, .. }` | `#link("url")[label]` (URL-escape `"` inside the string) |
-| `Image { url, .. }` | `#figure(image("url", width: 80%), caption: [ …optional alt text… ])` |
-| `List { ordered, start, .. }` | `- ` / `1. ` per item |
-| `Item` | recurse children |
-| `TaskItem { checked }` | `#task(true/false)` + item text (template defines `#task`, §6.3) |
+| `Code(NodeCode { literal, .. })` | backtick raw: `` `code` `` (see backtick rule below) |
+| `CodeBlock(Box<NodeCodeBlock> { info, literal, .. })` | fenced raw block: ``` `````lang````` ⏎ code ⏎ ````` ``` |
+| `Link(Box<NodeLink> { url, .. })` | `#link("url")[label]` (URL-escape `"` inside the string) |
+| `Image(Box<NodeLink> { url, .. })` | `#figure(image("url", width: 80%), caption: [ …optional alt text… ])` |
+| `List(NodeList { list_type, start, .. })` | `- ` / `1. ` per item (list type via `NodeList.list_type: ListType::Bullet|Ordered`, ordinal via `start`) |
+| `Item(NodeList)` | recurse children |
+| `TaskItem(NodeTaskItem { symbol, .. })` | `#task(true/false)` + item text; checked ⇔ `symbol.is_some()` (template defines `#task`, §6.3) |
 | `BlockQuote` | `#blockquote[…children…]` (native since Typst 0.13; else fallback `#quote[block(…)]`) |
-| `Table` / `TableHeader` / `TableRow` / `TableCell` | `#table(columns: (auto, …), [cell], [cell], …)`; header cells wrapped in `*…*` |
+| `Table(Box<NodeTable>)` / `TableRow(bool)` / `TableCell` | `#table(columns: (auto, …), [cell], [cell], …)`; `TableRow(true)` = header row, cells wrapped in `*…*` |
 | `ThematicBreak` | `#v(0.6em) #line(length: 100%, stroke: 0.5pt) #v(0.6em)` |
-| `FootnoteReference` / `FootnoteDefinition` | `#footnote[…]` |
-| `Math` | passthrough: inline `$…$`, block `$ … $` (LaTeX macros are **not** converted in v1; document the limitation) |
-| `FrontMatter` | parse YAML `title` / `author` only → template args (§6.3); everything else ignored |
-| `HtmlInline` / `HtmlBlock` | **lossy**: emit the plain-text content of child text nodes, drop tags. Never pass HTML through to Typst |
+| `FootnoteReference(Box<NodeFootnoteReference>)` / `FootnoteDefinition(NodeFootnoteDefinition)` | `#footnote[…]` |
+| `Math(NodeMath { display_math, literal, .. })` | passthrough: inline `$…$`, block `$ … $` (LaTeX macros are **not** converted in v1; document the limitation) |
+| `FrontMatter(String)` | parse YAML `title` / `author` only → `ConvertedDocument.title/author`; emit nothing in the body; everything else ignored |
+| `HtmlInline(String)` / `HtmlBlock(NodeHtmlBlock { literal, .. })` | **lossy**: emit the raw literal as plain text, escaped. Never pass HTML through to Typst |
 
 **Escaping rules for text nodes** (`escape.rs`). Typst markup reserves several characters; emit them escaped so user content cannot break out of a block or inject markup:
 
@@ -287,7 +321,8 @@ Additional rules:
 - **Inline code with backticks:** if the code contains `` ` ``, emit `#raw("…")` with the string content escaped (`"` → `\"`, `\` → `\\`); otherwise use `` `…` ``.
 - **Code blocks:** use the fenced form ````` ```lang ````` … ````` ```. The `info` string's first word is the language; if absent, use ```` ```text ````. No highlighting is applied (see §13).
 - **Line-initial `=` / `-` / `+`** inside paragraphs: these are only treated as headings/lists at block start, so they are safe inside a paragraph, but escape leading `=` after a blank-line boundary anyway if a heading-like construct is unintended — the conversion is block-aware, so this only matters if comrak's block classification differs from Typst's; the test suite (§10) covers it.
-- **Empty document:** return `[]` (an empty content block) so compile always succeeds.
+- **Empty document:** return a body of `[]` (an empty content block) so compile always succeeds.
+- **Front matter:** comrak 0.54 stores the raw YAML (including the `---` delimiters stripped) in `FrontMatter(String)`. Parse only `title:` and `author:` with a plain line scan (v1 — no YAML crate; quoted/flow values are split on the first `: ` and trimmed of surrounding quotes). Everything else is ignored.
 
 ### 6.3 Template system (`typst_engine/template.rs`)
 
@@ -319,17 +354,32 @@ Embedded default template (`include_str!("templates/default.typ")`):
 // Task-list helper used by the converter (§6.2).
 #let task(checked) = if checked { "[x]" } else { "[ ]" }
 
+// Optional title/author from YAML front matter (§6.2), rendered as a
+// centered title block when present.
+#let title-block(title, author) = {
+  set align(center)
+  text(size: 1.6em, weight: 700)[#title]
+  if author != none {
+    linebreak()
+    text(size: 1.1em, weight: 500)[#author]
+  }
+  v(0.8em)
+}
+
 // Main entry point. The Rust side always appends: #article(...)[body]
 #let article(
   paper: "a4",
   margin-x: 20mm,
   margin-y: 25mm,
   text-align: "left",
+  title: none,
+  author: none,
   body,
 ) = {
   set page(paper: paper, margin: (x: margin-x, y: margin-y))
   if text-align == "center" { set align(center) }
   else if text-align == "justified" { set par(justify: true) }
+  if title != none { title-block(title, author) }
   body
 }
 ```
@@ -341,13 +391,17 @@ pub struct TemplateArgs<'a> {
     pub paper: &'a str,          // already the Typst name, e.g. "a4"
     pub margin_x_mm: f32,
     pub margin_y_mm: f32,
-    pub text_align: &'a str,     // "left" | "center"
+    pub text_align: &'a str,     // "left" | "center" | "justified"
+    pub title: Option<&'a str>,  // front-matter title, if any (§6.2)
+    pub author: Option<&'a str>, // front-matter author, if any (§6.2)
     pub body: &'a str,           // output of md_to_typst (escaped markup)
 }
 
 pub fn compose(template_source: &str, args: &TemplateArgs) -> String {
+    let title = args.title.unwrap_or("none");
+    let author = args.author.unwrap_or("none");
     format!(
-        "{template_source}\n\n#article(\n  paper: {paper:?},\n  margin-x: {x}mm,\n  margin-y: {y}mm,\n  text-align: {align:?},\n)[\n{body}\n]",
+        "{template_source}\n\n#article(\n  paper: {paper:?},\n  margin-x: {x}mm,\n  margin-y: {y}mm,\n  text-align: {align:?},\n  title: {title},\n  author: {author},\n)[\n{body}\n]",
         paper = args.paper,
         x = args.margin_x_mm,
         y = args.margin_y_mm,
@@ -360,6 +414,7 @@ pub fn compose(template_source: &str, args: &TemplateArgs) -> String {
 Notes:
 
 - `{:?}` on `paper`/`text_align` yields a Rust string literal that is also a valid Typst string literal for these values (ASCII only) — a pragmatic choice; document it.
+- `title`/`author` are emitted as bare identifiers: either `none` or a Rust-debug-quoted string literal (`{:?}`). Front-matter strings are user content, so a title containing `"` must be escaped with `{:?}` — reuse the same `{:?}` trick, it produces a valid Typst string literal for arbitrary ASCII content (non-ASCII passes through UTF-8 unchanged; verify with a test).
 - Margins are formatted with `format!("{}", value)` — values come from a fixed enum/preset in v1, never free text.
 - **The body is never interpolated into template source unescaped** — the converter already escaped it (§6.2), and it is placed *inside* a content block, which is the only place markup is valid. This mirrors the "escape on input, trust on output" rule.
 
@@ -369,21 +424,24 @@ Notes:
 
 ### 6.4 Compile & export (`typst_engine/engine.rs`)
 
-Uses `typst-as-lib` (v0.15.5) so implementers do **not** hand-write a `typst::World`. Two entry points, both built on one helper:
+Uses `typst-as-lib` (v0.16.0) so implementers do **not** hand-write a `typst::World`. Two entry points, both built on one helper:
 
 ```rust
 use typst_as_lib::TypstEngine;
 
-/// Compile a complete Typst source and return the typed document.
-fn compile_document(source: &str) -> Result<typst::doc::Document, EngineError> {
+/// Compile a complete Typst source and return the typed paged document.
+/// In Typst 0.15 the document type is `PagedDocument` (typst-layout), and
+/// `typst::Document` is now a *trait* implemented by export targets — add
+/// `typst-layout = "0.15"` as a direct dependency to name the type.
+fn compile_document(source: &str) -> Result<typst_layout::PagedDocument, EngineError> {
     let engine = TypstEngine::builder()
         .main_file(source)                          // source CONTENT, not a path
         .fonts([&*FONT_BYTES])                      // include_bytes! of one embedded font
         .build();
 
-    // `compile()` returns Warned<Result<Document, Vec<SourceDiagnostic>>>.
-    let warned = engine.compile();
-    let doc = warned.output.map_err(|diags| EngineError::Compile(render_diagnostics(&diags)))?;
+    // 0.16: `compile()` returns Warned<Result<Doc, TypstAsLibError>> where
+    // Doc: Output; annotate the call so inference picks PagedDocument.
+    let doc = engine.compile().output.map_err(|e| EngineError::Compile(render_error(&e)))?;
     Ok(doc)
 }
 ```
@@ -393,10 +451,12 @@ fn compile_document(source: &str) -> Result<typst::doc::Document, EngineError> {
 ```rust
 pub fn compile_preview(source: &str) -> Result<PreviewOutcome, EngineError> {
     let doc = compile_document(source)?;
+    // typst-svg 0.15: svg(page: &Page, opts: &SvgOptions) -> String — takes
+    // the whole page, not `&page.frame` as in older versions.
     let pages = doc
         .pages
         .iter()
-        .map(|page| typst_svg::svg(&page.frame, &Default::default()))
+        .map(|page| typst_svg::svg(page, &Default::default()))
         .collect::<Vec<String>>();
     Ok(PreviewOutcome { pages, warnings: collect_warnings(&doc) })
 }
@@ -412,20 +472,21 @@ pub fn compile_pdf(source: &str) -> Result<Vec<u8>, EngineError> {
 }
 ```
 
-**API-verification checklist** (mandatory before coding — these signatures drift between Typst releases):
+**API-verification checklist** (mandatory before coding — these signatures drift between Typst releases). Verified facts for the 0.15/0.16 line (from docs.rs, June–July 2026), re-confirm against the exact locked version:
 
-1. `TypstEngine::builder().main_file(...).fonts(...).build()` — confirm `main_file` takes source *content* and `fonts` takes byte slices.
-2. `engine.compile()` / `compile_with_input(...)` — confirm the `Warned`/`.output` shape.
-3. `typst_pdf::pdf(&doc, &PdfOptions)` — confirm it returns `Vec<u8>` (or io Result) and the options type name.
-4. `typst_svg::svg(&frame, ...)` — confirm the argument type (a page `Frame`; some versions take the document and page index) and that it returns a `String`. Adjust the loop accordingly.
+1. `TypstEngine::builder()` → `TypstTemplateEngineBuilder`; `.main_file(source: impl IntoSource)` takes source *content*; `.fonts([&[u8]])` takes byte slices; `.build()` → `TypstEngine<TypstTemplateMainFile>`. ✓ (docs.rs typst-as-lib 0.16.0)
+2. `engine.compile()` (no args when a main file is set) returns `Warned<Result<Doc, TypstAsLibError>>` where `Doc: Output`; unwrap via `.output`. `Warned.output` holds `Result<Doc, TypstAsLibError>`; the error type is `TypstAsLibError`, **not** a `Vec<SourceDiagnostic>` as in older versions — map it with the world to render diagnostics (below). ✓
+3. `typst_pdf::pdf(&doc, &PdfOptions) -> Result<Vec<u8>, _>` — returns bytes; options struct is `PdfOptions` (has `Default`). ✓
+4. `typst_svg::svg(page: &Page, opts: &SvgOptions) -> String` — first argument is a page `Page` (from `doc.pages`), not a frame. ✓ (docs.rs typst-svg 0.15.1)
+5. `PagedDocument` lives in typst-layout 0.15 (`typst_layout::document::PagedDocument`, re-exported as `typst_layout::PagedDocument`); `doc.pages: Vec<Page>`. Confirm the exact re-export path against the locked typst-layout version.
 
-**Error rendering:** map the first ~5 `SourceDiagnostic`s to `"line {span.linenum()}: {message}"`-style strings (use the diagnostic's `span` with the `Source` from the world; typst-as-lib exposes the world via `with_world` if needed — see §13 for the low-level path). Warnings are a separate list returned to the UI.
+**Error rendering:** `TypstAsLibError` wraps the compile errors; use `engine.with_world(|world| …)` (0.16 API) or `world_builder()` to access the `TypstWorld` and map the first ~5 `SourceDiagnostic`s to `"line {span.linenum()}: {message}"`-style strings. Warnings (`Warned.warnings`) are a separate list returned to the UI.
 
 ## 7. Tauri shell
 
 ### 7.1 Bootstrap
 
-1. Scaffold: `npm create tauri-app@latest` → name `tauri-md-editor`, frontend template **Vanilla (Vite)**, keep the default `src/` + `src-tauri/` layout. Or scaffold manually with the files in this spec.
+1. Scaffold: `npm create vite@latest` → **React** (JS template) + `npm create tauri-app@latest` (or the manual files in this spec), keep the default `src/` + `src-tauri/` layout. Add Mantine 8 + CodeMirror deps (§4.2). *(Done in M0 — see §11.)*
 2. `npm install` (frontend deps, §4.2).
 3. Add plugins & crates (§4.1): `cargo add tauri-plugin-dialog`, etc.
 4. Register the dialog plugin in `lib.rs` and add its permissions (§7.3).
@@ -581,7 +642,8 @@ pub async fn save_markdown(app: AppHandle, path: Option<String>, content: String
 pub async fn validate_template(path: String) -> Result<serde_json::Value, String> {
     let source = std::fs::read_to_string(&path).map_err(|e| format!("Failed to read template: {e}"))?;
     let probe = template::compose(&source, &TemplateArgs {
-        paper: "a4", margin_x_mm: 20.0, margin_y_mm: 25.0, text_align: "left", body: "probe",
+        paper: "a4", margin_x_mm: 20.0, margin_y_mm: 25.0,
+        text_align: "left", title: None, author: None, body: "probe",
     });
     engine::compile_preview(&probe)?;                    // must not error
     Ok(serde_json::json!({ "valid": true }))
@@ -596,13 +658,15 @@ pub fn build_source(
     options: &RenderOptions,
     markdown: &str,
 ) -> Result<String, String> {
-    let body = md_to_typst(markdown, options.flavor).map_err(|e| e.to_string())?;
+    let converted = md_to_typst(markdown, options.flavor).map_err(|e| e.to_string())?;
     Ok(compose(template_source, &TemplateArgs {
         paper: options.paper.typst_name(),
         margin_x_mm: options.margins.left_mm.min(options.margins.right_mm),
         margin_y_mm: options.margins.top_mm.min(options.margins.bottom_mm),
         text_align: match options.text_align { TextAlign::Left => "left", TextAlign::Center => "center", TextAlign::Justified => "justified" },
-        body: &body,
+        title: converted.title.as_deref(),
+        author: converted.author.as_deref(),
+        body: &converted.body,
     }))
 }
 ```
@@ -644,9 +708,28 @@ fn main() { tauri_md_editor_lib::run() }
 
 ## 8. Frontend
 
-### 8.1 Page structure (`index.html`)
+### 8.1 Component tree (`src/`)
 
-The HTML/CSS target is a beginner-intermediate level, so this uses plain flexbox — one toolbar row on top, two columns below, a status row at the bottom:
+React 19 + Mantine 8. Components own their markup and styles; `index.html` stays a bare shell (root div + module script). File structure (§5):
+
+```
+src/
+├── main.jsx          # entry: font imports, Mantine theme, <MantineProvider>, <App/>
+├── App.jsx           # app state, debounce loop, seq guard, layout
+├── components/
+│   ├── Toolbar.jsx   # file buttons, flavor/paper/margins/align selects, template, export
+│   ├── Editor.jsx    # CodeMirror 6 via @uiw/react-codemirror
+│   ├── Preview.jsx   # SVG pages from render_preview
+│   ├── StatusBar.jsx # page count, warnings, save state
+│   └── ErrorBanner.jsx
+├── lib/
+│   ├── api.js        # invoke() wrappers (one per command)
+│   ├── settings.js   # localStorage-backed settings
+│   └── presets.js    # FLAVORS, PAPERS, MARGIN_PRESETS, ALIGNS tables
+└── styles.css        # app-level layout only; Mantine styles components
+```
+
+`index.html` (Vite React template, trimmed):
 
 ```html
 <!doctype html>
@@ -657,120 +740,109 @@ The HTML/CSS target is a beginner-intermediate level, so this uses plain flexbox
     <title>Markdown to PDF</title>
   </head>
   <body>
-    <header id="toolbar">
-      <button data-action="new">New</button>
-      <button data-action="open">Open</button>
-      <button data-action="save">Save</button>
-      <span class="sep"></span>
-      <label>Flavor
-        <select id="flavor">
-          <option value="commonmark">CommonMark</option>
-          <option value="gfm" selected>GFM</option>
-          <option value="custom">Custom</option>
-        </select>
-      </label>
-      <label>Paper
-        <select id="paper">
-          <option value="a4" selected>A4</option>
-          <option value="a5">A5</option>
-          <option value="letter">Letter</option>
-          <option value="legal">Legal</option>
-        </select>
-      </label>
-      <label>Margins
-        <select id="margins">
-          <option value="normal" selected>Normal (20/25mm)</option>
-          <option value="narrow">Narrow (10/15mm)</option>
-          <option value="custom">Custom…</option>
-        </select>
-      </label>
-      <label>Align
-        <select id="align">
-          <option value="left" selected>Left</option>
-          <option value="center">Center</option>
-        </select>
-      </label>
-      <span class="spacer"></span>
-      <button data-action="template" title="Choose a custom .typ template">Template…</button>
-      <button data-action="export" id="export" class="primary">Export PDF</button>
-    </header>
-
-    <main id="panes">
-      <section id="editor-pane"><div id="editor"></div></section>
-      <section id="preview-pane">
-        <div id="preview-scroll"><div id="preview"></div></div>
-      </section>
-    </main>
-
-    <footer id="status"><span id="status-text">Ready</span></footer>
-    <div id="error-banner" hidden></div>
-
-    <script type="module" src="/src/main.js"></script>
+    <div id="root"></div>
+    <script type="module" src="/src/main.jsx"></script>
   </body>
 </html>
 ```
 
-### 8.2 Editor (`editor.js`)
+`main.jsx` — fonts + theme first, then render:
 
-CodeMirror 6 is ESM-only and installed via npm (bundled by Vite). Minimal setup with a markdown language and a change hook:
+```jsx
+import "@fontsource/iosevka/400.css";
+import "@fontsource/iosevka/500.css";
+import "@fontsource/pt-sans-narrow/400.css";
+import "@fontsource/pt-sans-narrow/700.css";
+import { MantineProvider, createTheme } from "@mantine/core";
+import App from "./App.jsx";
 
-```js
-import { EditorView, keymap, placeholder } from "@codemirror/view";
-import { EditorState } from "@codemirror/state";
-import { defaultKeymap, history, historyKeymap } from "@codemirror/commands";
+const theme = createTheme({
+  fontFamily: "PT Sans Narrow, sans-serif",
+  fontSizes: { xs: "13px", sm: "15px", md: "17px", lg: "19px", xl: "21px" },
+});
+
+createRoot(document.getElementById("root")).render(
+  <MantineProvider theme={theme}>
+    <App />
+  </MantineProvider>,
+);
+```
+
+Layout stays a plain flexbox skeleton (Mantine handles the individual controls):
+
+```jsx
+<div className="app">            {/* flex column, 100vh */}
+  <Toolbar ... />
+  <main id="panes">              {/* flex row, flex: 1 */}
+    <section id="editor-pane"><Editor ... /></section>
+    <section id="preview-pane"><Preview pages={pages} /></section>
+  </main>
+  <StatusBar ... />
+  <ErrorBanner ... />
+</div>
+```
+
+### 8.2 Editor (`components/Editor.jsx`)
+
+CodeMirror 6 via `@uiw/react-codemirror` (the maintained React wrapper). It is a controlled component: value/onChange come from `App`. A save shortcut triggers the toolbar's save handler:
+
+```jsx
+import CodeMirror from "@uiw/react-codemirror";
 import { markdown } from "@codemirror/lang-markdown";
-import { syntaxHighlighting, defaultHighlightStyle } from "@codemirror/language";
+import { keymap } from "@codemirror/view";
+import { defaultKeymap, history, historyKeymap } from "@codemirror/commands";
 
-export function createEditor(parent, { onChange, onSave }) {
-  let view;
-  const state = EditorState.create({
-    doc: "# Hello\n\nStart typing…",
-    extensions: [
-      history(),
-      markdown(),
-      syntaxHighlighting(defaultHighlightStyle),
-      placeholder("Write markdown here…"),
-      keymap.of([...defaultKeymap, ...historyKeymap]),
-      EditorView.updateListener.of((u) => {
-        if (u.docChanged) onChange(u.state.doc.toString());
-      }),
-      EditorView.theme({
-        "&": { height: "100%", fontSize: "14px" },
-        ".cm-scroller": { overflow: "auto" },
-      }),
-    ],
-  });
-  view = new EditorView({ state, parent });
-  return {
-    view,
-    getDoc: () => view.state.doc.toString(),
-    setDoc: (text) => view.dispatch({ changes: { from: 0, to: view.state.doc.length, insert: text } }),
-    focus: () => view.focus(),
-  };
+export default function Editor({ value, onChange, onSave }) {
+  return (
+    <CodeMirror
+      value={value}
+      onChange={onChange}
+      className="editor"
+      extensions={[
+        history(),
+        markdown(),
+        keymap.of([
+          ...defaultKeymap,
+          ...historyKeymap,
+          { key: "Mod-s", run: () => { onSave(); return true; } },
+        ]),
+      ]}
+      basicSetup={{ foldGutter: false }}
+    />
+  );
 }
 ```
 
-### 8.3 Preview (`preview.js`)
+Notes:
 
-Renders the SVG pages returned by `render_preview` as inline DOM (safe: our compiler produced them) and implements the stale-response guard:
+- `@uiw/react-codemirror` wraps `EditorView` in a React lifecycle; `onChange` fires with the doc string on every edit. No manual `EditorState`/`EditorView` construction, no `parent` element juggling.
+- Keep `@codemirror/lang-markdown` and `@codemirror/commands` as explicit deps (not just transitive) — they are pinned in §4.2.
+- Styling: the wrapper receives `.editor` (Iosevka 16px, see §8.5); Mantine resets are neutralized by CodeMirror's own theme. `basicSetup` keeps line numbers, search, etc.; `foldGutter` off keeps the gutter narrow in v1.
 
-```js
-let lastSeq = 0;
+### 8.3 Preview (`components/Preview.jsx`)
 
-export function renderPreview(container, result) {
-  if (result.seq < lastSeq) return;      // stale response — drop it
-  lastSeq = result.seq;
-  container.innerHTML = result.pages.map((svg, i) =>
-    `<div class="page" data-page="${i + 1}">${svg}</div>`
-  ).join("");
+Renders the SVG pages returned by `render_preview` as inline DOM (safe: our compiler produced them). The stale-response guard lives in `App` (it compares against the sequence it last sent — §7.5); the component is pure:
+
+```jsx
+export default function Preview({ pages }) {
+  return (
+    <div id="preview">
+      {pages.map((svg, i) => (
+        <div
+          key={i}
+          className="page"
+          data-page={i + 1}
+          dangerouslySetInnerHTML={{ __html: svg }}
+        />
+      ))}
+    </div>
+  );
 }
-
-export function renderError(message) { /* sets #error-banner text */ }
 ```
 
-The pages update wholesale on every compile. Incremental / patch-based updates (typst-preview style) are future work (§13).
+`dangerouslySetInnerHTML` is acceptable here because the strings come from `render_preview` (our Typst compile), never from user input directly — the same trust boundary as the old `innerHTML` assignment. The pages update wholesale on every compile. Incremental / patch-based updates (typst-preview style) are future work (§13).
 
-### 8.4 `main.js` wiring and `api.js`
+### 8.4 `App.jsx` state and `lib/api.js`
 
 `api.js` — one wrapper per command (using `@tauri-apps/api` v2):
 
@@ -784,127 +856,152 @@ export const saveMarkdown = (path, content) => invoke("save_markdown", { path, c
 export const validateTemplate = (path) => invoke("validate_template", { path });
 ```
 
-`main.js` — the debounce loop and the settings bridge:
+`App.jsx` — owns the app state, the debounce loop and the seq guard. `useDebouncedCallback` comes from `@mantine/hooks`; settings are loaded once from `lib/settings.js` (§8.6):
 
-```js
-import { createEditor } from "./editor.js";
-import { renderPreview, renderError } from "./preview.js";
-import * as api from "./api.js";
-import { loadSettings, saveSettings } from "./settings.js";
+```jsx
+import { useCallback, useRef, useState } from "react";
+import { useDebouncedCallback } from "@mantine/hooks";
+import * as api from "./lib/api.js";
+import { loadSettings, saveSettings } from "./lib/settings.js";
 
-const settings = loadSettings();            // localStorage-backed (§8.6)
-const $ = (sel) => document.querySelector(sel);
-let seq = 0;
-let debounceTimer;
+export default function App() {
+  const [settings] = useState(() => loadSettings());
+  const [markdown, setMarkdown] = useState(INITIAL_DOC);
+  const [options, setOptions] = useState(settings.options);   // { flavor, paper, margins, textAlign, templatePath }
+  const [pages, setPages] = useState([]);
+  const [warnings, setWarnings] = useState([]);
+  const [error, setError] = useState(null);
+  const filePath = useRef(null);
+  const seq = useRef(0);                // last seq we *sent*
 
-const state = {
-  markdown: "",
-  filePath: null,
-  templatePath: settings.templatePath ?? null,
-};
-
-async function refreshPreview() {
-  clearTimeout(debounceTimer);
-  debounceTimer = setTimeout(async () => {
-    const seqId = ++seq;
+  const refreshPreview = useDebouncedCallback(async () => {
+    const seqId = ++seq.current;
     try {
-      const result = await api.renderPreview({
-        markdown: state.markdown,
-        options: currentOptions(),
-        seq: seqId,
-      });
-      renderPreview($("#preview"), result);
-      $("#status-text").textContent = `${result.pages.length} page(s)`;
+      const result = await api.renderPreview({ markdown, options, seq: seqId });
+      if (result.seq < seq.current) return;   // stale — a newer request is in flight
+      setPages(result.pages);
+      setWarnings(result.warnings);
+      setError(null);
     } catch (err) {
-      renderError(String(err));
-      $("#status-text").textContent = "Preview failed";
+      setError(String(err));            // keep last good preview (pages untouched)
     }
   }, 200);
-}
 
-function currentOptions() {
-  return {
-    flavor: $("#flavor").value,
-    paper: $("#paper").value,
-    margins: settings.margins,          // { topMm, bottomMm, leftMm, rightMm }
-    textAlign: $("#align").value,
-    templatePath: state.templatePath,
+  const handleEditorChange = useCallback((value) => {
+    setMarkdown(value);
+    refreshPreview();
+  }, [refreshPreview]);
+
+  // settings persistence on option change
+  const changeOption = (patch) => {
+    const next = { ...options, ...patch };
+    setOptions(next);
+    saveSettings({ ...settings, options: next });
+    refreshPreview();
   };
+
+  return (
+    <div className="app">
+      <Toolbar options={options} onOptionChange={changeOption}
+               onExport={handleExport} onOpen={handleOpen} onSave={handleSave} />
+      <main id="panes">
+        <section id="editor-pane">
+          <Editor value={markdown} onChange={handleEditorChange} onSave={handleSave} />
+        </section>
+        <section id="preview-pane"><Preview pages={pages} /></section>
+      </main>
+      <StatusBar pages={pages.length} warnings={warnings} />
+      <ErrorBanner message={error} onClose={() => setError(null)} />
+    </div>
+  );
 }
-
-// ── toolbar wiring ─────────────────────────────────────────────────────────
-$("#flavor").onchange = (e) => { settings.flavor = e.target.value; saveSettings(settings); refreshPreview(); };
-$("#paper").onchange   = (e) => { settings.paper = e.target.value; saveSettings(settings); refreshPreview(); };
-$("#align").onchange   = (e) => { settings.textAlign = e.target.value; saveSettings(settings); refreshPreview(); };
-$("#margins").onchange = (e) => { settings.marginPreset = e.target.value; /* update settings.margins from preset table */ saveSettings(settings); refreshPreview(); };
-
-document.querySelector('[data-action="export"]').onclick = async () => {
-  try { await api.exportPdf({ markdown: state.markdown, options: currentOptions() }); }
-  catch (err) { renderError(String(err)); }
-};
-document.querySelector('[data-action="open"]').onclick = async () => {
-  const res = await api.openMarkdown();
-  if (res.canceled) return;
-  if (res.error) return renderError(res.error);
-  state.markdown = res.content; state.filePath = res.path;
-  editor.setDoc(res.content);
-};
-document.querySelector('[data-action="save"]').onclick = async () => {
-  const res = await api.saveMarkdown(state.filePath, state.markdown);
-  if (!res.canceled && !res.error) state.filePath = res.path;
-};
-document.querySelector('[data-action="template"]').onclick = async () => {
-  // open a file dialog with a filter for .typ (reuse a Rust command, or
-  // tauri-plugin-dialog from the frontend) then validate via api.validateTemplate
-  // and set state.templatePath on success.
-};
-
-// ── boot ────────────────────────────────────────────────────────────────────
-const editor = createEditor($("#editor"), {
-  onChange: (md) => { state.markdown = md; refreshPreview(); },
-  onSave: () => document.querySelector('[data-action="save"]').click(),
-});
-state.markdown = editor.getDoc();
-refreshPreview();
 ```
+
+`Toolbar.jsx` — Mantine controls mapped to `options`; `Select` data comes from `lib/presets.js`:
+
+```jsx
+import { Button, Divider, Group, Select } from "@mantine/core";
+import { IconFileTypePdf, IconFolderOpen, IconFilePlus, IconTemplate } from "@tabler/icons-react";
+import { FLAVORS, PAPERS, MARGIN_PRESETS, ALIGNS } from "../lib/presets.js";
+
+export default function Toolbar({ options, onOptionChange, onExport, onOpen, onSave, onNew }) {
+  return (
+    <header id="toolbar">
+      <Button variant="subtle" leftSection={<IconFilePlus size={16} />} onClick={onNew}>New</Button>
+      <Button variant="subtle" leftSection={<IconFolderOpen size={16} />} onClick={onOpen}>Open</Button>
+      <Button variant="subtle" leftSection={<IconFileTypePdf size={16} />} onClick={onSave}>Save</Button>
+      <Divider orientation="vertical" />
+      <Select label="Flavor" data={FLAVORS} value={options.flavor} onChange={(v) => onOptionChange({ flavor: v })} w={140} />
+      <Select label="Paper" data={PAPERS} value={options.paper} onChange={(v) => onOptionChange({ paper: v })} w={110} />
+      <Select label="Margins" data={MARGIN_PRESETS} value={options.marginPreset} onChange={(v) => onOptionChange({ marginPreset: v })} w={170} />
+      <Select label="Align" data={ALIGNS} value={options.textAlign} onChange={(v) => onOptionChange({ textAlign: v })} w={110} />
+      <div className="spacer" />
+      <Button variant="default" leftSection={<IconTemplate size={16} />} onClick={onPickTemplate}>Template…</Button>
+      <Button leftSection={<IconFileTypePdf size={16} />} onClick={onExport}>Export PDF</Button>
+    </header>
+  );
+}
+```
+
+File handlers stay thin: `onOpen` → `api.openMarkdown()` → `setMarkdown(res.content)`, `filePath.current = res.path`; `onSave` → `api.saveMarkdown(filePath.current, markdown)` and update the ref; `onExport` → `api.exportPdf({ markdown, options })`; `onPickTemplate` → `tauri-plugin-dialog`'s `open()` from the frontend (filter `.typ`), then `api.validateTemplate(path)` and only on success `onOptionChange({ templatePath: path })`. `canceled: true` results are silent (§9).
 
 ### 8.5 Styles (`styles.css`)
 
-Flexbox fundamentals: `display:flex` on the panes row, `flex:1` on each pane, `flex-direction:column` on the editor pane so the CM element fills height.
+Mantine styles the controls; the stylesheet covers only the app skeleton and the preview pages. Same flexbox fundamentals as before: `display:flex` on the panes row, `flex:1` on each pane.
 
 ```css
 * { box-sizing: border-box; }
-html, body { height: 100%; margin: 0; }
-body { display: flex; flex-direction: column; font-family: system-ui, sans-serif; }
+html, body, #root { height: 100%; margin: 0; }
 
-#toolbar { display: flex; align-items: center; gap: 8px; padding: 6px 10px;
-           border-bottom: 1px solid #ccc; background: #f6f8fa; }
+.app { display: flex; flex-direction: column; height: 100%; }
+
+#toolbar { display: flex; align-items: flex-end; gap: 12px; padding: 8px 12px;
+           border-bottom: 1px solid var(--mantine-color-gray-3); }
 #toolbar .spacer { flex: 1; }
-#toolbar .sep { width: 1px; align-self: stretch; background: #ccc; margin: 0 4px; }
-button.primary { background: #0366d6; color: #fff; border: none; border-radius: 4px; padding: 4px 12px; }
 
 #panes { flex: 1; display: flex; min-height: 0; }
 #editor-pane  { flex: 1; min-width: 0; display: flex; flex-direction: column; }
-#editor       { flex: 1; min-height: 0; overflow: hidden; }
 #preview-pane { flex: 1; min-width: 0; background: #525659; overflow: auto; }
+
+.editor { flex: 1; min-height: 0; overflow: hidden; }
+.editor .cm-editor { height: 100%; font-family: Iosevka, monospace; font-size: 16px; }
 
 #preview { padding: 24px; }
 /* Each SVG page is a white sheet with a shadow, centered, sized to the pane width. */
 .page { background: #fff; box-shadow: 0 2px 8px rgba(0,0,0,.35);
-        width: 100%; max-width: 820px; margin: 0 auto 24px; padding: 0; }
+        width: 100%; max-width: 820px; margin: 0 auto 24px; }
 .page svg { display: block; width: 100%; height: auto; }
-
-#status { display: flex; gap: 12px; padding: 4px 10px; border-top: 1px solid #ccc;
-          font-size: 12px; color: #555; background: #f6f8fa; }
-#error-banner { position: fixed; top: 8px; left: 50%; transform: translateX(-50%);
-                background: #d93025; color: #fff; padding: 8px 16px; border-radius: 4px; }
 ```
 
 Key detail for the preview: Typst emits SVGs with an intrinsic pixel size (e.g. A4 @ 96dpi ≈ 794×1123). `width:100%; height:auto` scales them to the pane while preserving aspect ratio, so pages behave like a real document viewer.
 
-### 8.6 Settings (`settings.js`)
+### 8.6 Settings (`lib/settings.js`)
 
-v1 persists to `localStorage` under one JSON key (e.g. `tauri-md-editor.settings`): `{ flavor, paper, marginPreset, margins, textAlign, templatePath, editorFontSize }`. Provide a preset table for margins (Normal / Narrow / Custom). `tauri-plugin-store` (a file-backed store) is an acceptable alternative but not required in v1.
+v1 persists to `localStorage` under one JSON key (e.g. `tauri-md-editor.settings`): `{ options: { flavor, paper, marginPreset, margins, textAlign, templatePath }, editorFontSize }`. Provide a preset table for margins (Normal / Narrow / Custom) in `lib/presets.js`:
+
+```js
+export const FLAVORS = [
+  { value: "commonmark", label: "CommonMark" },
+  { value: "gfm",        label: "GFM" },
+  { value: "custom",     label: "Custom" },
+];
+export const PAPERS = [
+  { value: "a4", label: "A4" }, { value: "a5", label: "A5" },
+  { value: "letter", label: "Letter" }, { value: "legal", label: "Legal" },
+];
+export const MARGIN_PRESETS = [
+  { value: "normal", label: "Normal (20/25mm)" },
+  { value: "narrow", label: "Narrow (10/15mm)" },
+  { value: "custom", label: "Custom…" },
+];
+export const ALIGNS = [
+  { value: "left", label: "Left" },
+  { value: "center", label: "Center" },
+  { value: "justified", label: "Justified" },
+];
+```
+
+`loadSettings()`/`saveSettings()` are pure `JSON.parse`/`JSON.stringify` around the key, with a `try/catch` fallback to defaults on corrupt data. `tauri-plugin-store` (a file-backed store) is an acceptable alternative but not required in v1.
 
 ## 9. Error handling & UX states
 
@@ -931,15 +1028,18 @@ Follow red-green-refactor. Because `markdown/` and `typst_engine/` are plain Rus
 - `maps GFM table to #table(...)` (only when flavor = GFM/Custom; in CommonMark comrak yields paragraphs)
 - `maps footnotes and math in Custom flavor; leaves them as text otherwise`
 - `strips HTML tags and keeps text` (lossy path)
-- `parses YAML front matter title/author; ignores other keys`
+- `parses YAML front matter title/author; ignores other keys` (no title/author → `ConvertedDocument` with `None`; title containing quotes → valid escaped Typst string)
 - `empty input returns []`
 
 **`typst_engine/template.rs` tests:**
 
 - `compose emits template + article invocation with expected args`
 - `compose passes body through verbatim (already escaped)`
-- `build_source maps paper/margins/alignment to template args`
+- `compose emits title: none / author: none when absent; quoted string literals when present`
+- `build_source maps paper/margins/alignment to template args; forwards title/author`
 - `template contract: default template defines article with required params` (compile probe)
+
+**Frontend (optional in M1, required later):** the pure modules (`lib/presets.js`, `lib/settings.js`) are testable with Vitest. Component tests (React Testing Library) are not required for v1; the seq guard and debounce are simple enough to review by hand — keep them in `App.jsx` so they are auditable.
 
 **`typst_engine/engine.rs` tests (slow but few — mark with `#[ignore]` or keep tiny):**
 
@@ -970,7 +1070,7 @@ fn escapes_special_characters_in_text() {
 
 | Milestone | Deliverable | Acceptance |
 |---|---|---|
-| **M0 — Scaffold** | Project skeleton (Vite + Tauri + plugins) | `npm run tauri dev` opens an empty window; `cargo test` runs (0 tests or stubs). |
+| **M0 — Scaffold** ✅ | Project skeleton (Vite + React 19 + Tauri + plugins) | **Done** — commit `c7030ec`: `npm run tauri dev` opens an empty Mantine window; `cargo test` runs (0 tests). |
 | **M1 — Converter** | `markdown/convert.rs` + `escape.rs` (TDD) | Full unit suite green; CommonMark/GFM/Custom flavour differences verified by tests. |
 | **M2 — Engine** | `typst_engine/` — template, compose, compile | `compile_preview(sample)` returns ≥1 SVG containing `<svg`; `compile_pdf` writes a file starting with `%PDF`; error paths tested. |
 | **M3 — UI loop** | Editor + preview + debounce + seq guard | Typing updates preview ≤300 ms after pause; flavor switch changes output (e.g. table renders only in GFM/Custom); stale responses are dropped. |

@@ -17,3 +17,8 @@ tauri-plugin-dialog = "2"
 
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+
+# default-features = false: comrak's defaults pull the CLI and the
+# syntect/onig syntax-highlighting stack, which this project does not use
+# (Typst highlights code itself). Keep only the parser.
+comrak = { version = "0.54", default-features = false }
