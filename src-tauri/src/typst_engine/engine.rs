@@ -191,6 +191,23 @@ mod tests {
         assert_eq!(&bytes[..4], b"%PDF", "PDF magic header");
     }
 
+    /// M4 acceptance: exported PDF bytes land on disk via the atomic writer.
+    /// Pins the compile → write pipeline the `export_pdf` command runs behind
+    /// the (headless-untestable) save dialog.
+    #[test]
+    fn pdf_bytes_write_atomically_to_disk() {
+        let source = probe_source("= Hello\n\nExport me.");
+        let bytes = compile_pdf(&source).expect("must compile");
+        let target =
+            std::env::temp_dir().join(format!("tauri-md-editor-pdf-{}.pdf", std::process::id()));
+
+        crate::files::write_atomically(&target, &bytes).expect("must write");
+
+        let on_disk = std::fs::read(&target).expect("file must exist on disk");
+        assert_eq!(&on_disk[..4], b"%PDF", "written file must be a PDF");
+        std::fs::remove_file(&target).ok();
+    }
+
     /// §10 / M3 acceptance: a GFM table (header + body) must compile through
     /// the full pipeline (md_to_typst → build_source → compile). Regression
     /// for header cells emitted as `*[a]`, which is invalid inside `#table(...)`

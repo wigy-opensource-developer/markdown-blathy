@@ -84,16 +84,54 @@ export default function App() {
     [refreshPreview]
   );
 
-  // File/template/export handlers arrive in M4/M5. All are stable so the
-  // memoized toolbar does not re-render on every keystroke.
+  // The current document's path on disk; null while untitled. Set by Open and
+  // Save; Save reads it so already-named documents skip the dialog (§8.4).
+  const filePath = useRef(null);
+
+  // File handlers stay thin: they call the tested `lib/api.js` wrappers and
+  // map the outcome onto state. A dismissed dialog is silent (§9); any other
+  // failure surfaces in the error banner. All are stable so the memoized
+  // toolbar does not re-render on every keystroke.
   const handleNew = useCallback(() => {
+    filePath.current = null;
     setMarkdown(INITIAL_DOC);
     refreshPreview();
   }, [refreshPreview]);
-  const handleOpen = useCallback(() => {}, []);
-  const handleSave = useCallback(() => {}, []);
-  const handlePickTemplate = useCallback(() => {}, []);
-  const handleExport = useCallback(() => {}, []);
+
+  const handleOpen = useCallback(async () => {
+    try {
+      const res = await api.openMarkdown();
+      if (api.isCanceled(res)) return;
+      filePath.current = res.path;
+      setMarkdown(res.content);
+      refreshPreview();
+    } catch (err) {
+      setError(String(err));
+    }
+  }, [refreshPreview]);
+
+  const handleSave = useCallback(async () => {
+    try {
+      const res = await api.saveMarkdown(filePath.current, markdown);
+      if (api.isCanceled(res)) return;
+      filePath.current = res.path;
+    } catch (err) {
+      setError(String(err));
+    }
+  }, [markdown]);
+
+  const handlePickTemplate = useCallback(() => {}, []); // M5
+
+  const handleExport = useCallback(async () => {
+    try {
+      const res = await api.exportPdf(markdown, options);
+      if (api.isCanceled(res)) return;
+      // The PDF is written and opened in the system viewer by the backend.
+    } catch (err) {
+      setError(String(err));
+    }
+  }, [markdown, options]);
+
   const dismissError = useCallback(() => setError(null), []);
 
   return (

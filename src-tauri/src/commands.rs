@@ -1,12 +1,16 @@
 //! Thin `#[tauri::command]` wrappers (§7.4 of SPEC.md).
 //!
-//! All real logic lives in the plain modules (`markdown/`, `typst_engine/`)
-//! which have no `tauri` imports; these functions are serialization-only
-//! shims. In v1 only `render_preview` is wired (M3); the file/export commands
-//! arrive in M4.
+//! All real logic lives in the plain modules (`markdown/`, `typst_engine/`,
+//! `files/`) which have no `tauri` imports; these functions are
+//! serialization-only shims plus the system dialogs.
+
+use std::path::Path;
 
 use serde::{Deserialize, Serialize};
+use tauri::AppHandle;
+use tauri_plugin_dialog::DialogExt;
 
+use crate::files;
 use crate::options::RenderOptions;
 use crate::typst_engine::engine;
 use crate::typst_engine::template::{self, resolve_template_source};
@@ -28,6 +32,55 @@ pub struct PreviewOutcome {
     pub pages: Vec<String>,
     pub warnings: Vec<String>,
     pub seq: u64,
+}
+
+/// Result of a dialog-bearing file command (§7.4, M4).
+///
+/// Serializes as `{ "path", "content" }` on success and as
+/// `{ "canceled": true }` when the user dismissed the dialog — `canceled`
+/// is silent in the UI (§9).
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FileOutcome {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub content: Option<String>,
+    #[serde(skip_serializing_if = "is_false")]
+    pub canceled: bool,
+}
+
+impl FileOutcome {
+    /// The user dismissed the dialog — resolve, not an error (§9).
+    fn canceled() -> Self {
+        Self {
+            path: None,
+            content: None,
+            canceled: true,
+        }
+    }
+
+    /// `open_markdown` success: the file path plus its contents.
+    fn opened(path: impl AsRef<std::path::Path>, content: String) -> Self {
+        Self {
+            path: Some(path.as_ref().to_string_lossy().into_owned()),
+            content: Some(content),
+            canceled: false,
+        }
+    }
+
+    /// `save_markdown` / `export_pdf` success: just the written path.
+    fn saved(path: impl AsRef<std::path::Path>) -> Self {
+        Self {
+            path: Some(path.as_ref().to_string_lossy().into_owned()),
+            content: None,
+            canceled: false,
+        }
+    }
+}
+
+fn is_false(b: &bool) -> bool {
+    !b
 }
 
 /// Live preview: markdown + options → per-page SVG strings (§7.4).
@@ -52,9 +105,114 @@ pub async fn render_preview(payload: RenderPayload) -> Result<PreviewOutcome, St
     })
 }
 
+/// Export: markdown + options → system save dialog → write the PDF atomically
+/// → open it in the system viewer (§7.4, M4).
+///
+/// Compilation is CPU-bound, so it runs on `spawn_blocking`; the save dialog
+/// blocks too, which is fine off the UI thread.
+#[tauri::command]
+pub async fn export_pdf(app: AppHandle, payload: RenderPayload) -> Result<FileOutcome, String> {
+    let template_source = resolve_template_source(&payload.options)?;
+    let source = template::build_source(&template_source, &payload.options, &payload.markdown)?;
+
+    let pdf = tauri::async_runtime::spawn_blocking(move || engine::compile_pdf(&source))
+        .await
+        .map_err(|e| format!("Export task failed: {e}"))?
+        .map_err(|e| e.to_string())?;
+
+    let picked = app
+        .dialog()
+        .file()
+        .set_title("Export PDF")
+        .add_filter("PDF", &["pdf"])
+        .set_file_name("document.pdf")
+        .blocking_save_file();
+    let Some(path) = dialog_path(picked)? else {
+        return Ok(FileOutcome::canceled());
+    };
+
+    files::write_atomically(&path, &pdf).map_err(|e| format!("Failed to write PDF: {e}"))?;
+    open_in_viewer(&path);
+    Ok(FileOutcome::saved(&path))
+}
+
+/// Open a Markdown file via the system dialog and read it (§7.4, M4).
+#[tauri::command]
+pub async fn open_markdown(app: AppHandle) -> Result<FileOutcome, String> {
+    let picked = app
+        .dialog()
+        .file()
+        .set_title("Open Markdown")
+        .add_filter("Markdown", &["md", "markdown"])
+        .add_filter("All files", &["*"])
+        .blocking_pick_file();
+    let Some(path) = dialog_path(picked)? else {
+        return Ok(FileOutcome::canceled());
+    };
+
+    let content =
+        std::fs::read_to_string(&path).map_err(|e| format!("Failed to read file: {e}"))?;
+    Ok(FileOutcome::opened(&path, content))
+}
+
+/// Save Markdown to `path`, or ask via the system dialog when the document
+/// has no path yet (untitled). Writes atomically (§7.4, M4).
+#[tauri::command]
+pub async fn save_markdown(
+    app: AppHandle,
+    path: Option<String>,
+    content: String,
+) -> Result<FileOutcome, String> {
+    let path = match path {
+        Some(p) => Some(std::path::PathBuf::from(p)),
+        None => {
+            let picked = app
+                .dialog()
+                .file()
+                .set_title("Save Markdown")
+                .add_filter("Markdown", &["md"])
+                .set_file_name("document.md")
+                .blocking_save_file();
+            dialog_path(picked)?
+        }
+    };
+
+    let Some(path) = path else {
+        return Ok(FileOutcome::canceled());
+    };
+
+    files::write_atomically(&path, content.as_bytes())
+        .map_err(|e| format!("Failed to save: {e}"))?;
+    Ok(FileOutcome::saved(&path))
+}
+
+/// Convert a blocking dialog result into a `PathBuf`, mapping the (rare)
+/// URL/error cases to a user-presentable message (§9). `None` means the user
+/// dismissed the dialog.
+fn dialog_path(
+    picked: Option<tauri_plugin_dialog::FilePath>,
+) -> Result<Option<std::path::PathBuf>, String> {
+    match picked {
+        Some(p) => p
+            .into_path()
+            .map(Some)
+            .map_err(|e| format!("Failed to resolve path: {e}")),
+        None => Ok(None),
+    }
+}
+
+/// Open a file in the platform's default viewer (M4 acceptance: "Export
+/// writes a PDF that opens in a viewer"). Non-fatal: the export already
+/// succeeded on disk even if no viewer can be launched.
+fn open_in_viewer(path: &Path) {
+    if let Err(err) = open::that(path) {
+        eprintln!("Failed to open PDF in viewer: {err}");
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{PreviewOutcome, RenderPayload};
+    use super::{FileOutcome, PreviewOutcome, RenderPayload};
     use crate::options::{Flavor, Margins, Paper, TextAlign};
 
     /// Pins the IPC contract: the exact JSON the frontend `lib/api.js` sends
@@ -103,5 +261,36 @@ mod tests {
         assert!(json.contains("\"pages\":[\"<svg>\"]"), "{json}");
         assert!(json.contains("\"warnings\":[\"font warning\"]"), "{json}");
         assert!(json.contains("\"seq\":3"), "{json}");
+    }
+
+    /// Success outcome must not carry a `canceled` flag — the frontend reads
+    /// `path`/`content` (§8.4) and the absence of `canceled` means "done".
+    #[test]
+    fn file_outcome_serializes_success_without_canceled() {
+        let outcome = FileOutcome {
+            path: Some("/tmp/doc.md".into()),
+            content: Some("# Hi".into()),
+            canceled: false,
+        };
+        let json = serde_json::to_string(&outcome).unwrap();
+        assert!(json.contains("\"path\":\"/tmp/doc.md\""), "{json}");
+        assert!(json.contains("\"content\":\"# Hi\""), "{json}");
+        assert!(
+            !json.contains("canceled"),
+            "success must omit canceled: {json}"
+        );
+    }
+
+    /// A dismissed dialog serializes to exactly `{ "canceled": true }` —
+    /// no `path`/`content` keys, so the frontend treats it as silent (§9).
+    #[test]
+    fn file_outcome_serializes_cancel_without_path() {
+        let outcome = FileOutcome {
+            path: None,
+            content: None,
+            canceled: true,
+        };
+        let json = serde_json::to_string(&outcome).unwrap();
+        assert_eq!(json, "{\"canceled\":true}");
     }
 }

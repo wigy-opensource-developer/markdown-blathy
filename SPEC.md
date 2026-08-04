@@ -74,6 +74,7 @@ tauri-build = { version = "2", features = [] }
 [dependencies]
 tauri = { version = "2", features = [] }
 tauri-plugin-dialog = "2"
+open = "5"               # open exported PDFs in the system viewer (M4)
 
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -660,6 +661,8 @@ pub async fn validate_template(path: String) -> Result<serde_json::Value, String
 }
 ```
 
+**Implementation notes (M4, verified against tauri-plugin-dialog 2.7):** the *blocking* dialog variants return `Option<FilePath>` directly (no `Result`); call `FilePath::into_path()` to obtain a `PathBuf`. Writes use `files.rs::write_atomically` (temp sibling + rename — atomic on POSIX, replaces on Windows). Exported PDFs are then opened in the system viewer with the `open` crate — Rust-side only, so it adds no webview capability and keeps the §7.3 least-privilege posture. A dismissed dialog resolves as `{ "canceled": true }`, which the UI treats as silent (§9).
+
 **`build_source` — shared pure logic** (kept in `template.rs` so it is unit-testable without Tauri):
 
 ```rust
@@ -1084,7 +1087,7 @@ fn escapes_special_characters_in_text() {
 | **M1 — Converter** ✅ | `markdown/convert.rs` + `escape.rs` (TDD) | **Done** — commit `556911b`: 27 unit tests green; CommonMark/GFM/Custom flavour differences verified by tests. |
 | **M2 — Engine** ✅ | `typst_engine/` — template, compose, compile | **Done** — `compile_preview(sample)` returns ≥1 SVG containing `<svg`; `compile_pdf` produces bytes starting with `%PDF`; error path yields `line N: …` diagnostics; warnings are collected, not fatal. |
 | **M3 — UI loop** ✅ | Editor + preview + debounce + seq guard | **Done** — CodeMirror 6 editor, Typst SVG preview, 200 ms debounce + seq guard in `App.jsx`; `render_preview` Tauri command registered; Vitest suite for `lib/presets.js` + `lib/seq.js` (14 frontend + 45 Rust tests green via `./check.sh`). |
-| **M4 — Files & export** | Open/Save/Export commands wired to toolbar | Open loads a file; Save persists; Export writes a PDF that opens in a viewer; cancel shows no error. |
+| **M4 — Files & export** ✅ | Open/Save/Export commands wired to toolbar | **Done** — `open_markdown`/`save_markdown`/`export_pdf` registered in `lib.rs`; writes are atomic (`files.rs::write_atomically`, temp sibling + rename); dialogs via `tauri-plugin-dialog`; exported PDF opens in the system viewer via the `open` crate (Rust-side only, no new capability); canceled dialogs are silent; 52 Rust + 20 frontend tests green via `./check.sh`. |
 | **M5 — Settings & polish** | localStorage settings, template override + validation, warnings UI, error banner | Settings survive restart; custom template accepted only after probe validation; warnings displayed; empty doc renders one blank page. |
 
 ## 12. Security
@@ -1106,6 +1109,7 @@ v1 limitations (accept and document in the README):
 - No LaTeX math macros (`tex2typst-rs` could be added, as `mdxport` does).
 - No incremental compilation — full recompile per change; large (50+ page) documents may show latency.
 - **Linux UI text is grayscale-antialiased** — WebKitGTK (the Linux webview) renders text onto composited transparent layers, so subpixel/LCD antialiasing is impossible; `-webkit-font-smoothing` is a no-op there (Safari-macOS only). Fontconfig hinting still applies. Mitigations are font weight + size (Iosevka 500 in the editor, larger UI scale). The Typst SVG preview is vector paths and unaffected by this.
+- **Non-UTF-8 filenames on legacy-locale Linux** — paths travel over IPC as JSON strings (UTF-8), so a filename in e.g. latin-2 bytes is echoed back lossily (`to_string_lossy` → U+FFFD). File *contents* still load and writes still go to the correct file (the dialog hands over the raw `PathBuf`, §7.4); the one harmful case is Save-after-Open on such a system, which writes a new mangled-named file instead of overwriting. Not an issue on UTF-8-locale Linux (the default for decades), macOS (the filesystem enforces UTF-8 names), or Windows (UTF-16 paths). A byte-safe path transport (opaque `file://` URLs or base64 over IPC) is future work (§7.4).
 - SVG preview text is not selectable (inline SVG). A canvas/DOM renderer via `typst.ts` would restore selection but introduces WASM + version-pinning concerns (see §2).
 
 Future work, in order of leverage:
