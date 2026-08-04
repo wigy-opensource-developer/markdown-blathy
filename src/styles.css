@@ -1,3 +1,4 @@
+/* App-level layout only; Mantine styles the controls. (§8.5 of SPEC.md) */
 * {
   box-sizing: border-box;
 }
@@ -9,8 +10,19 @@ body,
   margin: 0;
 }
 
+html {
+  /* Note on antialiasing: WebKitGTK (the Linux webview Tauri uses) renders
+     text with GRAYSCALE antialiasing only — subpixel (LCD) antialiasing is
+     impossible because web content composites onto transparent layers.
+     `-webkit-font-smoothing` is a no-op on Linux WebKitGTK (it only affects
+     Safari on macOS, where grayscale is the modern default anyway). The
+     practical levers for legibility are font weight and size, which the
+     theme + editor styles below tune for grayscale rendering. */
+}
+
 body {
-  font-family: "PT Sans Narrow", system-ui, sans-serif;
+  font-family: "Archivo Narrow Variable", system-ui, sans-serif;
+  text-rendering: optimizeLegibility;
 }
 
 .app {
@@ -21,9 +33,11 @@ body {
 
 #toolbar {
   display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 6px 10px;
+  align-items: flex-end;
+  flex-wrap: wrap;
+  row-gap: 8px;
+  gap: 12px;
+  padding: 8px 12px;
   border-bottom: 1px solid var(--mantine-color-default-border, #d9d9d9);
 }
 
@@ -44,37 +58,107 @@ body {
   flex-direction: column;
 }
 
-.editor {
-  flex: 1;
-  min-height: 0;
-  resize: none;
-  border: none;
-  outline: none;
-  padding: 12px;
-  font-family: "Iosevka", monospace;
-  font-size: 16px;
-  line-height: 1.6;
-  white-space: pre;
-  background: transparent;
-  color: inherit;
-}
-
 #preview-pane {
   flex: 1;
   min-width: 0;
   background: #525659;
   overflow: auto;
-  padding: 24px;
+}
+
+/* CodeMirror fills the editor pane. CodeMirror's base theme hardcodes
+   `font-family: monospace` on `.cm-scroller` (injected at runtime), so the
+   font must be set on `.cm-scroller` itself with higher specificity — setting
+   it on `.cm-editor` alone loses to that rule and falls back to the system
+   monospace (which is why Iosevka was not visible). Iosevka renders thin at
+   weight 400, so the editor uses weight 500 (imported via @fontsource in
+   main.jsx) — heavier weights read better under WebKitGTK's grayscale AA. */
+.editor {
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.editor .cm-editor .cm-scroller {
+  font-family: "Iosevka", monospace;
+  font-size: 16px;
+  font-weight: 500;
+}
+
+/* Line numbers inherit the scroller font; a smaller size keeps them tidy. */
+.editor .cm-editor .cm-gutters {
+  font-size: 13px;
 }
 
 #preview {
+  padding: 24px;
+}
+
+/* Each SVG page is a white sheet with a shadow, centered, sized to the pane
+   width. Typst SVGs have an intrinsic pixel size (e.g. A4 @ 96dpi ≈
+   794×1123); width:100% + height:auto scale them while keeping the aspect
+   ratio, so pages behave like a real document viewer (§8.5). */
+.page {
+  background: #fff;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.35);
+  width: 100%;
   max-width: 820px;
-  margin: 0 auto;
+  margin: 0 auto 24px;
+}
+
+.page svg {
+  display: block;
+  width: 100%;
+  height: auto;
+}
+
+.preview-hint {
+  color: #e2e2e2;
+  text-align: center;
+  margin-top: 40px;
 }
 
 #status {
   display: flex;
   gap: 12px;
-  padding: 4px 10px;
+  padding: 5px 12px;
   border-top: 1px solid var(--mantine-color-default-border, #d9d9d9);
+  font-size: 15px;
+}
+
+#status #warning-count {
+  color: #b45309;
+}
+
+#error-banner {
+  position: fixed;
+  left: 50%;
+  bottom: 40px;
+  transform: translateX(-50%);
+  z-index: 100;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  max-width: 70vw;
+  padding: 10px 14px;
+  background: #fdecea;
+  border: 1px solid #f5c6cb;
+  border-radius: 6px;
+  color: #8a1c1c;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.2);
+}
+
+#error-banner .error-message {
+  white-space: pre-wrap;
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+#error-banner button {
+  border: none;
+  background: transparent;
+  font-size: 18px;
+  line-height: 1;
+  cursor: pointer;
+  color: inherit;
+  padding: 2px 4px;
 }

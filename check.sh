@@ -20,6 +20,9 @@ done
 echo "==> npm run build (frontend)"
 npm run build
 
+echo "==> npm test (frontend unit tests)"
+npm test
+
 echo "==> npm run check:licenses (frontend dependencies)"
 npm run check:licenses
 

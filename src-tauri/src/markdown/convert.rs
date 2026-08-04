@@ -138,8 +138,12 @@ fn render_block_at(node: Node, indent: usize) -> String {
                 let is_header = matches!(&row.data().value, NodeValue::TableRow(true));
                 for cell in row.children() {
                     let content = render_inlines(cell);
+                    // Header cells are *bold*: emit the strong markup *inside*
+                    // the content block. `*[a]` would be invalid here — table
+                    // arguments are parsed in code mode, where `*` is
+                    // multiplication, not emphasis.
                     cells.push(if is_header {
-                        format!("*[{content}]")
+                        format!("[*{content}*]")
                     } else {
                         format!("[{content}]")
                     });
@@ -390,7 +394,7 @@ mod tests {
         let gfm = md_to_typst("| a | b |\n|---|---|\n| 1 | 2 |", Flavor::Gfm);
         assert_eq!(
             gfm.body,
-            "#table(columns: (auto, auto), *[a], *[b], [1], [2])"
+            "#table(columns: (auto, auto), [*a*], [*b*], [1], [2])"
         );
 
         // CommonMark has no table extension: the same source is paragraphs.

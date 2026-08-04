@@ -84,9 +84,21 @@ pub fn build_source(
     ))
 }
 
+/// Resolve the template source to compile (§7.4): read the user template at
+/// `options.template_path`, or fall back to the embedded `DEFAULT_TEMPLATE`.
+///
+/// The error message names the offending path so the UI can surface it (§9).
+pub fn resolve_template_source(options: &RenderOptions) -> Result<String, String> {
+    match &options.template_path {
+        Some(path) => std::fs::read_to_string(path)
+            .map_err(|e| format!("Failed to read template at {path}: {e}")),
+        None => Ok(DEFAULT_TEMPLATE.to_string()),
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{build_source, compose, TemplateArgs, DEFAULT_TEMPLATE};
+    use super::{build_source, compose, resolve_template_source, TemplateArgs, DEFAULT_TEMPLATE};
     use crate::options::{Flavor, Margins, Paper, RenderOptions, TextAlign};
 
     const TMPL: &str = "#let article(paper: \"a4\", margin-x: 20mm, margin-y: 25mm, text-align: \"left\", title: none, author: none, body) = { body }";
@@ -207,6 +219,75 @@ mod tests {
         assert!(out.contains("title: none,"), "{out}");
         assert!(out.contains("author: none,"), "{out}");
         assert!(out.contains("paper: \"a5\""), "{out}");
+    }
+
+    /// `resolve_template_source` (§7.4): the embedded default template is used
+    /// when no `template_path` is set; a user path is read verbatim.
+    #[test]
+    fn resolve_template_source_returns_default_without_path() {
+        let options = RenderOptions {
+            flavor: Flavor::Commonmark,
+            paper: Paper::A4,
+            margins: Margins {
+                top_mm: 20.0,
+                bottom_mm: 20.0,
+                left_mm: 20.0,
+                right_mm: 20.0,
+            },
+            text_align: TextAlign::Left,
+            template_path: None,
+        };
+        let source = resolve_template_source(&options).expect("default must resolve");
+        assert!(
+            source.contains("#let article"),
+            "default template must define `article`"
+        );
+        assert_eq!(source, DEFAULT_TEMPLATE);
+    }
+
+    #[test]
+    fn resolve_template_source_reads_user_template() {
+        let path = std::env::temp_dir().join(format!(
+            "tauri-md-editor-template-test-{}.typ",
+            std::process::id()
+        ));
+        std::fs::write(&path, "#let article(body) = body").unwrap();
+        let options = RenderOptions {
+            flavor: Flavor::Commonmark,
+            paper: Paper::A4,
+            margins: Margins {
+                top_mm: 20.0,
+                bottom_mm: 20.0,
+                left_mm: 20.0,
+                right_mm: 20.0,
+            },
+            text_align: TextAlign::Left,
+            template_path: Some(path.to_string_lossy().into_owned()),
+        };
+        let source = resolve_template_source(&options).expect("user template must resolve");
+        assert_eq!(source, "#let article(body) = body");
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn resolve_template_source_reports_missing_path() {
+        let options = RenderOptions {
+            flavor: Flavor::Commonmark,
+            paper: Paper::A4,
+            margins: Margins {
+                top_mm: 20.0,
+                bottom_mm: 20.0,
+                left_mm: 20.0,
+                right_mm: 20.0,
+            },
+            text_align: TextAlign::Left,
+            template_path: Some("/nonexistent/tauri-md-editor/does-not-exist.typ".to_string()),
+        };
+        let err = resolve_template_source(&options).unwrap_err();
+        assert!(
+            err.contains("does-not-exist.typ"),
+            "error should mention the offending path: {err}"
+        );
     }
 
     /// §10: the default template must define `article` with the required

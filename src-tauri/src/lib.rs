@@ -1,9 +1,10 @@
-// Tauri shell bootstrap. Per the spec, `markdown/` and `typst_engine/` will be
+// Tauri shell bootstrap. Per the spec, `markdown/` and `typst_engine/` are
 // plain Rust modules (no `tauri` imports) registered as thin `#[tauri::command]`
-// wrappers in `commands.rs`. For now (M0 scaffold) only the dialog plugin is
-// registered, which the file open/save/export commands will build on.
+// wrappers in `commands.rs`. The dialog plugin is registered for the file
+// open/save/export commands that build on it (M4).
 // Desktop-only: Linux + macOS.
 
+pub mod commands;
 pub mod markdown;
 pub mod options;
 pub mod typst_engine;
@@ -11,6 +12,7 @@ pub mod typst_engine;
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
+        .invoke_handler(tauri::generate_handler![commands::render_preview])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }

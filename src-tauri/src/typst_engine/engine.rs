@@ -142,7 +142,8 @@ fn render_diagnostic_with_world(
 #[cfg(test)]
 mod tests {
     use super::{compile_pdf, compile_preview};
-    use crate::typst_engine::template::{compose, TemplateArgs, DEFAULT_TEMPLATE};
+    use crate::options::{Flavor, Margins, Paper, RenderOptions, TextAlign};
+    use crate::typst_engine::template::{build_source, compose, TemplateArgs, DEFAULT_TEMPLATE};
 
     fn probe_source(body: &str) -> String {
         compose(
@@ -159,6 +160,21 @@ mod tests {
         )
     }
 
+    fn gfm_options() -> RenderOptions {
+        RenderOptions {
+            flavor: Flavor::Gfm,
+            paper: Paper::A4,
+            margins: Margins {
+                top_mm: 25.0,
+                bottom_mm: 25.0,
+                left_mm: 20.0,
+                right_mm: 20.0,
+            },
+            text_align: TextAlign::Left,
+            template_path: None,
+        }
+    }
+
     #[test]
     fn compile_preview_returns_svg_pages() {
         let source = probe_source("= Hello\n\nWorld.");
@@ -173,6 +189,27 @@ mod tests {
         let bytes = compile_pdf(&source).expect("must compile");
         assert!(!bytes.is_empty());
         assert_eq!(&bytes[..4], b"%PDF", "PDF magic header");
+    }
+
+    /// §10 / M3 acceptance: a GFM table (header + body) must compile through
+    /// the full pipeline (md_to_typst → build_source → compile). Regression
+    /// for header cells emitted as `*[a]`, which is invalid inside `#table(...)`
+    /// where arguments are parsed in code mode.
+    #[test]
+    fn gfm_table_compiles_through_full_pipeline() {
+        let markdown = "| a | b |\n|---|---|\n| 1 | 2 |";
+        let source = build_source(DEFAULT_TEMPLATE, &gfm_options(), markdown).unwrap();
+        let outcome = compile_preview(&source).expect("table document must compile");
+        assert!(!outcome.pages.is_empty(), "expected at least one page");
+        let svg = &outcome.pages[0];
+        // Text is embedded as vector glyph paths (`<use xlink:href="#…">`
+        // referencing `<symbol>`s), so assert on the glyph-run count: one run
+        // per table cell (a, b, 1, 2 → 4).
+        let glyph_runs = svg.matches("<use xlink:href=").count();
+        assert!(
+            glyph_runs >= 4,
+            "table cells must render text runs: {glyph_runs}"
+        );
     }
 
     #[test]

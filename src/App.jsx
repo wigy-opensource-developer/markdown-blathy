@@ -1,21 +1,13 @@
-import { useState } from "react";
-import {
-  Button,
-  Divider,
-  Group,
-  Paper,
-  Select,
-  Text,
-  Tooltip,
-} from "@mantine/core";
-import {
-  IconDeviceFloppy,
-  IconFileCode,
-  IconFilePlus,
-  IconFileTypePdf,
-  IconFolderOpen,
-  IconTemplate,
-} from "@tabler/icons-react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { useDebouncedCallback } from "@mantine/hooks";
+import * as api from "./lib/api.js";
+import { marginsForPreset } from "./lib/presets.js";
+import { isStaleResponse } from "./lib/seq.js";
+import Toolbar from "./components/Toolbar.jsx";
+import Editor from "./components/Editor.jsx";
+import Preview from "./components/Preview.jsx";
+import StatusBar from "./components/StatusBar.jsx";
+import ErrorBanner from "./components/ErrorBanner.jsx";
 
 const INITIAL_DOC = `# Hello, Markdown editor
 
@@ -23,108 +15,108 @@ Start typing in the editor pane. The live preview and PDF export are
 powered by a Typst compilation pipeline running on the Rust side.
 `;
 
-const FLAVORS = [
-  { value: "commonmark", label: "CommonMark" },
-  { value: "gfm", label: "GFM" },
-  { value: "custom", label: "Custom" },
-];
-
-const PAPERS = [
-  { value: "a4", label: "A4" },
-  { value: "a5", label: "A5" },
-  { value: "letter", label: "Letter" },
-  { value: "legal", label: "Legal" },
-];
-
-const MARGIN_PRESETS = [
-  { value: "normal", label: "Normal (20/25mm)" },
-  { value: "narrow", label: "Narrow (10/15mm)" },
-  { value: "custom", label: "Custom…" },
-];
-
-const ALIGNS = [
-  { value: "left", label: "Left" },
-  { value: "center", label: "Center" },
-  { value: "justified", label: "Justified" },
-];
+// Frontend options state. `marginPreset` is UI-only and stripped when the
+// payload is built (see lib/api.js); the rest mirrors RenderOptions (§6.1).
+const DEFAULT_OPTIONS = {
+  flavor: "gfm",
+  paper: "a4",
+  marginPreset: "normal",
+  margins: marginsForPreset("normal"),
+  textAlign: "left",
+  templatePath: null,
+};
 
 export default function App() {
   const [markdown, setMarkdown] = useState(INITIAL_DOC);
-  const [flavor, setFlavor] = useState("gfm");
-  const [paper, setPaper] = useState("a4");
-  const [margins, setMargins] = useState("normal");
-  const [align, setAlign] = useState("left");
+  const [options, setOptions] = useState(DEFAULT_OPTIONS);
+  const [pages, setPages] = useState([]);
+  const [warnings, setWarnings] = useState([]);
+  const [error, setError] = useState(null);
+  // Last preview request sequence we *sent*; responses older than this are
+  // dropped (§7.5).
+  const seq = useRef(0);
+
+  // Debounced preview refresh: pauses 200ms after the last keystroke, well
+  // within the ≤300ms acceptance for M3. `useDebouncedCallback` keeps the
+  // latest callback in a ref, so `markdown`/`options` are always fresh when
+  // the debounced call actually fires. The returned function is stable across
+  // renders, so effects/callbacks depending on it stay stable too.
+  const refreshPreview = useDebouncedCallback(async () => {
+    const seqId = ++seq.current;
+    try {
+      const result = await api.renderPreview(markdown, options, seqId);
+      if (isStaleResponse(result.seq, seq.current)) return; // stale — drop
+      setPages(result.pages);
+      setWarnings(result.warnings);
+      setError(null);
+    } catch (err) {
+      setError(String(err)); // keep the last good preview
+    }
+  }, 200);
+
+  // Initial render of the starting document.
+  useEffect(() => {
+    refreshPreview();
+    return () => refreshPreview.cancel();
+  }, [refreshPreview]);
+
+  const handleEditorChange = useCallback(
+    (value) => {
+      setMarkdown(value);
+      refreshPreview();
+    },
+    [refreshPreview]
+  );
+
+  // Apply a partial options patch; switching the margin preset maps it to
+  // millimetre margins. `custom` keeps the current margins (custom margin
+  // editing arrives in a later milestone).
+  const changeOption = useCallback(
+    (patch) => {
+      setOptions((prev) => {
+        const margins = patch.marginPreset
+          ? marginsForPreset(patch.marginPreset) ?? prev.margins
+          : prev.margins;
+        return { ...prev, ...patch, margins };
+      });
+      refreshPreview();
+    },
+    [refreshPreview]
+  );
+
+  // File/template/export handlers arrive in M4/M5. All are stable so the
+  // memoized toolbar does not re-render on every keystroke.
+  const handleNew = useCallback(() => {
+    setMarkdown(INITIAL_DOC);
+    refreshPreview();
+  }, [refreshPreview]);
+  const handleOpen = useCallback(() => {}, []);
+  const handleSave = useCallback(() => {}, []);
+  const handlePickTemplate = useCallback(() => {}, []);
+  const handleExport = useCallback(() => {}, []);
+  const dismissError = useCallback(() => setError(null), []);
 
   return (
     <div className="app">
-      <header id="toolbar">
-        <Group gap="xs">
-          <Tooltip label="New document">
-            <Button variant="subtle" size="compact-sm" leftSection={<IconFilePlus size={16} />}>
-              New
-            </Button>
-          </Tooltip>
-          <Tooltip label="Open Markdown file">
-            <Button variant="subtle" size="compact-sm" leftSection={<IconFolderOpen size={16} />}>
-              Open
-            </Button>
-          </Tooltip>
-          <Tooltip label="Save Markdown file">
-            <Button variant="subtle" size="compact-sm" leftSection={<IconDeviceFloppy size={16} />}>
-              Save
-            </Button>
-          </Tooltip>
-        </Group>
-
-        <Divider orientation="vertical" />
-
-        <Group gap="xs" align="end">
-          <Select label="Flavor" size="xs" value={flavor} onChange={setFlavor} data={FLAVORS} />
-          <Select label="Paper" size="xs" value={paper} onChange={setPaper} data={PAPERS} />
-          <Select label="Margins" size="xs" value={margins} onChange={setMargins} data={MARGIN_PRESETS} />
-          <Select label="Align" size="xs" value={align} onChange={setAlign} data={ALIGNS} />
-        </Group>
-
-        <div className="spacer" />
-
-        <Tooltip label="Choose a custom .typ template">
-          <Button variant="subtle" size="compact-sm" leftSection={<IconTemplate size={16} />}>
-            Template…
-          </Button>
-        </Tooltip>
-        <Button color="blue" size="compact-sm" leftSection={<IconFileTypePdf size={16} />}>
-          Export PDF
-        </Button>
-      </header>
-
+      <Toolbar
+        options={options}
+        onOptionChange={changeOption}
+        onNew={handleNew}
+        onOpen={handleOpen}
+        onSave={handleSave}
+        onPickTemplate={handlePickTemplate}
+        onExport={handleExport}
+      />
       <main id="panes">
         <section id="editor-pane">
-          <textarea
-            id="editor"
-            className="editor"
-            value={markdown}
-            onChange={(e) => setMarkdown(e.currentTarget.value)}
-            spellCheck={false}
-          />
+          <Editor value={markdown} onChange={handleEditorChange} onSave={handleSave} />
         </section>
         <section id="preview-pane">
-          <Paper id="preview" shadow="md" p="lg">
-            <Text size="sm" c="dimmed">
-              Live preview renders here — per-page SVG from the Typst pipeline.
-            </Text>
-            <Text size="sm" c="dimmed" mt="xs">
-              <IconFileCode size={14} style={{ verticalAlign: "-2px" }} /> The preview and the
-              exported PDF are produced by the same compilation pipeline (true WYSIWYG).
-            </Text>
-          </Paper>
+          <Preview pages={pages} />
         </section>
       </main>
-
-      <footer id="status">
-        <Text size="xs" c="dimmed">
-          Ready
-        </Text>
-      </footer>
+      <StatusBar pageCount={pages.length} warnings={warnings} />
+      <ErrorBanner message={error} onClose={dismissError} />
     </div>
   );
 }

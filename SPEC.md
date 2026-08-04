@@ -111,7 +111,7 @@ React 19 + Mantine 8, bundled by Vite. No CSS framework beyond Mantine's own sty
   },
   "dependencies": {
     "@fontsource/iosevka": "^5",
-    "@fontsource/pt-sans-narrow": "^5",
+    "@fontsource-variable/archivo-narrow": "^5",
     "@mantine/core": "^8",
     "@mantine/hooks": "^8",
     "@tabler/icons-react": "^3",
@@ -299,7 +299,7 @@ Implementation sketch: parse with `comrak::parse_document(&arena, markdown, &opt
 | `Item(NodeList)` | recurse children |
 | `TaskItem(NodeTaskItem { symbol, .. })` | `#task(true/false)` + item text; checked ⇔ `symbol.is_some()` (template defines `#task`, §6.3) |
 | `BlockQuote` | `#blockquote[…children…]` (native since Typst 0.13; else fallback `#quote[block(…)]`) |
-| `Table(Box<NodeTable>)` / `TableRow(bool)` / `TableCell` | `#table(columns: (auto, …), [cell], [cell], …)`; `TableRow(true)` = header row, cells wrapped in `*…*` |
+| `Table(Box<NodeTable>)` / `TableRow(bool)` / `TableCell` | `#table(columns: (auto, …), [cell], [cell], …)`; header row (`TableRow(true)`) cells are bold: `[*cell*]` — the strong markup goes *inside* the content block, because `#table(...)` arguments are parsed in code mode where `*[a]` would be a multiplication (compile error "unexpected star") |
 | `ThematicBreak` | `#v(0.6em) #line(length: 100%, stroke: 0.5pt) #v(0.6em)` |
 | `FootnoteReference(Box<NodeFootnoteReference>)` / `FootnoteDefinition(NodeFootnoteDefinition)` | `#footnote[…]` |
 | `Math(NodeMath { display_math, literal, .. })` | passthrough: inline `$…$`, block `$ … $` (LaTeX macros are **not** converted in v1; document the limitation) |
@@ -761,13 +761,12 @@ src/
 ```jsx
 import "@fontsource/iosevka/400.css";
 import "@fontsource/iosevka/500.css";
-import "@fontsource/pt-sans-narrow/400.css";
-import "@fontsource/pt-sans-narrow/700.css";
+import "@fontsource-variable/archivo-narrow/wght.css";
 import { MantineProvider, createTheme } from "@mantine/core";
 import App from "./App.jsx";
 
 const theme = createTheme({
-  fontFamily: "PT Sans Narrow, sans-serif",
+  fontFamily: "Archivo Narrow Variable, sans-serif",
   fontSizes: { xs: "13px", sm: "15px", md: "17px", lg: "19px", xl: "21px" },
 });
 
@@ -1084,7 +1083,7 @@ fn escapes_special_characters_in_text() {
 | **M0 — Scaffold** ✅ | Project skeleton (Vite + React 19 + Tauri + plugins) | **Done** — commit `c7030ec`: `npm run tauri dev` opens an empty Mantine window; `cargo test` runs (0 tests). |
 | **M1 — Converter** ✅ | `markdown/convert.rs` + `escape.rs` (TDD) | **Done** — commit `556911b`: 27 unit tests green; CommonMark/GFM/Custom flavour differences verified by tests. |
 | **M2 — Engine** ✅ | `typst_engine/` — template, compose, compile | **Done** — `compile_preview(sample)` returns ≥1 SVG containing `<svg`; `compile_pdf` produces bytes starting with `%PDF`; error path yields `line N: …` diagnostics; warnings are collected, not fatal. |
-| **M3 — UI loop** | Editor + preview + debounce + seq guard | Typing updates preview ≤300 ms after pause; flavor switch changes output (e.g. table renders only in GFM/Custom); stale responses are dropped. |
+| **M3 — UI loop** ✅ | Editor + preview + debounce + seq guard | **Done** — CodeMirror 6 editor, Typst SVG preview, 200 ms debounce + seq guard in `App.jsx`; `render_preview` Tauri command registered; Vitest suite for `lib/presets.js` + `lib/seq.js` (14 frontend + 45 Rust tests green via `./check.sh`). |
 | **M4 — Files & export** | Open/Save/Export commands wired to toolbar | Open loads a file; Save persists; Export writes a PDF that opens in a viewer; cancel shows no error. |
 | **M5 — Settings & polish** | localStorage settings, template override + validation, warnings UI, error banner | Settings survive restart; custom template accepted only after probe validation; warnings displayed; empty doc renders one blank page. |
 
@@ -1106,6 +1105,7 @@ v1 limitations (accept and document in the README):
 - Remote images unsupported; images must be local files reachable through the world's file resolver.
 - No LaTeX math macros (`tex2typst-rs` could be added, as `mdxport` does).
 - No incremental compilation — full recompile per change; large (50+ page) documents may show latency.
+- **Linux UI text is grayscale-antialiased** — WebKitGTK (the Linux webview) renders text onto composited transparent layers, so subpixel/LCD antialiasing is impossible; `-webkit-font-smoothing` is a no-op there (Safari-macOS only). Fontconfig hinting still applies. Mitigations are font weight + size (Iosevka 500 in the editor, larger UI scale). The Typst SVG preview is vector paths and unaffected by this.
 - SVG preview text is not selectable (inline SVG). A canvas/DOM renderer via `typst.ts` would restore selection but introduces WASM + version-pinning concerns (see §2).
 
 Future work, in order of leverage:

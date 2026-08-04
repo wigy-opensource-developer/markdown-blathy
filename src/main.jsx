@@ -4,8 +4,10 @@ import ReactDOM from "react-dom/client";
 // Self-hosted fonts (bundled by Vite; no external requests).
 import "@fontsource/iosevka/400.css";
 import "@fontsource/iosevka/500.css";
-import "@fontsource/pt-sans-narrow/400.css";
-import "@fontsource/pt-sans-narrow/700.css";
+// Archivo Narrow Variable: single file, wght axis 400-700 (real 400/500/600/700
+// instances). The axis CSS bundles the latin + latin-ext subsets via
+// unicode-range, so Hungarian etc. diacritics (ő, ű) are covered too.
+import "@fontsource-variable/archivo-narrow/wght.css";
 
 // Mantine styles (must be imported once, before component styles).
 import "@mantine/core/styles.css";
@@ -15,15 +17,17 @@ import App from "./App.jsx";
 import "./styles.css";
 
 const theme = createTheme({
-  fontFamily: "PT Sans Narrow, system-ui, sans-serif",
-  headings: { fontFamily: "PT Sans Narrow, system-ui, sans-serif" },
-  // PT Sans Narrow is a condensed face; a slightly larger scale reads better.
+  fontFamily: "Archivo Narrow Variable, system-ui, sans-serif",
+  headings: { fontFamily: "Archivo Narrow Variable, system-ui, sans-serif" },
+  // Archivo Narrow is a condensed face, so it reads smaller than its px size
+  // suggests; a noticeably larger scale than the Mantine defaults keeps the
+  // toolbar/labels legible.
   fontSizes: {
-    xs: "13px",
-    sm: "15px",
-    md: "17px",
-    lg: "19px",
-    xl: "21px",
+    xs: "15px",
+    sm: "17px",
+    md: "19px",
+    lg: "21px",
+    xl: "23px",
   },
 });
 
