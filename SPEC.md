@@ -176,10 +176,13 @@ tauri-md-editor/
 │       │   ├── mod.rs
 │       │   ├── convert.rs       # ★ comrak AST → Typst markup (the core)
 │       │   └── escape.rs        # Typst markup escaping helpers
-│       └── typst_engine/
-│           ├── mod.rs
-│           ├── template.rs      # default.typ embedding, compose(), build_source()
-│           └── engine.rs        # TypstEngine build, compile → SVG pages / PDF
+│       ├── typst_engine/
+│       │   ├── mod.rs
+│       │   ├── template.rs      # default.typ embedding, compose(), build_source()
+│       │   ├── engine.rs        # TypstEngine build, compile → SVG pages / PDF
+│       │   └── templates/
+│       │       └── default.typ  # embedded default article template
+│       └── fonts/               # embedded DejaVu Sans (regular + bold, §6.3)
 └── tests/                       # optional: integration tests (plain Rust)
 ```
 
@@ -339,9 +342,10 @@ Embedded default template (`include_str!("templates/default.typ")`):
 // a probe document before being accepted (§7.4).
 
 #set page(paper: "a4", margin: (x: 20mm, y: 25mm))
-#set text(font: "DejaVu Sans", size: 11pt, quote: false)
-#set par(justify: false)
-#set heading(weight: 600)
+#set text(font: "DejaVu Sans", size: 11pt)   // `quote:` param was removed in Typst 0.13+;
+#set par(justify: false)                      // smart quotes are now an opt-in element, so the
+#show heading: set text(weight: 600)          // converter's `"` passthrough (§6.2) is safe.
+                                              // `heading` no longer takes `weight` (text property).
 
 // Code blocks: light background, monospace, no highlighting in v1.
 #show raw.where(block: true): it => block(
@@ -440,8 +444,11 @@ fn compile_document(source: &str) -> Result<typst_layout::PagedDocument, EngineE
         .build();
 
     // 0.16: `compile()` returns Warned<Result<Doc, TypstAsLibError>> where
-    // Doc: Output; annotate the call so inference picks PagedDocument.
-    let doc = engine.compile().output.map_err(|e| EngineError::Compile(render_error(&e)))?;
+    // Doc: Output; annotate the call so inference picks PagedDocument. The
+    // warnings (`Warned.warnings`) must be read before `output` is consumed —
+    // they are rendered alongside the doc (both error and warning diagnostics
+    // are mapped to "line N: message" strings; see render_error below).
+    let doc = warned.output.map_err(|e| EngineError::Compile(render_error(&e)))?;
     Ok(doc)
 }
 ```
@@ -450,15 +457,16 @@ fn compile_document(source: &str) -> Result<typst_layout::PagedDocument, EngineE
 
 ```rust
 pub fn compile_preview(source: &str) -> Result<PreviewOutcome, EngineError> {
-    let doc = compile_document(source)?;
+    let (doc, warnings) = compile_document(source)?;
     // typst-svg 0.15: svg(page: &Page, opts: &SvgOptions) -> String — takes
-    // the whole page, not `&page.frame` as in older versions.
+    // the whole page, not `&page.frame` as in older versions. Verified: in
+    // typst-layout 0.15.1 the `pages` field is private; use `doc.pages()`.
     let pages = doc
-        .pages
+        .pages()
         .iter()
         .map(|page| typst_svg::svg(page, &Default::default()))
         .collect::<Vec<String>>();
-    Ok(PreviewOutcome { pages, warnings: collect_warnings(&doc) })
+    Ok(PreviewOutcome { pages, warnings })
 }
 ```
 
@@ -478,7 +486,9 @@ pub fn compile_pdf(source: &str) -> Result<Vec<u8>, EngineError> {
 2. `engine.compile()` (no args when a main file is set) returns `Warned<Result<Doc, TypstAsLibError>>` where `Doc: Output`; unwrap via `.output`. `Warned.output` holds `Result<Doc, TypstAsLibError>`; the error type is `TypstAsLibError`, **not** a `Vec<SourceDiagnostic>` as in older versions — map it with the world to render diagnostics (below). ✓
 3. `typst_pdf::pdf(&doc, &PdfOptions) -> Result<Vec<u8>, _>` — returns bytes; options struct is `PdfOptions` (has `Default`). ✓
 4. `typst_svg::svg(page: &Page, opts: &SvgOptions) -> String` — first argument is a page `Page` (from `doc.pages`), not a frame. ✓ (docs.rs typst-svg 0.15.1)
-5. `PagedDocument` lives in typst-layout 0.15 (`typst_layout::document::PagedDocument`, re-exported as `typst_layout::PagedDocument`); `doc.pages: Vec<Page>`. Confirm the exact re-export path against the locked typst-layout version.
+5. `PagedDocument` lives in typst-layout 0.15 (`typst_layout::document::PagedDocument`, re-exported as `typst_layout::PagedDocument`); pages are read via the `pages()` accessor (the field is private in 0.15.1), yielding `&[Page]`. ✓ (verified against typst-layout 0.15.1 source)
+
+**Line numbers:** `Span` has no `linenum()` in 0.15. Resolve a diagnostic's byte range with `world.range(span)` (the `WorldExt` trait in typst-library), then `world.source(span.id())?.lines().byte_to_line(range.start) + 1`. Warnings come from `Warned.warnings: EcoVec<SourceDiagnostic>` and are rendered the same way; never fatal (§9).
 
 **Error rendering:** `TypstAsLibError` wraps the compile errors; use `engine.with_world(|world| …)` (0.16 API) or `world_builder()` to access the `TypstWorld` and map the first ~5 `SourceDiagnostic`s to `"line {span.linenum()}: {message}"`-style strings. Warnings (`Warned.warnings`) are a separate list returned to the UI.
 
@@ -1047,6 +1057,7 @@ Follow red-green-refactor. Because `markdown/` and `typst_engine/` are plain Rus
 - `compile_pdf bytes start with "%PDF" and are non-empty`
 - `compile error path yields diagnostics, not a panic`
 - `custom template that omits article fails probe compile`
+- `warnings are collected not fatal` (unknown font → warning, not error)
 
 **Command-layer tests (optional, Tauri 2):** `tauri::test::mock_builder` / `mock_app` can invoke commands in-process; at minimum assert that `build_source` (shared logic) is covered by the unit tests above. Full IPC testing is not required for v1.
 
@@ -1071,8 +1082,8 @@ fn escapes_special_characters_in_text() {
 | Milestone | Deliverable | Acceptance |
 |---|---|---|
 | **M0 — Scaffold** ✅ | Project skeleton (Vite + React 19 + Tauri + plugins) | **Done** — commit `c7030ec`: `npm run tauri dev` opens an empty Mantine window; `cargo test` runs (0 tests). |
-| **M1 — Converter** | `markdown/convert.rs` + `escape.rs` (TDD) | Full unit suite green; CommonMark/GFM/Custom flavour differences verified by tests. |
-| **M2 — Engine** | `typst_engine/` — template, compose, compile | `compile_preview(sample)` returns ≥1 SVG containing `<svg`; `compile_pdf` writes a file starting with `%PDF`; error paths tested. |
+| **M1 — Converter** ✅ | `markdown/convert.rs` + `escape.rs` (TDD) | **Done** — commit `556911b`: 27 unit tests green; CommonMark/GFM/Custom flavour differences verified by tests. |
+| **M2 — Engine** ✅ | `typst_engine/` — template, compose, compile | **Done** — `compile_preview(sample)` returns ≥1 SVG containing `<svg`; `compile_pdf` produces bytes starting with `%PDF`; error path yields `line N: …` diagnostics; warnings are collected, not fatal. |
 | **M3 — UI loop** | Editor + preview + debounce + seq guard | Typing updates preview ≤300 ms after pause; flavor switch changes output (e.g. table renders only in GFM/Custom); stale responses are dropped. |
 | **M4 — Files & export** | Open/Save/Export commands wired to toolbar | Open loads a file; Save persists; Export writes a PDF that opens in a viewer; cancel shows no error. |
 | **M5 — Settings & polish** | localStorage settings, template override + validation, warnings UI, error banner | Settings survive restart; custom template accepted only after probe validation; warnings displayed; empty doc renders one blank page. |

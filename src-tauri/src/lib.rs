@@ -6,6 +6,7 @@
 
 pub mod markdown;
 pub mod options;
+pub mod typst_engine;
 
 pub fn run() {
     tauri::Builder::default()

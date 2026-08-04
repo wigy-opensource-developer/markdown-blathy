@@ -29,6 +29,28 @@ ignore = [
   #
   # proc-macro-error — build-time macro helper of the gtk-rs stack:
   "RUSTSEC-2024-0370",
+  #
+  # Typst 0.15 dependency tree (introduced with M2). These are transitive
+  # dependencies of the typst crates themselves; no newer non-breaking
+  # version satisfies the typst 0.15 constraints (checked Aug 2026):
+  #
+  # Status-only "unmaintained" advisories (no vulnerability, no patched
+  # version available):
+  "RUSTSEC-2025-0141",  # bincode 1.x — via typst-library
+  "RUSTSEC-2024-0436",  # paste — via hayagriva (typst-library, bibliography)
+  "RUSTSEC-2026-0206",  # rustybuzz — font shaping, via typst-library
+  "RUSTSEC-2026-0192",  # ttf-parser — font parsing, via usvg
+  "RUSTSEC-2024-0320",  # yaml-rust — via hayagriva (typst-library)
+  #
+  # quick-xml 0.38.x vulnerabilities (RUSTSEC-2026-0194/0195). The patched
+  # line is >=0.41, but citationberg 0.7.0 (a typst-library dependency) pins
+  # `quick-xml ^0.38`, so the fix is unavailable without forking typst. The
+  # vulnerable code path is citation/CSL XML parsing, reachable only through
+  # Typst's `bibliography()`; the v1 world (§12) resolves *only* the main
+  # source file — no file-system, package, or network resolver — so no
+  # untrusted XML can reach quick-xml in this app.
+  "RUSTSEC-2026-0194",
+  "RUSTSEC-2026-0195",
 ]
 
 [licenses]
