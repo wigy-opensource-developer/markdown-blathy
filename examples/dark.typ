@@ -55,17 +55,19 @@
 // --- Alternative task item bullets ---------------------------------------------
 // Each helper returns a (checkbox cell, content cell) pair; `task-list`
 // concatenates them into the two-column grid. Override them to swap the
-// glyphs and/or restyle the item text.
+// glyphs and/or restyle the item text. The glyphs are pinned to the embedded
+// DejaVu Sans (like the prelude) so they never trigger the slow font-fallback
+// search — the fill still comes from the theme.
 #let task-done(body) = (
-  [#text(fill: rgb("#3fb950"))[#sym.checkmark]],
+  [#text(font: "DejaVu Sans")[#text(fill: rgb("#3fb950"))[#sym.checkmark]]],
   [#text(fill: rgb("#7d8590"))[#body]], // done items read muted
 )
 #let task-todo(body) = (
-  [#text(fill: rgb("#8b949e"))[#sym.circle]],
+  [#text(font: "DejaVu Sans")[#text(fill: rgb("#8b949e"))[#sym.circle]]],
   [#body],
 )
 #let task-plain(body) = (
-  [#text(fill: rgb("#8b949e"))[–]],
+  [#text(font: "DejaVu Sans")[–]],
   [#body],
 )
 

@@ -55,7 +55,7 @@ User-visible behaviour:
 
 **Design rule (non-negotiable):** `markdown/` and `typst_engine/` must not import `tauri`. The `#[tauri::command]` functions are thin, serialization-only wrappers. This is what makes the core unit-testable without a running app.
 
-**Commands are stateless in v1** — each invoke compiles from scratch. Perf is acceptable (Typst compiles a typical page in single-digit milliseconds; the full document in tens of ms). Reuse of the engine / incremental compilation is future work (§13).
+**Commands are stateless in v1** — each invoke recompiles the document from the current inputs. Perf is acceptable: Typst compiles a typical page in single-digit milliseconds, and the M6 engine cache + memoization keep per-render cost low (see §7.5). Incremental compilation is future work (§13).
 
 ## 4. Tech stack & versions
 
@@ -179,7 +179,7 @@ tauri-md-editor/
 │       │   └── escape.rs        # Typst markup escaping helpers
 │       ├── typst_engine/
 │       │   ├── mod.rs
-│       │   ├── template.rs      # prelude embedding, compose(), build_source()
+│       │   ├── template.rs      # prelude embedding, compose(), static source + inputs
 │       │   ├── engine.rs        # TypstEngine build, compile → SVG pages / PDF
 │       │   └── templates/
 │       │       └── default.typ  # embedded prelude (default helpers + article)
@@ -298,7 +298,7 @@ Implementation sketch: parse with `comrak::parse_document(&arena, markdown, &opt
 | `Image(Box<NodeLink> { url, .. })` | `#figure-image("url", [alt])` — the prelude's `figure-image` owns the default width and caption placement |
 | `List(NodeList { list_type, start, .. })` | bullets stay native Typst `- ` lists (themeable via `#show list`); ordered lists become `#ordered-list(start, [a], [b], …)` — the prelude helper wraps a native Typst `enum(start:, numbering: "1.")`, so the numbering is themeable (a literal `1. ` prefix would be plain text no template could style) |
 | `Item(NodeList)` | recurse children |
-| `TaskItem(NodeTaskItem { symbol, .. })` | each item becomes a call to the matching prelude helper: `#task-list(task-done([…]), task-todo([…]), task-plain([…]))`. The helpers own the checkbox glyphs (`#sym.ballot.check` / `#sym.ballot` / `•`) and the content cells; `task-list` concatenates the (glyph, content) pairs into a two-column grid. A grid is used because a native Typst list has a *single* marker for all items (§6.3) |
+| `TaskItem(NodeTaskItem { symbol, .. })` | each item becomes a call to the matching prelude helper: `#task-list(task-done([…]), task-todo([…]), task-plain([…]))`. The helpers own the checkbox glyphs — pinned to the embedded DejaVu Sans (`#text(font: "DejaVu Sans")[#sym.ballot.check]` etc.) so they stay hollow and avoid the slow system-font fallback search — and the content cells; `task-list` concatenates the (glyph, content) pairs into a two-column grid. A grid is used because a native Typst list has a *single* marker for all items (§6.3) |
 | `BlockQuote` | `#blockquote[…children…]` (prelude helper wrapping the native `quote(block: true)` element, Typst 0.13+) |
 | `Table(Box<NodeTable>)` / `TableRow(bool)` / `TableCell` | `#markdown-table(columns: N, header: ([a], [b]), rows: (([1], [2]), …))` — Rust passes the markdown column count plus the header cells and body rows as data; the prelude's `markdown-table` emits one `auto` width per column (a bare `columns: auto` would collapse to a single column and stack the cells), bolds the header (`[*cell*]` *inside* the content block — valid in code mode, where `*[a]` would be a multiplication), and owns cell padding |
 | `ThematicBreak` | `#thematic-break()` — the prelude helper owns the spacing/stroke constants (`#v(0.6em) #line(length: 100%, stroke: 0.5pt) #v(0.6em)`) |
@@ -348,9 +348,12 @@ Embedded prelude (`include_str!("templates/default.typ")`):
 
 // Task lists: each item function returns a (checkbox cell, content cell)
 // pair; task-list concatenates the pairs into a two-column grid (`.pos()`
-// because variadic arguments are not iterable directly).
-#let task-done(body) = ([#sym.ballot.check], [#body])
-#let task-todo(body) = ([#sym.ballot], [#body])
+// because variadic arguments are not iterable directly). The checkbox glyphs
+// are pinned to the embedded DejaVu Sans — many fonts (e.g. Ubuntu) lack the
+// ballot codepoints, and letting Typst fall back across the system font book
+// is ~10x slower per render AND draws a solid box instead of a hollow one.
+#let task-done(body) = ([#text(font: "DejaVu Sans")[#sym.ballot.check]], [#body])
+#let task-todo(body) = ([#text(font: "DejaVu Sans")[#sym.ballot]], [#body])
 #let task-plain(body) = ([•], [#body])
 #let task-list(..items) = {
   let cells = ()
@@ -360,6 +363,9 @@ Embedded prelude (`include_str!("templates/default.typ")`):
 
 // Block quotes (native Typst `quote` since 0.13).
 #let blockquote(body) = quote(block: true)[#body]
+
+// Images: default width + caption placement (overridable).
+#let figure-image(url, caption) = figure(image(url, width: 80%), caption: caption)
 
 // Thematic break: spacing/stroke constants live here, not in Rust.
 #let thematic-break() = [#v(0.6em) #line(length: 100%, stroke: 0.5pt) #v(0.6em)]
@@ -399,8 +405,13 @@ Embedded prelude (`include_str!("templates/default.typ")`):
   v(0.8em)
 }
 
-// Default article. The set/show rules are function-scoped so a template that
-// overrides `article` entirely escapes the default look.
+// Default fonts. Top-level (not inside the article): this runs BEFORE a user
+// template, so a template's own later `#set text(font: ...)` wins, while
+// templates that set no font keep DejaVu Sans (M6).
+#set text(font: "DejaVu Sans", size: 11pt)
+
+// Default article. The remaining set/show rules are function-scoped so a
+// template that overrides `article` entirely escapes the default look.
 #let default-article(
   paper: "a4",
   margin-x: 20mm,
@@ -411,7 +422,6 @@ Embedded prelude (`include_str!("templates/default.typ")`):
   body,
 ) = {
   set page(paper: paper, margin: (x: margin-x, y: margin-y))
-  set text(font: "DejaVu Sans", size: 11pt)
   set par(justify: false)
   show heading: set text(weight: 600)
   show link: set text(fill: rgb("#0366d6"))
@@ -461,7 +471,7 @@ Notes:
 
 **User template override:** `template_path` in `RenderOptions`. When set, read the file and compose it **after** the prelude (`{prelude}\n\n{user}`) so its definitions shadow the defaults (§6.3). If the file doesn't exist or fails a probe compile (§7.4), return a descriptive error and keep the previous template. Never fall back silently.
 
-**Fonts:** the engine must be given at least one font. Embed one via `include_bytes!` — e.g. DejaVu Sans (permissive license) — and pass it to the engine (§6.4). **v1 loads only the embedded DejaVu Sans (regular + bold):** system fonts are *not* loaded, so a template that sets `#set text(font: "Times New Roman")` (or any family besides "DejaVu Sans") gets the non-fatal unknown-font warning (§9) and falls back to DejaVu. typst-as-lib does offer system-font discovery (`typst-kit-fonts` cargo feature + `TypstKitFontOptions`/`search_fonts_with`), but enabling it requires the §13.2 per-template engine cache — otherwise the system scan would run on every keystroke compile. CJK and wider font coverage are future work (§13).
+**Fonts:** the engine is always given the embedded DejaVu Sans (regular + bold, `include_bytes!`, permissive license). **A custom template loads only the font families it references** via `#set text(font: ...)` (`template::referenced_font_families` parses the source; `typst-kit-fonts` + `TypstKitFontOptions`), plus any font files in the template's own folder — so `#set text(font: "Times New Roman")` resolves instead of warning. Keeping the font book small matters for performance: a 700-face book makes every per-render compile ~5–7× slower (measured 378ms vs 55ms on a reference document), so subsetting to the referenced families is the default; templates that set fonts via variables (not detectable by the parser) conservatively fall back to the full system scan. The scan itself runs once per engine (re)build, i.e. once per template change, not per keystroke render. CJK and wider font coverage remain future work (§13).
 
 ### 6.4 Compile & export (`typst_engine/engine.rs`)
 
@@ -490,40 +500,68 @@ fn compile_document(source: &str) -> Result<typst_layout::PagedDocument, EngineE
 }
 ```
 
-**Render preview pages (SVG):**
+**Render preview pages (SVG) / export PDF (M6 — engine is built once per static source and compiled per render with `sys.inputs`):**
 
 ```rust
-pub fn compile_preview(source: &str) -> Result<PreviewOutcome, EngineError> {
-    let (doc, warnings) = compile_document(source)?;
-    // typst-svg 0.15: svg(page: &Page, opts: &SvgOptions) -> String — takes
-    // the whole page, not `&page.frame` as in older versions. Verified: in
-    // typst-layout 0.15.1 the `pages` field is private; use `doc.pages()`.
-    let pages = doc
-        .pages()
-        .iter()
-        .map(|page| typst_svg::svg(page, &Default::default()))
-        .collect::<Vec<String>>();
+/// Font loading: system fonts + extra directories, in addition to the
+/// embedded DejaVu Sans. Used at engine (re)build time only (§6.3).
+pub struct FontOptions { pub system_fonts: bool, pub extra_dirs: Vec<PathBuf> }
+
+/// Build the engine for a static source. Called by the command layer's cache
+/// (§7.5), so the font scan runs once per source change.
+pub fn build_engine(
+    source: &str,
+    fonts: &FontOptions,
+) -> Result<TypstEngine<TypstTemplateMainFile>, EngineError> {
+    let mut builder = TypstEngine::builder()
+        .main_file(source)                          // source CONTENT, not a path
+        .fonts([FONT_BYTES, FONT_BOLD_BYTES]);      // embedded DejaVu Sans
+    if fonts.system_fonts || !fonts.extra_dirs.is_empty() {
+        let mut opts = typst_kit_options::TypstKitFontOptions::default();
+        if !fonts.system_fonts { opts = opts.include_system_fonts(false); }
+        if !fonts.extra_dirs.is_empty() { opts = opts.include_dirs(fonts.extra_dirs.iter().cloned()); }
+        builder = builder.search_fonts_with(opts);
+    }
+    // Keep the comemo memoization cache warm across renders (font loading and
+    // shared work would otherwise be re-done on every keystroke — ~7x slower
+    // with system fonts); bound memory by evicting entries unused for a while.
+    builder.comemo_evict_max_age(Some(30));
+    Ok(builder.build())
+}
+
+/// Compile the static source with per-render sys.inputs → per-page SVGs.
+pub fn compile_preview_with_inputs(
+    engine: &TypstEngine<TypstTemplateMainFile>,
+    inputs: &Dict,                       // { title, author, body } (§7.4)
+) -> Result<PreviewOutcome, EngineError> {
+    let warned = engine.compile_with_input(inputs.clone());
+    let doc: PagedDocument = warned.output.map_err(|e| EngineError::Compile(render_error(engine, &e)))?;
+    let warnings = warned.warnings.iter().map(|d| render_diagnostic(engine, d)).collect();
+    // typst-svg 0.15: svg(page: &Page, opts: &SvgOptions) — the whole page,
+    // not `&page.frame`; the `pages` field is private, use `doc.pages()`.
+    let pages = doc.pages().iter().map(|p| typst_svg::svg(p, &Default::default())).collect();
     Ok(PreviewOutcome { pages, warnings })
 }
-```
 
-**Export PDF:**
-
-```rust
-pub fn compile_pdf(source: &str) -> Result<Vec<u8>, EngineError> {
-    let doc = compile_document(source)?;
-    typst_pdf::pdf(&doc, &Default::default())
-        .map_err(|e| EngineError::Pdf(e.to_string()))
+/// Compile the static source with per-render sys.inputs → PDF bytes.
+pub fn compile_pdf_with_inputs(
+    engine: &TypstEngine<TypstTemplateMainFile>,
+    inputs: &Dict,
+) -> Result<Vec<u8>, EngineError> {
+    let warned = engine.compile_with_input(inputs.clone());
+    let doc: PagedDocument = warned.output.map_err(|e| EngineError::Compile(render_error(engine, &e)))?;
+    typst_pdf::pdf(&doc, &Default::default()).map_err(|e| EngineError::Pdf(e.to_string()))
 }
 ```
 
 **API-verification checklist** (mandatory before coding — these signatures drift between Typst releases). Verified facts for the 0.15/0.16 line (from docs.rs, June–July 2026), re-confirm against the exact locked version:
 
 1. `TypstEngine::builder()` → `TypstTemplateEngineBuilder`; `.main_file(source: impl IntoSource)` takes source *content*; `.fonts([&[u8]])` takes byte slices; `.build()` → `TypstEngine<TypstTemplateMainFile>`. ✓ (docs.rs typst-as-lib 0.16.0)
-2. `engine.compile()` (no args when a main file is set) returns `Warned<Result<Doc, TypstAsLibError>>` where `Doc: Output`; unwrap via `.output`. `Warned.output` holds `Result<Doc, TypstAsLibError>`; the error type is `TypstAsLibError`, **not** a `Vec<SourceDiagnostic>` as in older versions — map it with the world to render diagnostics (below). ✓
-3. `typst_pdf::pdf(&doc, &PdfOptions) -> Result<Vec<u8>, _>` — returns bytes; options struct is `PdfOptions` (has `Default`). ✓
-4. `typst_svg::svg(page: &Page, opts: &SvgOptions) -> String` — first argument is a page `Page` (from `doc.pages`), not a frame. ✓ (docs.rs typst-svg 0.15.1)
-5. `PagedDocument` lives in typst-layout 0.15 (`typst_layout::document::PagedDocument`, re-exported as `typst_layout::PagedDocument`); pages are read via the `pages()` accessor (the field is private in 0.15.1), yielding `&[Page]`. ✓ (verified against typst-layout 0.15.1 source)
+2. `engine.compile_with_input(dict)` compiles the main file with `sys.inputs` set; returns `Warned<Result<Doc, TypstAsLibError>>` where `Doc: Output` (annotate as `PagedDocument`); unwrap via `.output`. `engine.compile()` is the no-inputs variant. ✓
+3. `builder.search_fonts_with(TypstKitFontOptions)` (feature `typst-kit-fonts`) loads system fonts / extra dirs at engine build time; `TypstKitFontOptions::default()` has `include_system_fonts: true`; `.include_dirs([paths])` scans recursively. ✓ (typst-as-lib 0.16.0 `font_searcher` example)
+4. `typst_pdf::pdf(&doc, &PdfOptions) -> Result<Vec<u8>, _>` — returns bytes; options struct is `PdfOptions` (has `Default`). ✓
+5. `typst_svg::svg(page: &Page, opts: &SvgOptions) -> String` — first argument is a page `Page` (from `doc.pages`), not a frame. ✓ (docs.rs typst-svg 0.15.1)
+6. `PagedDocument` lives in typst-layout 0.15 (`typst_layout::document::PagedDocument`, re-exported as `typst_layout::PagedDocument`); pages are read via the `pages()` accessor (the field is private in 0.15.1), yielding `&[Page]`. ✓ (verified against typst-layout 0.15.1 source)
 
 **Line numbers:** `Span` has no `linenum()` in 0.15. Resolve a diagnostic's byte range with `world.range(span)` (the `WorldExt` trait in typst-library), then `world.source(span.id())?.lines().byte_to_line(range.start) + 1`. Warnings come from `Warned.warnings: EcoVec<SourceDiagnostic>` and are rendered the same way; never fatal (§9).
 
@@ -608,26 +646,50 @@ use tauri_plugin_dialog::DialogExt;
 #[serde(rename_all = "camelCase")]
 pub struct PreviewOutcome { pub pages: Vec<String>, pub warnings: Vec<String>, pub seq: u64 }
 
-/// Live preview: markdown + options → per-page SVG strings.
+/// Live preview: markdown + options → per-page SVG strings (M6: engine cache).
 #[tauri::command]
 pub async fn render_preview(
-    app: AppHandle,
+    state: State<'_, Arc<Mutex<TemplateEngineCache>>>,
     payload: RenderPayload,        // { markdown, options, seq }
 ) -> Result<PreviewOutcome, String> {
-    let source = build_source(&app, &payload)?;         // pure logic, see below
-    let outcome = tauri::async_runtime::spawn_blocking(move || engine::compile_preview(&source))
-        .await
-        .map_err(|e| format!("Preview task failed: {e}"))??;
+    let template_source = resolve_template_source(&payload.options)?;
+    let static_source = template::build_static_source(&template_source, &payload.options)?;
+    let inputs = template::render_inputs(&payload.markdown, &payload.options)?;
+    let fonts = font_options_for(&payload.options);   // system fonts + template dir
+
+    let cache = state.inner().clone();
+    let outcome = tauri::async_runtime::spawn_blocking(move || {
+        let mut cache = cache.lock().map_err(|_| "engine cache lock poisoned".to_string())?;
+        let engine = cache.engine_for(&static_source, &fonts)?; // rebuilds on change
+        engine::compile_preview_with_inputs(engine, &inputs).map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| format!("Preview task failed: {e}"))??;
     Ok(PreviewOutcome { pages: outcome.pages, warnings: outcome.warnings, seq: payload.seq })
 }
 
-/// Export: markdown + options → system save dialog → write PDF to disk.
+/// Export: markdown + options → system save dialog → write PDF to disk (M6).
 #[tauri::command]
-pub async fn export_pdf(app: AppHandle, payload: RenderPayload) -> Result<serde_json::Value, String> {
-    let source = build_source(&app, &payload)?;
-    let pdf = tauri::async_runtime::spawn_blocking(move || engine::compile_pdf(&source))
-        .await
-        .map_err(|e| format!("Export task failed: {e}"))??;
+pub async fn export_pdf(
+    app: AppHandle,
+    state: State<'_, Arc<Mutex<TemplateEngineCache>>>,
+    payload: RenderPayload,
+    title: String,
+    directory: Option<String>,
+) -> Result<serde_json::Value, String> {
+    let template_source = resolve_template_source(&payload.options)?;
+    let static_source = template::build_static_source(&template_source, &payload.options)?;
+    let inputs = template::render_inputs(&payload.markdown, &payload.options)?;
+    let fonts = font_options_for(&payload.options);
+
+    let cache = state.inner().clone();
+    let pdf = tauri::async_runtime::spawn_blocking(move || {
+        let mut cache = cache.lock().map_err(|_| "engine cache lock poisoned".to_string())?;
+        let engine = cache.engine_for(&static_source, &fonts)?;
+        engine::compile_pdf_with_inputs(engine, &inputs).map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| format!("Export task failed: {e}"))??;
 
     let file_path = app
         .dialog()
@@ -684,37 +746,61 @@ pub async fn save_markdown(app: AppHandle, path: Option<String>, content: String
     }
 }
 
-/// Validate a custom template by compiling a probe document (§6.3).
+/// Validate a custom template by compiling a probe document (§6.3, M6).
 #[tauri::command]
-pub async fn validate_template(path: String) -> Result<serde_json::Value, String> {
-    let source = std::fs::read_to_string(&path).map_err(|e| format!("Failed to read template: {e}"))?;
-    template::probe_template(&source)?;   // see §6.3: composed after the prelude and
-                                          // probe-compiled against every helper the
-                                          // converter emits (§6.2)
+pub async fn validate_template(
+    state: State<'_, Arc<Mutex<TemplateEngineCache>>>,
+    path: String,
+    options: RenderOptions,
+) -> Result<serde_json::Value, String> {
+    let user_source = std::fs::read_to_string(&path).map_err(|e| format!("Failed to read template: {e}"))?;
+    let template_source = format!("{DEFAULT_TEMPLATE}\n\n{user_source}");   // composed
+    let static_source = template::build_static_source(&template_source, &options)?; // after the
+    let fonts = font_options_for_path(&path);                               // prelude (§6.3)
+    let cache = state.inner().clone();
+    spawn_blocking(move || {
+        let mut cache = cache.lock().map_err(|_| "cache lock poisoned".to_string())?;
+        let engine = engine::build_engine(&static_source, &fonts)?;        // scan happens here
+        engine::compile_preview_with_inputs(&engine, &template::probe_inputs())
+            .map_err(|e| e.to_string())?;                                  // probe-compile
+        cache.prime(&static_source, engine);                               // reuse for render
+        Ok::<(), String>(())
+    }).await.map_err(|e| format!("Validation task failed: {e}"))?
+      .map_err(|e| format!("Template at {path} rejected: {e}"))?;
     Ok(serde_json::json!({ "valid": true }))
 }
 ```
 
 **Implementation notes (M4, verified against tauri-plugin-dialog 2.7):** the *blocking* dialog variants return `Option<FilePath>` directly (no `Result`); call `FilePath::into_path()` to obtain a `PathBuf`. Writes use `files.rs::write_atomically` (temp sibling + rename — atomic on POSIX, replaces on Windows). Exported PDFs are then opened in the system viewer with the `open` crate — Rust-side only, so it adds no webview capability and keeps the §7.3 least-privilege posture. A dismissed dialog resolves as `{ "canceled": true }`, which the UI treats as silent (§9). The dialog-bearing commands take `directory: Option<String>` (dialogs start there via `set_directory`, skipped when empty) and `title: String` (default file name via `set_file_name("<title>.md"` / `"<title>.pdf"`)); `get_initial_directory` reads `$XDG_DATA_HOME`/`$HOME` for the startup working directory (§8.4). `open_external(url)` validates the scheme with `links::is_browser_url` (http/https only, §7.4) and forwards it to the system browser via the `open` crate — the webview never navigates to a link (§9); a `tauri::Builder`-level `on_navigation` interception is future hardening (§13). Footnote markers are internal links in the PDF export (Typst emits `DirectLinkElem`), so PDF viewers can jump marker → note and back via viewer navigation; in the SVG preview typst-svg emits no `href` for internal destinations (no link resolver is passed), so footnote markers are not clickable there — and if a resolver is ever added, fragment links already bypass the external-link gate (§9).
 
-**`build_source` — shared pure logic** (kept in `template.rs` so it is unit-testable without Tauri):
+**`build_static_source` / `render_inputs` — shared pure logic** (kept in `template.rs` so it is unit-testable without Tauri; M6 splits the old inline-body `build_source` into the static source and the per-render inputs):
 
 ```rust
-pub fn build_source(
+/// The static part: template + article invocation reading title/author/body
+/// from sys.inputs. Rebuilt (and the engine re-created) only when the
+/// template or these toolbar options change.
+pub fn build_static_source(
     template_source: &str,          // already read from default or user path
     options: &RenderOptions,
-    markdown: &str,
 ) -> Result<String, String> {
-    let converted = md_to_typst(markdown, options.flavor).map_err(|e| e.to_string())?;
     Ok(compose(template_source, &TemplateArgs {
         paper: options.paper.typst_name(),
         margin_x_mm: options.margins.left_mm.min(options.margins.right_mm),
         margin_y_mm: options.margins.top_mm.min(options.margins.bottom_mm),
         text_align: match options.text_align { TextAlign::Left => "left", TextAlign::Center => "center", TextAlign::Justified => "justified" },
-        title: converted.title.as_deref(),
-        author: converted.author.as_deref(),
-        body: &converted.body,
     }))
+}
+
+/// The per-render sys.inputs: title/author from front matter (none or string)
+/// and the converted + escaped body. Built on every render; the engine is
+/// untouched by it.
+pub fn render_inputs(markdown: &str, options: &RenderOptions) -> Result<Dict, String> {
+    let converted = md_to_typst(markdown, options.flavor);
+    let mut inputs = Dict::new();
+    inputs.insert("title".into(), converted.title.into_value());
+    inputs.insert("author".into(), converted.author.into_value());
+    inputs.insert("body".into(), converted.body.into_value());
+    Ok(inputs)
 }
 ```
 
@@ -724,7 +810,10 @@ pub fn build_source(
 
 - Typst compilation is CPU-bound and can take tens of milliseconds on large documents. Run it in `tauri::async_runtime::spawn_blocking` (Tokio's `spawn_blocking`) so the IPC handler doesn't stall the runtime. Readers comfortable with Tokio will recognize this as the standard pattern for CPU work in an async runtime.
 - **Stale responses:** rapid typing can interleave responses. The frontend includes a monotonically increasing `seq` in each `render_preview` payload; the command echoes it back; the frontend drops any response whose `seq` is older than the last request it sent (§8.3). This is the cheapest correct solution; a real cancellation mechanism is future work.
-- No shared `State` in v1 (each compile builds a fresh engine). If profiling shows engine construction cost matters, cache a `Mutex<TypstEngine<...>>` in `tauri::State` and rebuild it only when the template changes (§13).
+- **Engine cache (M6):** one `TypstEngine` per *static source* lives in `tauri::State<Arc<Mutex<TemplateEngineCache>>>`. The static source is the resolved template (prelude + user, or default) plus the toolbar options — it never contains the markdown body, which travels as `sys.inputs` per render. The command resolves the static source, builds the inputs, then `spawn_blocking`s a closure that locks the cache, rebuilds the engine only when the source changed (re-running the font scan), and compiles. Compiles are therefore serialized through the mutex — fine for a single-user editor; concurrency/parallelism is future work.
+- **Per-render inputs:** `template::render_inputs(markdown, options)` converts the markdown and returns the `sys.inputs` dictionary (`title`, `author`, `body`). The static source's invocation reads them and `#eval`s the body as markup with an explicit `scope:` of every converter helper (§6.3) — `eval` runs in a fresh scope that otherwise only sees the standard library.
+- **Memoization across renders:** `build_engine` sets `comemo_evict_max_age(Some(30))` instead of typst-as-lib's default `Some(0)`. The default wipes the comemo cache after every compile, re-reading font files and re-doing shared work on each keystroke render (measured ~7× slower with system fonts: ~190ms → ~27ms per render on a reference document). A bounded eviction age keeps font loading and recent compiles warm while bounding memory; the cache keys on `sys.inputs`, so distinct bodies never serve stale previews (pinned by a test).
+- **Template switches don't double-scan (M6):** `validate_template` receives the current options, builds the real engine (paying the font scan once), probe-compiles it, and `prime`s the engine cache. The subsequent `render_preview` for the same static source finds the engine ready — so the document re-renders immediately instead of scanning a second time.
 
 ### 7.6 `lib.rs` registration
 
@@ -735,6 +824,9 @@ mod commands; mod markdown; mod options; mod typst_engine;
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
+        .manage(std::sync::Arc::new(std::sync::Mutex::new(
+            commands::TemplateEngineCache::new(),
+        ))) // M6 engine cache (§7.5)
         .invoke_handler(tauri::generate_handler![
             commands::render_preview,
             commands::open_markdown,
@@ -1057,7 +1149,7 @@ export const ALIGNS = [
 
 - Every command returns `Err(String)` with a message that starts with a human actionable phrase ("Failed to write PDF:", "Preview failed:", …). The frontend shows it in the error banner and keeps the last good preview.
 - **Empty document:** the converter returns `[]` (§6.2), so preview shows a single blank page. Show a hint in the status bar ("Nothing to render" is not needed — a blank page is acceptable and simpler).
-- **Compile errors** (e.g. broken custom template, unsupported construct): show the first ~5 diagnostics in the banner; keep the previous preview.
+- **Compile errors** (e.g. broken custom template, unsupported construct): show the first ~5 diagnostics in the banner; keep the previous preview. Since M6, the markdown body is `eval`'d from `sys.inputs` (§7.5), so a diagnostic inside the body points into the eval'd string rather than the composed source; the message text (e.g. "unknown variable: …") is what matters — the line number may be relative to the body.
 - **Warnings** (missing font, etc.): shown in the status bar as `N warning(s)` and in a collapsible list; never fail the render.
 - **Missing/custom template:** errors on read or probe compile are surfaced with the offending path.
 - **Export cancel:** the dialog returning `None` is *not* an error (the JSON includes `canceled: true`); the UI must not show a banner for it.
@@ -1084,10 +1176,9 @@ Follow red-green-refactor. Because `markdown/` and `typst_engine/` are plain Rus
 
 **`typst_engine/template.rs` tests:**
 
-- `compose emits template + article invocation with expected args`
-- `compose passes body through verbatim (already escaped)`
-- `compose emits title: none / author: none when absent; quoted string literals when present`
-- `build_source maps paper/margins/alignment to template args; forwards title/author`
+- `compose emits template + article invocation with expected args` (static source: toolbar options + `sys.inputs` reads + helper `scope:`)
+- `build_static_source maps paper/margins/alignment to template args`
+- `render_inputs forwards front-matter title/author and the converted body; emits none without front matter`
 - `prelude contract: default template compiles a probe document; user templates are composed after the prelude (resolve_template_source prepends it)`
 - `probe_template: accepts a styling-only template (defaults apply), accepts valid helper overrides, rejects syntax errors and broken overrides`
 
@@ -1100,8 +1191,9 @@ Follow red-green-refactor. Because `markdown/` and `typst_engine/` are plain Rus
 - `compile error path yields diagnostics, not a panic`
 - `custom template with a broken override fails the probe compile`
 - `warnings are collected not fatal` (unknown font → warning, not error)
+- `system fonts are used when enabled` (a real installed family renders warning-free with `FontOptions::system_fonts`, warns without; skips on font-less machines)
 
-**Command-layer tests (optional, Tauri 2):** `tauri::test::mock_builder` / `mock_app` can invoke commands in-process; at minimum assert that `build_source` (shared logic) is covered by the unit tests above. Full IPC testing is not required for v1.
+**Command-layer tests (optional, Tauri 2):** `tauri::test::mock_builder` / `mock_app` can invoke commands in-process; at minimum assert that `build_static_source`/`render_inputs` (shared logic) are covered by the unit tests above, and that the `TemplateEngineCache` serves/rebuilds per static source. Full IPC testing is not required for v1.
 
 Example test style:
 
@@ -1129,6 +1221,7 @@ fn escapes_special_characters_in_text() {
 | **M3 — UI loop** ✅ | Editor + preview + debounce + seq guard | **Done** — CodeMirror 6 editor, Typst SVG preview, 200 ms debounce + seq guard in `App.jsx`; `render_preview` Tauri command registered; Vitest suite for `lib/presets.js` + `lib/seq.js` (14 frontend + 45 Rust tests green via `./check.sh`). |
 | **M4 — Files & export** ✅ | Open/Save/Export commands wired to toolbar | **Done** — `open_markdown`/`save_markdown`/`export_pdf`/`get_initial_directory`/`open_external` registered in `lib.rs`; writes are atomic (`files.rs::write_atomically`); dialogs via `tauri-plugin-dialog` start in the working Directory and default to `<title>.md`/`<title>.pdf` (title from frontmatter → file stem → "Sample", §8.4); exported PDF opens in the system viewer via the `open` crate (Rust-side only, no new capability); task lists render as a checkbox grid and footnote references are inlined at their call site (§6.2); preview links go to the system browser, other schemes are rejected, fragment links stay internal (§9); canceled dialogs are silent; 66 Rust + 47 frontend tests green via `./check.sh`. |
 | **M5 — Settings & polish** ✅ | localStorage settings, template override + validation, warnings UI, error banner | **Done** — settings persist to `localStorage` (`lib/settings.js`, loaded on startup, saved on every option change, merged over defaults on corrupt/partial data); the Template… button picks a `.typ` file via the dialog plugin and applies it only after probe validation (`validate_template` command, `template::probe_template` — the probe is composed after the prelude and exercises every converter helper plus the title/author path, §6.3); **the template system is now a prelude**: `default.typ` provides default implementations of all converter helpers (`task-done`/`task-todo`/`task-plain`, `blockquote`, `thematic-break`, `inline-code`, `code-block`, `markdown-table`, `ordered-list`, `title-block`) plus `default-article`, and user templates are composed after it so Typst shadowing gives "default unless redefined" — styling title/author means overriding `title-block`, task glyphs via the task helpers, etc.; an active custom template is shown in the toolbar; warnings render as a collapsible list in the status bar; empty doc renders exactly one blank page; 73 Rust + 54 frontend tests green via `./check.sh`. |
+| **M6 — Engine cache & fonts** ✅ | Reusable engine + system/template-side fonts | **Done** — the pipeline is split into a **static source** (template + toolbar options + an `#article(...)` invocation reading `title`/`author`/`body` from `sys.inputs`, eval'd as markup with an explicit helper scope) and **per-render inputs** (`template::render_inputs`); a `TemplateEngineCache` (`tauri::State`, §7.5) holds one engine per static source and rebuilds it — re-running the font scan — only when the template or toolbar options change; custom templates load **system fonts** (`typst-kit-fonts` feature) plus any font files next to the `.typ` file (§6.3); `figure-image` added to the prelude (was missing); 77 Rust + 54 frontend tests green via `./check.sh`. |
 
 ## 12. Security
 
@@ -1144,7 +1237,8 @@ v1 limitations (accept and document in the README):
 
 - Raw HTML in Markdown is stripped to text.
 - No syntax highlighting inside code blocks in the PDF (Typst core has none built in; a `syntect`-or-`@preview/rich-codes` based highlighter can be layered on later).
-- Only one embedded font by default (DejaVu Sans, regular + bold); no CJK coverage out of the box. **Custom templates cannot reference system fonts** — a `#set text(font: "Times New Roman")` yields the non-fatal unknown-font warning (§9) and falls back to DejaVu. The engine loads only the embedded fonts (§6.3); system-font discovery (`typst-kit-fonts` feature) is gated behind the §13.2 engine cache so the scan runs once per template, not per keystroke.
+- Only one embedded font by default (DejaVu Sans, regular + bold); no CJK coverage out of the box. Custom templates can reference **system fonts** and ship font files next to the `.typ` file (M6, §6.3); this is gated behind the engine cache so the scan runs once per template, not per keystroke.
+- **System-font naming is typst's, not fontconfig's** — typst strips styling suffixes from family names (Condensed/Narrow/Light/…, §6.3), so a font whose *name* carries the styling is registered under the trimmed family and may be unreachable: "Ubuntu Condensed" loads but is registered as a duplicate regular "Ubuntu" face (its `usWidthClass` is normal), so `#set text(font: "Ubuntu Condensed")` warns and falls back. Use the trimmed family (`font: "Ubuntu"`), a font whose name has no styling suffix (e.g. Oswald), or fake the width with `#set text(scale: …)`. The system-font scan is a one-time cost per template switch (seconds on font-heavy machines; the scan result is cached per process), and **a large font book makes per-render compiles slow** — custom templates therefore load only the families they reference (§6.3); glyphs the selected font lacks still trigger a fallback search, so the prelude's task checkboxes are pinned to DejaVu Sans to avoid the most common case.
 - Remote images unsupported; images must be local files reachable through the world's file resolver.
 - No LaTeX math macros (`tex2typst-rs` could be added, as `mdxport` does).
 - No incremental compilation — full recompile per change; large (50+ page) documents may show latency.
@@ -1154,13 +1248,19 @@ v1 limitations (accept and document in the README):
 
 Future work, in order of leverage:
 
-1. **Incremental preview** — adopt `tinymist`/`typst-preview`-style patched SVG deltas (comemo memoisation) or stream pages via Tauri events instead of one big return value.
- 2. **Reusable engine** — cache `TypstEngine` in `State`, rebuild on template change only; use `with_world`/`sys.inputs` to avoid re-reading fonts. This is also what unblocks system-font support for custom templates (§6.3, §13): with the engine cached per template, `search_fonts_with`/`typst-kit-fonts` can load system fonts once per template change instead of on every keystroke compile.
-3. **Syntax highlighting** in code blocks (syntect pre-wrapping or Typst packages) — the prelude's `code-block` (§6.3) is the single seam to swap in a highlighter for every document.
-4. **HTML export** via `typst-html` (the `mdcast` project demonstrates this).
-5. **Table of contents, page numbers, running headers** — template-driven, zero core changes.
-6. **`Export .typ`** button (show the composed source) — cheap, great for debugging and power users.
-7. **SyncTeX-like preview↔source jumping** (click page → cursor).
+1. **Structured tracing instead of `eprintln!` diagnostics** — `commands.rs` currently prints `[engine cache] rebuild: …` (`TemplateEngineCache::engine_for`) and `[preview] setup=… render=…` (`render_preview`) straight to stderr. Replace with the `tracing` crate + `tracing-subscriber` (init once in `lib.rs::run()` with an `EnvFilter` reading `RUST_LOG`), so per-render timing and cache-rebuild events are leveled (`debug!`) and opt-in rather than unconditional stderr noise.
+2. **Incremental preview** — adopt `tinymist`/`typst-preview`-style patched SVG deltas (comemo memoisation) or stream pages via Tauri events instead of one big return value.
+3. **Parallel/async compiles** — the M6 engine cache serializes compiles through its mutex; lifting that (per-source engine clones, or a small worker pool) would let preview and export overlap.
+4. **Syntax highlighting** in code blocks (syntect pre-wrapping or Typst packages) — the prelude's `code-block` (§6.3) is the single seam to swap in a highlighter for every document.
+5. **HTML export** via `typst-html` (the `mdcast` project demonstrates this).
+6. **Table of contents, page numbers, running headers** — template-driven, zero core changes.
+7. **`Export .typ`** button (show the composed source) — cheap, great for debugging and power users.
+8. **SyncTeX-like preview↔source jumping** (click page → cursor).
+
+**Deferred issues (noted, not yet fixed):**
+
+- **Alignment control has no effect** (§8.4) — left/center/justified render identically (verified: the three produce byte-identical SVGs). Root cause: in `default-article` (`default.typ`) the `set align(…)` / `set par(justify: …)` rules sit *inside* the `if text-align == …` block, and Typst scopes a `set` rule to the (empty) conditional block, so it never reaches `body`. Fix: make the set unconditional with a conditional value — `set align(if text-align == "center" { center } else { left })` and `set par(justify: text-align == "justified")` — and pin it with a test that left/center/justified produce different SVGs.
+- **Re-selecting the current Flavor in the toolbar deselects it** — Mantine `Select` fires `onChange(null)` when the already-selected option is clicked again (`allowDeselect` defaults to true), and `changeOption` applies the patch blindly, so `flavor: null` corrupts the settings and the IPC payload (the render then fails to deserialize). Fix: ignore `null` patches in `changeOption` (or set `allowDeselect={false}` on the toolbar Selects); the same guard applies to every single-select control in the toolbar.
 
 ## 14. References
 

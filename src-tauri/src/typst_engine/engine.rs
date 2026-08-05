@@ -1,15 +1,19 @@
 //! Typst compile & export (§6.4 of SPEC.md).
 //!
 //! Uses `typst-as-lib` 0.16 so we never hand-write a `typst::World`. Pure Rust
-//! — no `tauri` imports. Two public entry points, both built on
-//! `compile_document`:
+//! — no `tauri` imports. Two entry points, both compiling the engine's static
+//! source with per-render `sys.inputs` (M6, §7.5):
 //!
-//! - `compile_preview`: per-page SVG strings for the live preview pane.
-//! - `compile_pdf`: PDF bytes for export.
+//! - `build_engine` + `compile_preview_with_inputs`: SVG pages for the live
+//!   preview pane. The command layer caches the engine and rebuilds it (and
+//!   re-runs the font scan) only when the static source changes.
+//! - `build_engine` + `compile_pdf_with_inputs`: PDF bytes for export.
 
 use std::error::Error;
 use std::fmt;
+use std::path::PathBuf;
 
+use typst::foundations::Dict;
 use typst_as_lib::{TypstEngine, TypstTemplateMainFile};
 use typst_layout::PagedDocument;
 
@@ -44,31 +48,113 @@ impl fmt::Display for EngineError {
 
 impl Error for EngineError {}
 
-/// Compile a complete Typst source into a paged document.
-///
-/// In Typst 0.15 the document type is `PagedDocument` (typst-layout);
-/// `typst::Document` is now a trait implemented by export targets.
-fn compile_document(source: &str) -> Result<(PagedDocument, Vec<String>), EngineError> {
-    let engine = TypstEngine::builder()
-        .main_file(source) // source CONTENT, not a path
-        .fonts([FONT_BYTES, FONT_BOLD_BYTES])
-        .build();
+/// Font loading options (M6, §6.3): what to load beyond the embedded DejaVu
+/// Sans. Used when an engine is (re)built — the M6 cache does that once per
+/// template change, so the system-font scan is not repeated per render.
+#[derive(Debug, Clone, Default)]
+pub struct FontOptions {
+    /// Scan the system's font directories (needed for families like
+    /// "Times New Roman" in custom templates). Ignored when `families` is set.
+    pub system_fonts: bool,
+    /// Extra directories to scan recursively (e.g. the folder next to a
+    /// custom template, so a theme can ship its own font files).
+    pub extra_dirs: Vec<PathBuf>,
+    /// When non-empty, only these families are loaded from the system (plus
+    /// the embedded DejaVu Sans and the `extra_dirs`). A small font book keeps
+    /// per-render compiles fast — a 700-face book makes them ~5× slower.
+    pub families: Vec<String>,
+}
 
-    let warned = engine.compile();
-    let doc = warned
+/// A cached scan of the system's fonts: `(path, family)`. The full scan is
+/// ~1.4s on font-heavy machines, so it runs once per process and is reused
+/// across template switches (§6.3).
+fn system_fonts() -> &'static Vec<(PathBuf, String)> {
+    static CACHE: std::sync::OnceLock<Vec<(PathBuf, String)>> = std::sync::OnceLock::new();
+    CACHE.get_or_init(|| {
+        typst_kit::fonts::system()
+            .map(|(path, info)| (path.path, info.family))
+            .collect()
+    })
+}
+
+/// Read the font files for the given families, from the system scan and any
+/// extra directories, deduplicated by path.
+fn load_families(families: &[String], extra_dirs: &[PathBuf]) -> Vec<Vec<u8>> {
+    let mut bytes = Vec::new();
+    let mut seen: std::collections::HashSet<PathBuf> = std::collections::HashSet::new();
+    let mut push = |path: &PathBuf, family: &str| {
+        if families.iter().any(|f| f.eq_ignore_ascii_case(family)) && seen.insert(path.clone()) {
+            if let Ok(data) = std::fs::read(path) {
+                bytes.push(data);
+            }
+        }
+    };
+    for (path, family) in system_fonts() {
+        push(path, family);
+    }
+    for dir in extra_dirs {
+        for (path, info) in typst_kit::fonts::scan(dir) {
+            push(&path.path, &info.family);
+        }
+    }
+    bytes
+}
+
+/// Build a Typst engine for the given static source (§6.4, M6).
+///
+/// The embedded DejaVu Sans is always available. When the template references
+/// specific font families (`FontOptions.families`), only those are loaded —
+/// a small font book keeps per-render compiles fast; otherwise `fonts` adds
+/// the full system scan and/or extra directories. Called by the command
+/// layer's engine cache, which rebuilds (and re-runs the font scan) only when
+/// the static source changes.
+pub fn build_engine(
+    source: &str,
+    fonts: &FontOptions,
+) -> Result<TypstEngine<TypstTemplateMainFile>, EngineError> {
+    let mut all_fonts: Vec<Vec<u8>> = vec![FONT_BYTES.to_vec(), FONT_BOLD_BYTES.to_vec()];
+    let mut search_system = false;
+    if !fonts.families.is_empty() {
+        // Fast path: only the referenced families + embedded + extra dirs.
+        all_fonts.extend(load_families(&fonts.families, &fonts.extra_dirs));
+    } else if fonts.system_fonts || !fonts.extra_dirs.is_empty() {
+        search_system = true;
+    }
+    let mut builder = TypstEngine::builder().main_file(source).fonts(all_fonts);
+    if search_system {
+        let mut options = typst_as_lib::typst_kit_options::TypstKitFontOptions::default();
+        if !fonts.system_fonts {
+            options = options.include_system_fonts(false);
+        }
+        if !fonts.extra_dirs.is_empty() {
+            options = options.include_dirs(fonts.extra_dirs.iter().cloned());
+        }
+        builder = builder.search_fonts_with(options);
+    }
+    // typst-as-lib's builder default (`Some(0)`) evicts the whole comemo
+    // memoization cache after every compile — re-reading font files and
+    // re-doing shared work on each keystroke render (~7x slower with system
+    // fonts). Keep entries warm across renders but bound memory: entries not
+    // touched for this many compiles are evicted (§7.5, M6).
+    builder.comemo_evict_max_age(Some(30));
+    Ok(builder.build())
+}
+
+/// Compile the engine's static source with the per-render `sys.inputs` and
+/// render preview pages as SVG (§6.4).
+pub fn compile_preview_with_inputs(
+    engine: &TypstEngine<TypstTemplateMainFile>,
+    inputs: &Dict,
+) -> Result<PreviewOutcome, EngineError> {
+    let warned = engine.compile_with_input(inputs.clone());
+    let doc: PagedDocument = warned
         .output
-        .map_err(|e| EngineError::Compile(render_error(&engine, &e)))?;
+        .map_err(|e| EngineError::Compile(render_error(engine, &e)))?;
     let warnings = warned
         .warnings
         .iter()
-        .map(|diag| render_diagnostic(&engine, diag))
+        .map(|diag| render_diagnostic(engine, diag))
         .collect();
-    Ok((doc, warnings))
-}
-
-/// Render preview pages as SVG (§6.4).
-pub fn compile_preview(source: &str) -> Result<PreviewOutcome, EngineError> {
-    let (doc, warnings) = compile_document(source)?;
     // typst-svg 0.15: `svg(page: &Page, opts: &SvgOptions)` takes the whole
     // page, not `&page.frame` as in older versions.
     let pages = doc
@@ -79,9 +165,16 @@ pub fn compile_preview(source: &str) -> Result<PreviewOutcome, EngineError> {
     Ok(PreviewOutcome { pages, warnings })
 }
 
-/// Export the document as PDF bytes (§6.4).
-pub fn compile_pdf(source: &str) -> Result<Vec<u8>, EngineError> {
-    let (doc, _warnings) = compile_document(source)?;
+/// Compile the engine's static source with the per-render `sys.inputs` and
+/// export PDF bytes (§6.4).
+pub fn compile_pdf_with_inputs(
+    engine: &TypstEngine<TypstTemplateMainFile>,
+    inputs: &Dict,
+) -> Result<Vec<u8>, EngineError> {
+    let warned = engine.compile_with_input(inputs.clone());
+    let doc: PagedDocument = warned
+        .output
+        .map_err(|e| EngineError::Compile(render_error(engine, &e)))?;
     typst_pdf::pdf(&doc, &Default::default()).map_err(|e| EngineError::Pdf(format!("{e:?}")))
 }
 
@@ -141,24 +234,16 @@ fn render_diagnostic_with_world(
 
 #[cfg(test)]
 mod tests {
-    use super::{compile_pdf, compile_preview};
+    use super::{
+        build_engine, compile_pdf_with_inputs, compile_preview_with_inputs, FontOptions,
+        PreviewOutcome,
+    };
     use crate::options::{Flavor, Margins, Paper, RenderOptions, TextAlign};
-    use crate::typst_engine::template::{build_source, compose, TemplateArgs, DEFAULT_TEMPLATE};
-
-    fn probe_source(body: &str) -> String {
-        compose(
-            DEFAULT_TEMPLATE,
-            &TemplateArgs {
-                paper: "a4",
-                margin_x_mm: 20.0,
-                margin_y_mm: 25.0,
-                text_align: "left",
-                title: None,
-                author: None,
-                body,
-            },
-        )
-    }
+    use crate::typst_engine::template::{
+        build_static_source, compose, render_inputs, TemplateArgs, DEFAULT_TEMPLATE,
+    };
+    use typst::foundations::{Dict, IntoValue, Value};
+    use typst_as_lib::{TypstEngine, TypstTemplateMainFile};
 
     fn gfm_options() -> RenderOptions {
         RenderOptions {
@@ -182,13 +267,85 @@ mod tests {
         }
     }
 
+    /// A ready engine for the default template whose `sys.inputs.body` is
+    /// `body` — the M6 shape: static source (built once per template) plus
+    /// per-render inputs.
+    fn engine_for_body(body: &str) -> (TypstEngine<TypstTemplateMainFile>, Dict) {
+        let source = compose(
+            DEFAULT_TEMPLATE,
+            &TemplateArgs {
+                paper: "a4",
+                margin_x_mm: 20.0,
+                margin_y_mm: 25.0,
+                text_align: "left",
+            },
+        );
+        let mut inputs = Dict::new();
+        inputs.insert("title".into(), Value::None);
+        inputs.insert("author".into(), Value::None);
+        inputs.insert("body".into(), body.into_value());
+        (
+            build_engine(&source, &FontOptions::default()).expect("engine must build"),
+            inputs,
+        )
+    }
+
+    fn compile_body(body: &str) -> PreviewOutcome {
+        let (engine, inputs) = engine_for_body(body);
+        compile_preview_with_inputs(&engine, &inputs).expect("must compile")
+    }
+
+    fn engine_for_body_with_fonts(
+        body: &str,
+        fonts: &FontOptions,
+    ) -> (TypstEngine<TypstTemplateMainFile>, Dict) {
+        let source = compose(
+            DEFAULT_TEMPLATE,
+            &TemplateArgs {
+                paper: "a4",
+                margin_x_mm: 20.0,
+                margin_y_mm: 25.0,
+                text_align: "left",
+            },
+        );
+        let mut inputs = Dict::new();
+        inputs.insert("title".into(), Value::None);
+        inputs.insert("author".into(), Value::None);
+        inputs.insert("body".into(), body.into_value());
+        (
+            build_engine(&source, fonts).expect("engine must build"),
+            inputs,
+        )
+    }
+
+    fn compile_pdf_body(body: &str) -> Vec<u8> {
+        let (engine, inputs) = engine_for_body(body);
+        compile_pdf_with_inputs(&engine, &inputs).expect("must compile")
+    }
+
+    /// Full pipeline: markdown → converter → static source + inputs → compile.
+    fn compile_markdown(markdown: &str, options: &RenderOptions) -> PreviewOutcome {
+        let static_source = build_static_source(DEFAULT_TEMPLATE, options).unwrap();
+        let inputs = render_inputs(markdown, options).unwrap();
+        let engine = build_engine(&static_source, &FontOptions::default()).expect("engine");
+        compile_preview_with_inputs(&engine, &inputs).expect("must compile")
+    }
+
+    /// Compile markdown through a *custom* template source (prelude + user
+    /// file) with the Custom flavor — the M6 flow used by the theme tests.
+    fn compile_custom_theme(template: &str, markdown: &str) -> PreviewOutcome {
+        let static_source = build_static_source(template, &custom_options()).unwrap();
+        let inputs = render_inputs(markdown, &custom_options()).unwrap();
+        let engine = build_engine(&static_source, &FontOptions::default()).expect("engine");
+        compile_preview_with_inputs(&engine, &inputs).expect("must compile")
+    }
+
     /// M5 acceptance: an empty document renders exactly one blank page — the
     /// converter emits `[]` (§6.2) and the article invocation still produces a
     /// page, so the preview never shows the "nothing to render" state.
     #[test]
     fn empty_document_renders_one_blank_page() {
-        let source = build_source(DEFAULT_TEMPLATE, &gfm_options(), "").unwrap();
-        let outcome = compile_preview(&source).expect("empty document must compile");
+        let outcome = compile_markdown("", &gfm_options());
         assert_eq!(outcome.pages.len(), 1, "empty doc renders one blank page");
         assert!(
             outcome.warnings.is_empty(),
@@ -199,16 +356,14 @@ mod tests {
 
     #[test]
     fn compile_preview_returns_svg_pages() {
-        let source = probe_source("= Hello\n\nWorld.");
-        let outcome = compile_preview(&source).expect("must compile");
+        let outcome = compile_body("= Hello\n\nWorld.");
         assert!(!outcome.pages.is_empty(), "expected at least one page");
         assert!(outcome.pages[0].contains("<svg"), "page must be SVG");
     }
 
     #[test]
     fn compile_pdf_starts_with_pdf_magic() {
-        let source = probe_source("= Hello\n\nWorld.");
-        let bytes = compile_pdf(&source).expect("must compile");
+        let bytes = compile_pdf_body("= Hello\n\nWorld.");
         assert!(!bytes.is_empty());
         assert_eq!(&bytes[..4], b"%PDF", "PDF magic header");
     }
@@ -218,8 +373,7 @@ mod tests {
     /// the (headless-untestable) save dialog.
     #[test]
     fn pdf_bytes_write_atomically_to_disk() {
-        let source = probe_source("= Hello\n\nExport me.");
-        let bytes = compile_pdf(&source).expect("must compile");
+        let bytes = compile_pdf_body("= Hello\n\nExport me.");
         let target =
             std::env::temp_dir().join(format!("tauri-md-editor-pdf-{}.pdf", std::process::id()));
 
@@ -231,14 +385,13 @@ mod tests {
     }
 
     /// §10 / M3 acceptance: a GFM table (header + body) must compile through
-    /// the full pipeline (md_to_typst → build_source → compile). Regression
-    /// for header cells emitted as `*[a]`, which is invalid inside `#table(...)`
-    /// where arguments are parsed in code mode.
+    /// the full pipeline (md_to_typst → static source + inputs → compile).
+    /// Regression for header cells emitted as `*[a]`, which is invalid inside
+    /// `#table(...)` where arguments are parsed in code mode.
     #[test]
     fn gfm_table_compiles_through_full_pipeline() {
         let markdown = "| a | b |\n|---|---|\n| 1 | 2 |";
-        let source = build_source(DEFAULT_TEMPLATE, &gfm_options(), markdown).unwrap();
-        let outcome = compile_preview(&source).expect("table document must compile");
+        let outcome = compile_markdown(markdown, &gfm_options());
         assert!(!outcome.pages.is_empty(), "expected at least one page");
         let svg = &outcome.pages[0];
         // Text is embedded as vector glyph paths (`<use xlink:href="#…">`
@@ -253,9 +406,9 @@ mod tests {
 
     #[test]
     fn compile_error_yields_diagnostics_not_panic() {
-        // `article` is invoked with a body containing a deliberate error.
-        let source = probe_source("#undefined-function(42)");
-        let err = compile_preview(&source).unwrap_err();
+        // The body is passed via sys.inputs and contains a deliberate error.
+        let (engine, inputs) = engine_for_body("#undefined-function(42)");
+        let err = compile_preview_with_inputs(&engine, &inputs).unwrap_err();
         let msg = err.to_string();
         assert!(
             msg.contains("line") && msg.contains("undefined-function"),
@@ -267,13 +420,150 @@ mod tests {
     fn warnings_are_collected_not_fatal() {
         // An unknown font family compiles (falling back to the default font)
         // but surfaces a warning (§6.4 / §9).
-        let source = probe_source("#set text(font: \"Nope Sans\")\nHello");
-        let outcome = compile_preview(&source).expect("must still compile");
+        let outcome = compile_body("#set text(font: \"Nope Sans\")\nHello");
         assert!(!outcome.warnings.is_empty(), "expected a font warning");
         assert!(
             outcome.warnings.iter().any(|w| w.contains("font")),
             "warning should mention the font: {:?}",
             outcome.warnings
+        );
+    }
+
+    /// M6: the engine keeps its comemo memoization cache across renders
+    /// (raised eviction age for per-render speed). The cache keys on
+    /// `sys.inputs`, so a reused engine must render distinct bodies
+    /// correctly — never a stale preview.
+    #[test]
+    fn reused_engine_renders_distinct_bodies() {
+        let (engine, _) = engine_for_body("unused");
+        let render = |body: &str| {
+            let mut inputs = Dict::new();
+            inputs.insert("title".into(), Value::None);
+            inputs.insert("author".into(), Value::None);
+            inputs.insert("body".into(), body.into_value());
+            compile_preview_with_inputs(&engine, &inputs)
+                .expect("must compile")
+                .pages[0]
+                .clone()
+        };
+        let a1 = render("= Heading one");
+        let a2 = render("= Heading one");
+        let b = render("= Heading two");
+        assert_eq!(a1, a2, "same body must be stable across renders");
+        assert_ne!(a1, b, "a different body must not serve a stale cache");
+    }
+
+    /// M6: when `FontOptions.families` is set, only those families land in the
+    /// engine's font book — a referenced family renders cleanly, an
+    /// unreferenced one warns (proving the book is small, which is what keeps
+    /// per-render compiles fast).
+    #[test]
+    fn subsetted_font_book_only_loads_referenced_families() {
+        let mut system = typst_kit::fonts::system().map(|(_p, i)| i.family);
+        let family = system.find(|f| f != "DejaVu Sans");
+        let Some(family) = family else {
+            return; // no usable system font on this machine
+        };
+        let other = system.find(|f| f != "DejaVu Sans" && f != &family);
+        let Some(other) = other else {
+            return; // need a second family to prove the subset is exclusive
+        };
+        let fonts = FontOptions {
+            system_fonts: false,
+            extra_dirs: Vec::new(),
+            families: vec![family.clone()],
+        };
+
+        let (engine, inputs) =
+            engine_for_body_with_fonts(&format!("#set text(font: {family:?})\nHello"), &fonts);
+        let outcome = compile_preview_with_inputs(&engine, &inputs).expect("must compile");
+        assert!(
+            outcome.warnings.is_empty(),
+            "the referenced family must render cleanly: {family:?} -> {:?}",
+            outcome.warnings
+        );
+
+        let (engine, inputs) =
+            engine_for_body_with_fonts(&format!("#set text(font: {other:?})\nHello"), &fonts);
+        let outcome = compile_preview_with_inputs(&engine, &inputs).expect("must compile");
+        assert!(
+            !outcome.warnings.is_empty(),
+            "an unreferenced family must not be in the subset: {other:?}"
+        );
+    }
+
+    /// M6 acceptance: with `FontOptions { system_fonts: true }`, a family that
+    /// is installed on the system but not embedded renders without the
+    /// unknown-font warning; with system fonts off, the same family warns.
+    /// Skips when the machine has no fonts besides our embedded DejaVu.
+    #[test]
+    fn system_fonts_are_used_when_enabled() {
+        let family = typst_kit::fonts::system()
+            .map(|(_path, info)| info.family)
+            .find(|f| f != "DejaVu Sans");
+        let Some(family) = family else {
+            return; // no usable system font on this machine
+        };
+        let body = format!("#set text(font: {family:?})\nHello");
+
+        let (engine_on, inputs) = engine_for_body_with_fonts(
+            &body,
+            &FontOptions {
+                system_fonts: true,
+                extra_dirs: Vec::new(),
+                families: Vec::new(),
+            },
+        );
+        let outcome =
+            compile_preview_with_inputs(&engine_on, &inputs).expect("system font must compile");
+        assert!(
+            outcome.warnings.is_empty(),
+            "a real system font must render without warnings: {family:?} -> {:?}",
+            outcome.warnings
+        );
+
+        let (engine_off, inputs) = engine_for_body_with_fonts(&body, &FontOptions::default());
+        let outcome =
+            compile_preview_with_inputs(&engine_off, &inputs).expect("must still compile");
+        assert!(
+            !outcome.warnings.is_empty(),
+            "without system fonts the family must warn: {family:?}"
+        );
+    }
+
+    /// M6: a template's own top-level `#set text(font: ...)` must win over the
+    /// prelude's default. The font default is a top-level prelude rule (before
+    /// the user template), so the user's later rule takes effect — while a
+    /// template that sets no font still renders in DejaVu Sans.
+    #[test]
+    fn user_top_level_font_set_overrides_prelude_default() {
+        let family = typst_kit::fonts::system()
+            .map(|(_path, info)| info.family)
+            .find(|f| f != "DejaVu Sans");
+        let Some(family) = family else {
+            return; // no usable system font on this machine
+        };
+        let fonts = FontOptions {
+            system_fonts: true,
+            extra_dirs: Vec::new(),
+            families: Vec::new(),
+        };
+        let render = |template: &str| {
+            let source = build_static_source(template, &gfm_options()).unwrap();
+            let inputs = render_inputs("Hello world.", &gfm_options()).unwrap();
+            let engine = build_engine(&source, &fonts).expect("engine");
+            compile_preview_with_inputs(&engine, &inputs)
+                .expect("must compile")
+                .pages[0]
+                .clone()
+        };
+        let baseline = render(DEFAULT_TEMPLATE);
+        let with_font = render(&format!(
+            "{DEFAULT_TEMPLATE}\n\n#set text(font: {family:?})"
+        ));
+        assert_ne!(
+            baseline, with_font,
+            "a top-level font set must take effect: {family:?}"
         );
     }
 
@@ -284,8 +574,7 @@ mod tests {
     #[test]
     fn blockquote_compiles_through_full_pipeline() {
         let markdown = "> Tip: add YAML front-matter — `title: My Doc`.\n>\n> Second paragraph.";
-        let source = build_source(DEFAULT_TEMPLATE, &gfm_options(), markdown).unwrap();
-        let outcome = compile_preview(&source).expect("blockquote document must compile");
+        let outcome = compile_markdown(markdown, &gfm_options());
         assert!(!outcome.pages.is_empty(), "expected at least one page");
     }
 
@@ -296,8 +585,7 @@ mod tests {
     #[test]
     fn task_list_compiles_without_glyph_warnings() {
         let markdown = "- [ ] todo\n- [x] done";
-        let source = build_source(DEFAULT_TEMPLATE, &gfm_options(), markdown).unwrap();
-        let outcome = compile_preview(&source).expect("task list must compile");
+        let outcome = compile_markdown(markdown, &gfm_options());
         assert!(!outcome.pages.is_empty(), "expected at least one page");
         assert!(
             outcome.warnings.is_empty(),
@@ -313,16 +601,55 @@ mod tests {
     /// would render the same "body" text and the SVGs would be identical.
     #[test]
     fn task_item_content_renders_not_literal_body() {
-        let render = |markdown: &str| {
-            let source = build_source(DEFAULT_TEMPLATE, &gfm_options(), markdown).unwrap();
-            let outcome = compile_preview(&source).expect("task list must compile");
-            outcome.pages[0].clone()
-        };
+        let render = |markdown: &str| compile_markdown(markdown, &gfm_options()).pages[0].clone();
         let aaa = render("- [ ] aaa\n- [ ] bbb");
         let body = render("- [ ] body\n- [ ] body");
         assert_ne!(
             aaa, body,
             "task item content must render, not the literal parameter name"
+        );
+    }
+
+    /// The prelude pins the task-checkbox glyphs to the embedded DejaVu Sans.
+    /// A font that lacks the ballot codepoints (e.g. Ubuntu) must therefore
+    /// render the SAME hollow ballot glyph as the default template — not a
+    /// font-fallback substitute. Besides visual consistency, this is what
+    /// avoids the ~10x slower renders caused by fallback searches across the
+    /// system font book.
+    #[test]
+    fn task_checkboxes_are_pinned_to_dejavu() {
+        fn glyph_ids(svg: &str) -> Vec<String> {
+            let mut ids: Vec<String> = svg
+                .split("xlink:href=\"")
+                .skip(1)
+                .map(|s| s[..s.find('"').unwrap_or(0)].to_string())
+                .collect();
+            ids.sort();
+            ids.dedup();
+            ids
+        }
+
+        let fonts = FontOptions {
+            system_fonts: true,
+            extra_dirs: Vec::new(),
+            families: Vec::new(),
+        };
+        let render = |template: &str| {
+            let static_source = build_static_source(template, &gfm_options()).unwrap();
+            let inputs = render_inputs("- [ ]", &gfm_options()).unwrap();
+            let engine = build_engine(&static_source, &fonts).expect("engine");
+            compile_preview_with_inputs(&engine, &inputs)
+                .expect("must compile")
+                .pages[0]
+                .clone()
+        };
+        let default_ids = glyph_ids(&render(DEFAULT_TEMPLATE));
+        let ubuntu_ids = glyph_ids(&render(&format!(
+            "{DEFAULT_TEMPLATE}\n\n#set text(font: \"Ubuntu\")"
+        )));
+        assert_eq!(
+            default_ids, ubuntu_ids,
+            "the ballot glyph must come from DejaVu Sans in both cases"
         );
     }
 
@@ -365,8 +692,7 @@ mod tests {
             "---",
         ]
         .join("\n");
-        let source = build_source(&template, &custom_options(), &markdown).unwrap();
-        let outcome = compile_preview(&source).expect("dark theme must compile");
+        let outcome = compile_custom_theme(&template, &markdown);
         assert!(!outcome.pages.is_empty(), "expected at least one page");
         assert!(
             outcome.warnings.is_empty(),
@@ -381,8 +707,7 @@ mod tests {
     #[test]
     fn footnote_compiles_through_full_pipeline() {
         let markdown = "- bullet item [^1]\n- another item\n\n[^1]: the note";
-        let source = build_source(DEFAULT_TEMPLATE, &custom_options(), markdown).unwrap();
-        let outcome = compile_preview(&source).expect("footnote document must compile");
+        let outcome = compile_markdown(markdown, &custom_options());
         assert!(!outcome.pages.is_empty(), "expected at least one page");
     }
 
@@ -397,8 +722,7 @@ mod tests {
         let theme = std::fs::read_to_string(&theme_path).expect("examples/dark.typ must exist");
         let template = format!("{DEFAULT_TEMPLATE}\n\n{theme}");
         let markdown = "Body text.[^1]\n\n[^1]: the note";
-        let source = build_source(&template, &custom_options(), markdown).unwrap();
-        let outcome = compile_preview(&source).expect("dark theme footnote must compile");
+        let outcome = compile_custom_theme(&template, markdown);
         let svg = &outcome.pages[0];
         assert!(
             svg.contains("stroke=\"#30363d\""),
@@ -419,16 +743,10 @@ mod tests {
     #[test]
     fn table_cells_render_in_columns() {
         let markdown = "| a | b |\n|---|---|\n| 1 | 2 |";
-        let source = build_source(DEFAULT_TEMPLATE, &gfm_options(), markdown).unwrap();
-        let outcome = compile_preview(&source).expect("table must compile");
+        let outcome = compile_markdown(markdown, &gfm_options());
         let svg = &outcome.pages[0];
 
-        let render_ref = |body: &str| {
-            compile_preview(&probe_source(body))
-                .expect("reference table must compile")
-                .pages[0]
-                .clone()
-        };
+        let render_ref = |body: &str| compile_body(body).pages[0].clone();
         let stacked = render_ref("#table(columns: (auto,), [*a*], [*b*], [1], [2])");
         let two_cols = render_ref("#table(columns: (auto, auto), [*a*], [*b*], [1], [2])");
 
@@ -474,8 +792,7 @@ mod tests {
             "on the next line*",
         ]
         .join("\n");
-        let source = build_source(DEFAULT_TEMPLATE, &gfm_options(), &markdown).unwrap();
-        let outcome = compile_preview(&source).expect("kitchen sink must compile");
+        let outcome = compile_markdown(&markdown, &gfm_options());
         assert!(!outcome.pages.is_empty(), "expected at least one page");
     }
 
@@ -485,19 +802,11 @@ mod tests {
         // override (here: an undefined function in a helper the probe body
         // exercises) must surface as diagnostics, not a panic.
         let broken = "#let task-list(..items) = boom(1)";
-        let source = compose(
-            &format!("{DEFAULT_TEMPLATE}\n\n{broken}"),
-            &TemplateArgs {
-                paper: "a4",
-                margin_x_mm: 20.0,
-                margin_y_mm: 25.0,
-                text_align: "left",
-                title: None,
-                author: None,
-                body: "#task-list(task-todo([x]))",
-            },
-        );
-        let err = compile_preview(&source).unwrap_err();
+        let template = format!("{DEFAULT_TEMPLATE}\n\n{broken}");
+        let static_source = build_static_source(&template, &gfm_options()).unwrap();
+        let inputs = render_inputs("- [x] done", &gfm_options()).unwrap();
+        let engine = build_engine(&static_source, &FontOptions::default()).expect("engine");
+        let err = compile_preview_with_inputs(&engine, &inputs).unwrap_err();
         assert!(err.to_string().contains("line"), "{err}");
     }
 }

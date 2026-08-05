@@ -171,12 +171,12 @@ export default function App() {
         defaultPath: directory ?? undefined,
       });
       if (picked === null) return; // canceled — silent
-      await api.validateTemplate(picked);
+      await api.validateTemplate(picked, options);
       changeOption({ templatePath: picked });
     } catch (err) {
       setError(String(err));
     }
-  }, [directory, changeOption]);
+  }, [directory, options, changeOption]);
 
   // Clicking the active-template badge drops it again — back to the embedded
   // default, as if no template was ever loaded (persisted like any option).

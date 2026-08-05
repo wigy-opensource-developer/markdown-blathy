@@ -17,12 +17,24 @@
 //   title-block(title, author)       // called by the default article
 //   article(…)                       // the invocation the Rust side appends
 
+// --- Default fonts -------------------------------------------------------------
+// Top-level (not inside the article): this runs BEFORE a user template, so a
+// template's own `#set text(font: ...)` — which comes later — wins over this
+// default, while templates that set no font keep DejaVu Sans (M6).
+#set text(font: "DejaVu Sans", size: 11pt)
+
 // --- Task lists --------------------------------------------------------------
 // Each item function returns a (checkbox cell, content cell) pair; the grid
 // needs those as flat alternating cells, so `task-list` concatenates the
 // pairs (`.pos()` because variadic arguments are not iterable directly).
-#let task-done(body) = ([#sym.ballot.check], [#body])
-#let task-todo(body) = ([#sym.ballot], [#body])
+//
+// The checkbox glyphs are pinned to the embedded DejaVu Sans: many fonts (e.g.
+// Ubuntu) lack the ballot-box codepoints (U+2610/U+2611), and letting Typst
+// fall back across the system font book is ~10x slower per render AND yields a
+// solid box instead of a hollow one. Pinning keeps the checkbox hollow and
+// fast in every theme; it still renders in the current text colour.
+#let task-done(body) = ([#text(font: "DejaVu Sans")[#sym.ballot.check]], [#body])
+#let task-todo(body) = ([#text(font: "DejaVu Sans")[#sym.ballot]], [#body])
 #let task-plain(body) = ([•], [#body])
 #let task-list(..items) = {
   let cells = ()
@@ -37,6 +49,9 @@
 
 // --- Block quotes (native Typst `quote` since 0.13) --------------------------
 #let blockquote(body) = quote(block: true)[#body]
+
+// --- Images: default width + caption placement (overridable) ------------------
+#let figure-image(url, caption) = figure(image(url, width: 80%), caption: caption)
 
 // --- Thematic break ----------------------------------------------------------
 #let thematic-break() = [#v(0.6em) #line(length: 100%, stroke: 0.5pt) #v(0.6em)]
@@ -96,7 +111,6 @@
   body,
 ) = {
   set page(paper: paper, margin: (x: margin-x, y: margin-y))
-  set text(font: "DejaVu Sans", size: 11pt)
   set par(justify: false)
   show heading: set text(weight: 600)
   show link: set text(fill: rgb("#0366d6"))

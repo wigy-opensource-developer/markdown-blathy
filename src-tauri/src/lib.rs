@@ -14,6 +14,12 @@ pub mod typst_engine;
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
+        // M6 engine cache (§7.5): one compiled engine per static source,
+        // rebuilt (and fonts re-scanned) only when the template/options change.
+        // Arc so commands can hand an owned handle to the blocking thread.
+        .manage(std::sync::Arc::new(std::sync::Mutex::new(
+            commands::TemplateEngineCache::new(),
+        )))
         .invoke_handler(tauri::generate_handler![
             commands::render_preview,
             commands::open_markdown,

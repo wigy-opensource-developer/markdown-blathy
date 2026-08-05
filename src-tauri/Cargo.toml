@@ -39,4 +39,11 @@ typst = "0.15"
 typst-layout = "0.15"
 typst-pdf = "0.15"
 typst-svg = "0.15"
-typst-as-lib = "0.16"
+# typst-kit-fonts: system-font discovery via typst-kit. Used by the M6 engine
+# cache — fonts are scanned once per engine (re)build, not per render. typst-kit
+# is also used directly to subset the font book to the families a custom
+# template actually references (small book = fast compiles, §6.3).
+typst-as-lib = { version = "0.16", features = ["typst-kit-fonts"] }
+typst-kit = { version = "0.15", features = ["scan-fonts"] }
+
+[dev-dependencies]

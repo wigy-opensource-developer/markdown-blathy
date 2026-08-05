@@ -5,14 +5,16 @@
 //! serialization-only shims plus the system dialogs.
 
 use std::path::Path;
+use std::sync::{Arc, Mutex};
 
 use serde::{Deserialize, Serialize};
-use tauri::AppHandle;
+use tauri::{AppHandle, State};
 use tauri_plugin_dialog::DialogExt;
+use typst_as_lib::{TypstEngine, TypstTemplateMainFile};
 
 use crate::files;
 use crate::options::RenderOptions;
-use crate::typst_engine::engine;
+use crate::typst_engine::engine::{self, FontOptions};
 use crate::typst_engine::template::{self, resolve_template_source};
 
 /// Frontend → Rust payload for `render_preview` (§7.4).
@@ -83,20 +85,139 @@ fn is_false(b: &bool) -> bool {
     !b
 }
 
+/// The M6 engine cache (§7.5): one compiled engine per static source.
+///
+/// Rebuilding an engine is the expensive part — the font scan runs at build
+/// time — so the engine is reused across renders and recreated only when the
+/// static source (the resolved template plus the toolbar options) changes.
+/// The markdown body never touches it: it travels as `sys.inputs` per render.
+pub struct TemplateEngineCache {
+    key: String,
+    engine: Option<TypstEngine<TypstTemplateMainFile>>,
+}
+
+impl TemplateEngineCache {
+    pub fn new() -> Self {
+        Self {
+            key: String::new(),
+            engine: None,
+        }
+    }
+
+    /// The engine for `static_source`, rebuilt (fonts re-scanned) only when
+    /// the source changed since the last call.
+    fn engine_for(
+        &mut self,
+        static_source: &str,
+        fonts: &FontOptions,
+    ) -> Result<&TypstEngine<TypstTemplateMainFile>, String> {
+        if self.key != static_source {
+            // Diagnostic (stderr): a rebuild re-runs the font scan, which is
+            // the ~1.5s cost the user may see on the first render after a
+            // template change. Each line here should correspond to an actual
+            // template/options change, never to steady-state typing.
+            eprintln!(
+                "[engine cache] rebuild: static source changed ({} -> {} chars)",
+                self.key.len(),
+                static_source.len()
+            );
+            self.engine =
+                Some(engine::build_engine(static_source, fonts).map_err(|e| e.to_string())?);
+            self.key = static_source.to_string();
+        }
+        Ok(self.engine.as_ref().expect("engine built just above"))
+    }
+
+    /// Store a ready-built engine under its static source. Used by template
+    /// validation (§7.4): validation already scans the fonts and builds an
+    /// engine, so it hands it to the cache and the next render — which uses
+    /// the same static source — finds it ready instead of re-scanning.
+    fn prime(&mut self, static_source: &str, engine: TypstEngine<TypstTemplateMainFile>) {
+        self.key = static_source.to_string();
+        self.engine = Some(engine);
+    }
+}
+
+impl Default for TemplateEngineCache {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Font loading for a render (§6.3, M6): the embedded DejaVu Sans always
+/// applies. A custom template loads only the font families it references
+/// (`#set text(font: ...)`) — a small font book keeps compiles fast — plus
+/// any font files next to the `.typ` file. Templates that reference fonts
+/// via variables (not detected by the parser) fall back to the full system
+/// scan.
+fn font_options_for(options: &RenderOptions) -> FontOptions {
+    match &options.template_path {
+        Some(path) => font_options_for_path(path),
+        None => FontOptions::default(),
+    }
+}
+
+/// Font loading for a template *file path* (used by validation, which runs
+/// before the template is applied to the options).
+fn font_options_for_path(path: &str) -> FontOptions {
+    let dir = Path::new(path)
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .map(|p| p.to_path_buf());
+    let families = std::fs::read_to_string(path)
+        .map(|source| template::referenced_font_families(&source))
+        .unwrap_or_default();
+    FontOptions {
+        // When no families are detected, keep the conservative full scan.
+        system_fonts: families.is_empty(),
+        extra_dirs: dir.into_iter().collect(),
+        families,
+    }
+}
+
 /// Live preview: markdown + options → per-page SVG strings (§7.4).
 ///
-/// Compilation is CPU-bound, so it runs on `spawn_blocking` to keep the IPC
-/// handler off the async runtime's critical path. `seq` is echoed back so the
-/// frontend can drop stale responses.
+/// The static source (template + toolbar options) selects a cached engine —
+/// built once, fonts scanned once — and the markdown body is passed per
+/// render via `sys.inputs` (M6, §7.5). Compilation is CPU-bound, so it runs
+/// on `spawn_blocking`; `seq` is echoed back so the frontend can drop stale
+/// responses.
 #[tauri::command]
-pub async fn render_preview(payload: RenderPayload) -> Result<PreviewOutcome, String> {
+pub async fn render_preview(
+    state: State<'_, Arc<Mutex<TemplateEngineCache>>>,
+    payload: RenderPayload,
+) -> Result<PreviewOutcome, String> {
+    let t0 = std::time::Instant::now();
     let template_source = resolve_template_source(&payload.options)?;
-    let source = template::build_source(&template_source, &payload.options, &payload.markdown)?;
+    let static_source = template::build_static_source(&template_source, &payload.options)?;
+    let inputs = template::render_inputs(&payload.markdown, &payload.options)?;
+    let fonts = font_options_for(&payload.options);
+    let t1 = std::time::Instant::now();
 
-    let outcome = tauri::async_runtime::spawn_blocking(move || engine::compile_preview(&source))
-        .await
-        .map_err(|e| format!("Preview task failed: {e}"))?
-        .map_err(|e| e.to_string())?;
+    let cache = state.inner().clone(); // owned Arc<Mutex<...>> for the blocking thread
+    let outcome = tauri::async_runtime::spawn_blocking(move || {
+        let mut cache = cache
+            .lock()
+            .map_err(|_| "engine cache lock poisoned".to_string())?;
+        let engine = cache.engine_for(&static_source, &fonts)?;
+        engine::compile_preview_with_inputs(engine, &inputs).map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| format!("Preview task failed: {e}"))??;
+
+    // Diagnostic: where does the per-render time go? `setup` is the frontend
+    // payload handling (template read + conversion), `render` is the cached
+    // engine compile + SVG generation. If `render` is small but the user still
+    // sees ~1s, the cost is on the frontend (IPC/DOM), not the backend.
+    let t2 = std::time::Instant::now();
+    let svg_bytes: usize = outcome.pages.iter().map(|p| p.len()).sum();
+    eprintln!(
+        "[preview] setup={:?} render={:?} total={:?} pages={} svg={svg_bytes}B",
+        t1.duration_since(t0),
+        t2.duration_since(t1),
+        t2.duration_since(t0),
+        outcome.pages.len(),
+    );
 
     Ok(PreviewOutcome {
         pages: outcome.pages,
@@ -109,22 +230,31 @@ pub async fn render_preview(payload: RenderPayload) -> Result<PreviewOutcome, St
 /// in `directory`) → write the PDF atomically → open it in the system viewer
 /// (§7.4, M4).
 ///
-/// Compilation is CPU-bound, so it runs on `spawn_blocking`; the save dialog
-/// blocks too, which is fine off the UI thread.
+/// Shares the M6 engine cache with the preview, so exporting does not re-scan
+/// fonts. Compilation and the blocking save dialog run off the UI thread.
 #[tauri::command]
 pub async fn export_pdf(
     app: AppHandle,
+    state: State<'_, Arc<Mutex<TemplateEngineCache>>>,
     payload: RenderPayload,
     title: String,
     directory: Option<String>,
 ) -> Result<FileOutcome, String> {
     let template_source = resolve_template_source(&payload.options)?;
-    let source = template::build_source(&template_source, &payload.options, &payload.markdown)?;
+    let static_source = template::build_static_source(&template_source, &payload.options)?;
+    let inputs = template::render_inputs(&payload.markdown, &payload.options)?;
+    let fonts = font_options_for(&payload.options);
 
-    let pdf = tauri::async_runtime::spawn_blocking(move || engine::compile_pdf(&source))
-        .await
-        .map_err(|e| format!("Export task failed: {e}"))?
-        .map_err(|e| e.to_string())?;
+    let cache = state.inner().clone(); // owned Arc<Mutex<...>> for the blocking thread
+    let pdf = tauri::async_runtime::spawn_blocking(move || {
+        let mut cache = cache
+            .lock()
+            .map_err(|_| "engine cache lock poisoned".to_string())?;
+        let engine = cache.engine_for(&static_source, &fonts)?;
+        engine::compile_pdf_with_inputs(engine, &inputs).map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| format!("Export task failed: {e}"))??;
 
     let mut dialog = app
         .dialog()
@@ -229,14 +359,38 @@ pub fn open_external(url: String) -> Result<(), String> {
 /// read, or that omits/misdefines the required `article` function, is rejected
 /// with the offending path and the compile diagnostics (§6.3 / §9). The UI
 /// keeps the previous template (or the embedded default) on failure.
+///
+/// The probe engine is built exactly as the real render will use it (current
+/// options + system fonts + the template's own folder, M6), and — since that
+/// build already paid the font scan — the engine is handed to the cache under
+/// its static source. The next `render_preview` for the same template finds it
+/// ready, so the document re-renders immediately instead of re-scanning.
 #[tauri::command]
-pub async fn validate_template(path: String) -> Result<serde_json::Value, String> {
-    let source = std::fs::read_to_string(&path)
+pub async fn validate_template(
+    state: State<'_, Arc<Mutex<TemplateEngineCache>>>,
+    path: String,
+    options: RenderOptions,
+) -> Result<serde_json::Value, String> {
+    let user_source = std::fs::read_to_string(&path)
         .map_err(|e| format!("Failed to read template at {path}: {e}"))?;
-    tauri::async_runtime::spawn_blocking(move || template::probe_template(&source))
-        .await
-        .map_err(|e| format!("Validation task failed: {e}"))?
-        .map_err(|e| format!("Template at {path} rejected: {e}"))?;
+    let template_source = format!("{}\n\n{user_source}", template::DEFAULT_TEMPLATE);
+    let static_source = template::build_static_source(&template_source, &options)?;
+    let fonts = font_options_for_path(&path);
+
+    let cache = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut cache = cache
+            .lock()
+            .map_err(|_| "engine cache lock poisoned".to_string())?;
+        let engine = engine::build_engine(&static_source, &fonts).map_err(|e| e.to_string())?;
+        engine::compile_preview_with_inputs(&engine, &template::probe_inputs())
+            .map_err(|e| e.to_string())?;
+        cache.prime(&static_source, engine);
+        Ok::<(), String>(())
+    })
+    .await
+    .map_err(|e| format!("Validation task failed: {e}"))?
+    .map_err(|e| format!("Template at {path} rejected: {e}"))?;
     Ok(serde_json::json!({ "valid": true }))
 }
 
@@ -272,8 +426,87 @@ fn open_in_viewer(path: &Path) {
 
 #[cfg(test)]
 mod tests {
-    use super::{FileOutcome, PreviewOutcome, RenderPayload};
+    use super::{FileOutcome, PreviewOutcome, RenderPayload, TemplateEngineCache};
     use crate::options::{Flavor, Margins, Paper, TextAlign};
+    use crate::typst_engine::engine::{self, FontOptions};
+
+    /// M6: the engine cache serves the engine for the current static source
+    /// and rebuilds it (new main-file content) as soon as the source changes —
+    /// the per-template font scan therefore runs once per source change.
+    #[test]
+    fn engine_cache_serves_and_rebuilds_on_source_change() {
+        use typst::World;
+
+        let mut cache = TemplateEngineCache::new();
+        let fonts = FontOptions::default();
+
+        fn main_source(
+            engine: &typst_as_lib::TypstEngine<typst_as_lib::TypstTemplateMainFile>,
+        ) -> String {
+            engine
+                .with_world(|world| {
+                    world
+                        .source(world.main())
+                        .map(|s| s.text().to_owned())
+                        .unwrap_or_default()
+                })
+                .unwrap_or_default()
+        }
+
+        let engine = cache.engine_for("source one", &fonts).expect("must build");
+        assert_eq!(main_source(engine), "source one");
+
+        let engine = cache.engine_for("source one", &fonts).expect("must reuse");
+        assert_eq!(
+            main_source(engine),
+            "source one",
+            "reused engine keeps its source"
+        );
+
+        let engine = cache
+            .engine_for("source two", &fonts)
+            .expect("must rebuild");
+        assert_eq!(
+            main_source(engine),
+            "source two",
+            "changed static source must rebuild the engine"
+        );
+    }
+
+    /// M6: validation primes the cache with a ready-built engine (§7.4); a
+    /// subsequent render for the same static source is served that engine
+    /// instead of re-scanning fonts.
+    #[test]
+    fn cache_prime_serves_the_prebuilt_engine() {
+        use typst::World;
+
+        let mut cache = TemplateEngineCache::new();
+        let fonts = FontOptions::default();
+
+        fn main_source(
+            engine: &typst_as_lib::TypstEngine<typst_as_lib::TypstTemplateMainFile>,
+        ) -> String {
+            engine
+                .with_world(|world| {
+                    world
+                        .source(world.main())
+                        .map(|s| s.text().to_owned())
+                        .unwrap_or_default()
+                })
+                .unwrap_or_default()
+        }
+
+        let prebuilt = engine::build_engine("theme source", &fonts).expect("must build");
+        cache.prime("theme source", prebuilt);
+        let served = cache
+            .engine_for("theme source", &fonts)
+            .expect("must reuse");
+        assert_eq!(
+            main_source(served),
+            "theme source",
+            "the primed engine must be served without a rebuild"
+        );
+    }
 
     /// Pins the IPC contract: the exact JSON the frontend `lib/api.js` sends
     /// (§8.4) must deserialize into `RenderPayload`.

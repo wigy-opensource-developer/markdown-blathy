@@ -107,10 +107,11 @@ describe("openExternal", () => {
 });
 
 describe("validateTemplate", () => {
-  it("invokes validate_template with the template path", () => {
-    validateTemplate("/home/u/custom.typ");
+  it("invokes validate_template with the template path and the current options", () => {
+    validateTemplate("/home/u/custom.typ", OPTIONS);
     expect(invoke).toHaveBeenCalledWith("validate_template", {
       path: "/home/u/custom.typ",
+      options: renderOptionsPayload(OPTIONS),
     });
   });
 });
