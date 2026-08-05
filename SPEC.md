@@ -46,7 +46,7 @@ User-visible behaviour:
 │      │  all real logic lives in plain modules (no tauri imports):        │
 │      ▼                                                                   │
 │  markdown::convert  comrak → AST → Typst markup (escaped)                │
-│  typst_engine::template   compose default/user template + invocation     │
+│  typst_engine::template   compose prelude + user template + invocation   │
 │  typst_engine::engine     TypstEngine (typst-as-lib) → compile           │
 │      ├── typst_svg  → per-page SVG strings  (preview)                    │
 │      └── typst_pdf  → PDF bytes             (export)                     │
@@ -179,10 +179,10 @@ tauri-md-editor/
 │       │   └── escape.rs        # Typst markup escaping helpers
 │       ├── typst_engine/
 │       │   ├── mod.rs
-│       │   ├── template.rs      # default.typ embedding, compose(), build_source()
+│       │   ├── template.rs      # prelude embedding, compose(), build_source()
 │       │   ├── engine.rs        # TypstEngine build, compile → SVG pages / PDF
 │       │   └── templates/
-│       │       └── default.typ  # embedded default article template
+│       │       └── default.typ  # embedded prelude (default helpers + article)
 │       └── fonts/               # embedded DejaVu Sans (regular + bold, §6.3)
 └── tests/                       # optional: integration tests (plain Rust)
 ```
@@ -292,16 +292,16 @@ Implementation sketch: parse with `comrak::parse_document(&arena, markdown, &opt
 | `Strong` | `*…*` |
 | `Emph` | `_…_` |
 | `Strikethrough` | `#strike[…]` |
-| `Code(NodeCode { literal, .. })` | backtick raw: `` `code` `` (see backtick rule below) |
-| `CodeBlock(Box<NodeCodeBlock> { info, literal, .. })` | fenced raw block: ``` `````lang````` ⏎ code ⏎ ````` ``` |
+| `Code(NodeCode { literal, .. })` | `#inline-code("…")` — string argument, so content with backticks/quotes/backslashes needs no fence logic; the prelude's `inline-code` owns the styling |
+| `CodeBlock(Box<NodeCodeBlock> { info, literal, .. })` | `#code-block("lang", "source")` — `lang` is the info string's first word or `""` (the prelude owns the language fallback); the source is a string argument, so no backtick-fence math; the prelude's `code-block` owns the block chrome |
 | `Link(Box<NodeLink> { url, .. })` | `#link("url")[label]` (URL-escape `"` inside the string) |
-| `Image(Box<NodeLink> { url, .. })` | `#figure(image("url", width: 80%), caption: [ …optional alt text… ])` |
-| `List(NodeList { list_type, start, .. })` | `- ` / `1. ` per item (list type via `NodeList.list_type: ListType::Bullet|Ordered`, ordinal via `start`) |
+| `Image(Box<NodeLink> { url, .. })` | `#figure-image("url", [alt])` — the prelude's `figure-image` owns the default width and caption placement |
+| `List(NodeList { list_type, start, .. })` | bullets stay native Typst `- ` lists (themeable via `#show list`); ordered lists become `#ordered-list(start, [a], [b], …)` — the prelude helper wraps a native Typst `enum(start:, numbering: "1.")`, so the numbering is themeable (a literal `1. ` prefix would be plain text no template could style) |
 | `Item(NodeList)` | recurse children |
-| `TaskItem(NodeTaskItem { symbol, .. })` | a task list becomes a `#task-list(...)` grid: alternating checkbox-glyph and content cells (`[#sym.ballot]` unchecked / `[#sym.ballot.check]` checked; plain bullet items keep `•`). A grid is used because a native Typst list has a *single* marker for all items (§6.3) |
-| `BlockQuote` | `#blockquote[…children…]` (native since Typst 0.13; else fallback `#quote[block(…)]`) |
-| `Table(Box<NodeTable>)` / `TableRow(bool)` / `TableCell` | `#table(columns: (auto, …), [cell], [cell], …)`; header row (`TableRow(true)`) cells are bold: `[*cell*]` — the strong markup goes *inside* the content block, because `#table(...)` arguments are parsed in code mode where `*[a]` would be a multiplication (compile error "unexpected star") |
-| `ThematicBreak` | `#v(0.6em) #line(length: 100%, stroke: 0.5pt) #v(0.6em)` |
+| `TaskItem(NodeTaskItem { symbol, .. })` | each item becomes a call to the matching prelude helper: `#task-list(task-done([…]), task-todo([…]), task-plain([…]))`. The helpers own the checkbox glyphs (`#sym.ballot.check` / `#sym.ballot` / `•`) and the content cells; `task-list` concatenates the (glyph, content) pairs into a two-column grid. A grid is used because a native Typst list has a *single* marker for all items (§6.3) |
+| `BlockQuote` | `#blockquote[…children…]` (prelude helper wrapping the native `quote(block: true)` element, Typst 0.13+) |
+| `Table(Box<NodeTable>)` / `TableRow(bool)` / `TableCell` | `#markdown-table(columns: N, header: ([a], [b]), rows: (([1], [2]), …))` — Rust passes the markdown column count plus the header cells and body rows as data; the prelude's `markdown-table` emits one `auto` width per column (a bare `columns: auto` would collapse to a single column and stack the cells), bolds the header (`[*cell*]` *inside* the content block — valid in code mode, where `*[a]` would be a multiplication), and owns cell padding |
+| `ThematicBreak` | `#thematic-break()` — the prelude helper owns the spacing/stroke constants (`#v(0.6em) #line(length: 100%, stroke: 0.5pt) #v(0.6em)`) |
 | `FootnoteReference(Box<NodeFootnoteReference>)` / `FootnoteDefinition(NodeFootnoteDefinition)` | the *reference* is inlined at its call site as `#footnote[<definition content>]` — Typst draws the superscript marker where the function is called and the note at the page bottom; the definition block itself is dropped. Definitions are collected first (label → content) and matched by `name`; comrak only recognizes `[^n]` as a reference when a definition exists, so unresolved syntax stays literal text |
 | `Math(NodeMath { display_math, literal, .. })` | passthrough: inline `$…$`, block `$ … $` (LaTeX macros are **not** converted in v1; document the limitation) |
 | `FrontMatter(String)` | parse YAML `title` / `author` only → `ConvertedDocument.title/author`; emit nothing in the body; everything else ignored |
@@ -322,55 +322,73 @@ Implementation sketch: parse with `comrak::parse_document(&arena, markdown, &opt
 
 Additional rules:
 
-- **Inline code with backticks:** if the code contains `` ` ``, emit `#raw("…")` with the string content escaped (`"` → `\"`, `\` → `\\`); otherwise use `` `…` ``.
-- **Code blocks:** use the fenced form ````` ```lang ````` … ````` ```. The `info` string's first word is the language; if absent, use ```` ```text ````. No highlighting is applied (see §13).
+- **Inline code:** always `#inline-code("…")` with the string content escaped (`"` → `\"`, `\` → `\\`). Passing the code as a string argument means content containing backticks needs no special branch.
+- **Code blocks:** `#code-block("lang", "source")`. The `info` string's first word is the language; if absent, Rust passes `""` and the prelude's `code-block` applies its own fallback. No highlighting is applied (see §13).
 - **Line-initial `=` / `-` / `+`** inside paragraphs: these are only treated as headings/lists at block start, so they are safe inside a paragraph, but escape leading `=` after a blank-line boundary anyway if a heading-like construct is unintended — the conversion is block-aware, so this only matters if comrak's block classification differs from Typst's; the test suite (§10) covers it.
 - **Empty document:** return a body of `[]` (an empty content block) so compile always succeeds.
 - **Front matter:** comrak 0.54 stores the raw YAML (including the `---` delimiters stripped) in `FrontMatter(String)`. Parse only `title:` and `author:` with a plain line scan (v1 — no YAML crate; quoted/flow values are split on the first `: ` and trimmed of surrounding quotes). Everything else is ignored.
 
 ### 6.3 Template system (`typst_engine/template.rs`)
 
-Two concepts: the **template source** (a `.typ` file, embedded by default) and the **invocation** (the call the Rust side appends, carrying options + converted body).
+Two concepts: the **prelude** (a `.typ` file, embedded — `templates/default.typ`) and the **invocation** (the call the Rust side appends, carrying options + converted body).
 
-**Contract:** the template must define a function `article` with the following parameters. The Rust side appends an invocation of it.
+**Contract — prelude + shadowing (§6.3):** the embedded file is a *prelude*: default implementations of every helper the converter emits plus a default `article`. A user template is composed **after** the prelude (`{prelude}\n\n{user template}`), so Typst shadowing applies — any function the user redefines wins, everything else falls back to the prelude default. A user template that only restyles (or defines nothing at all) is valid; the probe validation (§7.4) rejects templates that do not compile (syntax errors) or whose *overrides* are broken. The `set`/`show` rules live inside `default-article`, so a full `article` override escapes the default look; `default-article` stays reachable for overriders who want to wrap it.
 
-Embedded default template (`include_str!("templates/default.typ")`):
+The converter emits calls to these prelude functions (§6.2): `task-list`/`task-done`/`task-todo`/`task-plain`, `blockquote`, `thematic-break`, `inline-code`, `code-block`, `markdown-table`, `ordered-list`, and (via the default `article`) `title-block`. The probe body exercises all of them except `figure-image` (its image file cannot exist during validation).
+
+**Worked example:** `examples/dark.typ` is a complete white-on-black theme that overrides `article` (page fill + light text + link/heading colors), `title-block`, the three task helpers (alternative bullets: green `✓` for done, `○` for open, `–` for plain), and the blockquote/thematic-break/inline-code/code-block/markdown-table helpers. It is covered by a regression test that compiles it through the full pipeline with zero font warnings — a reference for theme designers of which seams exist and what each one controls.
+
+Embedded prelude (`include_str!("templates/default.typ")`):
 
 ```typ
-// default.typ — embedded default template for tauri-md-editor.
-// Contract: must define #let article(...) with these exact parameter names.
-// Users may override this file; a custom template is validated by compiling
-// a probe document before being accepted (§7.4).
+// default.typ — embedded prelude for tauri-md-editor.
+// Provides default implementations of every helper the converter emits plus
+// a default `article`. User templates are composed AFTER this file, so their
+// definitions shadow these defaults (§6.3).
 
-#set page(paper: "a4", margin: (x: 20mm, y: 25mm))
-#set text(font: "DejaVu Sans", size: 11pt)   // `quote:` param was removed in Typst 0.13+;
-#set par(justify: false)                      // smart quotes are now an opt-in element, so the
-#show heading: set text(weight: 600)          // converter's `"` passthrough (§6.2) is safe.
-                                              // `heading` no longer takes `weight` (text property).
+// Task lists: each item function returns a (checkbox cell, content cell)
+// pair; task-list concatenates the pairs into a two-column grid (`.pos()`
+// because variadic arguments are not iterable directly).
+#let task-done(body) = ([#sym.ballot.check], [#body])
+#let task-todo(body) = ([#sym.ballot], [#body])
+#let task-plain(body) = ([•], [#body])
+#let task-list(..items) = {
+  let cells = ()
+  for item in items.pos() { cells = cells + item }
+  grid(columns: (auto, 1fr), column-gutter: 8pt, row-gutter: 0.65em, ..cells)
+}
+
+// Block quotes (native Typst `quote` since 0.13).
+#let blockquote(body) = quote(block: true)[#body]
+
+// Thematic break: spacing/stroke constants live here, not in Rust.
+#let thematic-break() = [#v(0.6em) #line(length: 100%, stroke: 0.5pt) #v(0.6em)]
+
+// Inline code (string argument avoids backtick-fence escaping).
+#let inline-code(text) = raw(text)
 
 // Code blocks: light background, monospace, no highlighting in v1.
-#show raw.where(block: true): it => block(
-  fill: rgb("#f5f5f5"), inset: 8pt, radius: 4pt, it,
+#let code-block(lang, source) = block(
+  fill: rgb("#f5f5f5"), inset: 8pt, radius: 4pt,
+  raw(source, block: true, lang: if lang == "" { none } else { lang }),
 )
 
-// Links: styled like the classic markdown look.
-#show link: set text(fill: rgb("#0366d6"))
+// Markdown tables: one auto column width per markdown column (a bare
+// `columns: auto` would collapse to one column and stack the cells), bold
+// header (the strong markup is *inside* the content block, so it is valid in
+// code mode).
+#let markdown-table(columns: 1, header: (), rows: ()) = {
+  let cells = ()
+  for row in rows { cells = cells + row }
+  let widths = ()
+  for i in range(columns) { widths = widths + (auto,) }
+  table(columns: widths, ..header.map(cell => [*#cell*]), ..cells.map(cell => [#cell]))
+}
 
-// Task-list helper used by the converter (§6.2): a two-column grid so
-// checked and unchecked items can mix at one level — a native Typst list has
-// a single marker for all items. The converter emits alternating cells:
-// `#task-list([#sym.ballot] [todo], [#sym.ballot.check] [done],)`.
-// `row-gutter` matches the default `par.leading` (0.65em) so mixed
-// single-line and multi-line tasks keep one uniform line rhythm.
-#let task-list(..cells) = grid(
-  columns: (auto, 1fr),
-  column-gutter: 8pt,
-  row-gutter: 0.65em,
-  ..cells,
-)
+// Ordered lists: native enum with markdown-style "1." markers.
+#let ordered-list(start, ..items) = enum(start: start, numbering: "1.", ..items)
 
-// Optional title/author from YAML front matter (§6.2), rendered as a
-// centered title block when present.
+// Title/author block from YAML front matter (§6.2) — override to restyle.
 #let title-block(title, author) = {
   set align(center)
   text(size: 1.6em, weight: 700)[#title]
@@ -381,8 +399,9 @@ Embedded default template (`include_str!("templates/default.typ")`):
   v(0.8em)
 }
 
-// Main entry point. The Rust side always appends: #article(...)[body]
-#let article(
+// Default article. The set/show rules are function-scoped so a template that
+// overrides `article` entirely escapes the default look.
+#let default-article(
   paper: "a4",
   margin-x: 20mm,
   margin-y: 25mm,
@@ -392,11 +411,18 @@ Embedded default template (`include_str!("templates/default.typ")`):
   body,
 ) = {
   set page(paper: paper, margin: (x: margin-x, y: margin-y))
+  set text(font: "DejaVu Sans", size: 11pt)
+  set par(justify: false)
+  show heading: set text(weight: 600)
+  show link: set text(fill: rgb("#0366d6"))
   if text-align == "center" { set align(center) }
   else if text-align == "justified" { set par(justify: true) }
   if title != none { title-block(title, author) }
   body
 }
+
+// Public name; user templates may redefine it to replace the whole look.
+#let article = default-article
 ```
 
 **Composition** — this is the only place where Rust builds a Typst source string:
@@ -433,9 +459,9 @@ Notes:
 - Margins are formatted with `format!("{}", value)` — values come from a fixed enum/preset in v1, never free text.
 - **The body is never interpolated into template source unescaped** — the converter already escaped it (§6.2), and it is placed *inside* a content block, which is the only place markup is valid. This mirrors the "escape on input, trust on output" rule.
 
-**User template override:** `template_path` in `RenderOptions`. When set, read the file; if it doesn't exist or fails a probe compile (§7.4), return a descriptive error and keep the previous template. Never fall back silently.
+**User template override:** `template_path` in `RenderOptions`. When set, read the file and compose it **after** the prelude (`{prelude}\n\n{user}`) so its definitions shadow the defaults (§6.3). If the file doesn't exist or fails a probe compile (§7.4), return a descriptive error and keep the previous template. Never fall back silently.
 
-**Fonts:** the engine must be given at least one font. Embed one via `include_bytes!` — e.g. DejaVu Sans (permissive license) — and pass it to the engine (§6.4). CJK and wider font coverage are future work (§13); if the engine builder offers a system-font option, prefer it when the user provides `template_path` (custom templates may use any system font).
+**Fonts:** the engine must be given at least one font. Embed one via `include_bytes!` — e.g. DejaVu Sans (permissive license) — and pass it to the engine (§6.4). **v1 loads only the embedded DejaVu Sans (regular + bold):** system fonts are *not* loaded, so a template that sets `#set text(font: "Times New Roman")` (or any family besides "DejaVu Sans") gets the non-fatal unknown-font warning (§9) and falls back to DejaVu. typst-as-lib does offer system-font discovery (`typst-kit-fonts` cargo feature + `TypstKitFontOptions`/`search_fonts_with`), but enabling it requires the §13.2 per-template engine cache — otherwise the system scan would run on every keystroke compile. CJK and wider font coverage are future work (§13).
 
 ### 6.4 Compile & export (`typst_engine/engine.rs`)
 
@@ -662,11 +688,9 @@ pub async fn save_markdown(app: AppHandle, path: Option<String>, content: String
 #[tauri::command]
 pub async fn validate_template(path: String) -> Result<serde_json::Value, String> {
     let source = std::fs::read_to_string(&path).map_err(|e| format!("Failed to read template: {e}"))?;
-    let probe = template::compose(&source, &TemplateArgs {
-        paper: "a4", margin_x_mm: 20.0, margin_y_mm: 25.0,
-        text_align: "left", title: None, author: None, body: "probe",
-    });
-    engine::compile_preview(&probe)?;                    // must not error
+    template::probe_template(&source)?;   // see §6.3: composed after the prelude and
+                                          // probe-compiled against every helper the
+                                          // converter emits (§6.2)
     Ok(serde_json::json!({ "valid": true }))
 }
 ```
@@ -717,7 +741,8 @@ pub fn run() {
             commands::save_markdown,
             commands::export_pdf,
             commands::get_initial_directory, // §8.4
-            // commands::validate_template — M5
+            commands::open_external,         // §7.4
+            commands::validate_template,     // M5
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
@@ -1050,8 +1075,8 @@ Follow red-green-refactor. Because `markdown/` and `typst_engine/` are plain Rus
 - `maps inline code and code blocks (with language, without language, containing backticks)`
 - `maps links with and without label, URL containing quotes`
 - `maps ordered and unordered lists, nested lists`
-- `maps task list items to a #task-list(...) grid with ☐/☑ cells`
-- `maps GFM table to #table(...)` (only when flavor = GFM/Custom; in CommonMark comrak yields paragraphs)
+- `maps task list items to #task-list(task-done([…]), task-todo([…]), …)` helper calls`
+- `maps GFM table to #markdown-table(header: …, rows: …)` (only when flavor = GFM/Custom; in CommonMark comrak yields paragraphs)
 - `maps footnotes and math in Custom flavor; leaves them as text otherwise`
 - `strips HTML tags and keeps text` (lossy path)
 - `parses YAML front matter title/author; ignores other keys` (no title/author → `ConvertedDocument` with `None`; title containing quotes → valid escaped Typst string)
@@ -1063,7 +1088,8 @@ Follow red-green-refactor. Because `markdown/` and `typst_engine/` are plain Rus
 - `compose passes body through verbatim (already escaped)`
 - `compose emits title: none / author: none when absent; quoted string literals when present`
 - `build_source maps paper/margins/alignment to template args; forwards title/author`
-- `template contract: default template defines article with required params` (compile probe)
+- `prelude contract: default template compiles a probe document; user templates are composed after the prelude (resolve_template_source prepends it)`
+- `probe_template: accepts a styling-only template (defaults apply), accepts valid helper overrides, rejects syntax errors and broken overrides`
 
 **Frontend (optional in M1, required later):** the pure modules (`lib/presets.js`, `lib/settings.js`) are testable with Vitest. Component tests (React Testing Library) are not required for v1; the seq guard and debounce are simple enough to review by hand — keep them in `App.jsx` so they are auditable.
 
@@ -1072,7 +1098,7 @@ Follow red-green-refactor. Because `markdown/` and `typst_engine/` are plain Rus
 - `compile_preview returns at least one SVG containing "<svg"`
 - `compile_pdf bytes start with "%PDF" and are non-empty`
 - `compile error path yields diagnostics, not a panic`
-- `custom template that omits article fails probe compile`
+- `custom template with a broken override fails the probe compile`
 - `warnings are collected not fatal` (unknown font → warning, not error)
 
 **Command-layer tests (optional, Tauri 2):** `tauri::test::mock_builder` / `mock_app` can invoke commands in-process; at minimum assert that `build_source` (shared logic) is covered by the unit tests above. Full IPC testing is not required for v1.
@@ -1102,7 +1128,7 @@ fn escapes_special_characters_in_text() {
 | **M2 — Engine** ✅ | `typst_engine/` — template, compose, compile | **Done** — `compile_preview(sample)` returns ≥1 SVG containing `<svg`; `compile_pdf` produces bytes starting with `%PDF`; error path yields `line N: …` diagnostics; warnings are collected, not fatal. |
 | **M3 — UI loop** ✅ | Editor + preview + debounce + seq guard | **Done** — CodeMirror 6 editor, Typst SVG preview, 200 ms debounce + seq guard in `App.jsx`; `render_preview` Tauri command registered; Vitest suite for `lib/presets.js` + `lib/seq.js` (14 frontend + 45 Rust tests green via `./check.sh`). |
 | **M4 — Files & export** ✅ | Open/Save/Export commands wired to toolbar | **Done** — `open_markdown`/`save_markdown`/`export_pdf`/`get_initial_directory`/`open_external` registered in `lib.rs`; writes are atomic (`files.rs::write_atomically`); dialogs via `tauri-plugin-dialog` start in the working Directory and default to `<title>.md`/`<title>.pdf` (title from frontmatter → file stem → "Sample", §8.4); exported PDF opens in the system viewer via the `open` crate (Rust-side only, no new capability); task lists render as a checkbox grid and footnote references are inlined at their call site (§6.2); preview links go to the system browser, other schemes are rejected, fragment links stay internal (§9); canceled dialogs are silent; 66 Rust + 47 frontend tests green via `./check.sh`. |
-| **M5 — Settings & polish** | localStorage settings, template override + validation, warnings UI, error banner | Settings survive restart; custom template accepted only after probe validation; warnings displayed; empty doc renders one blank page. |
+| **M5 — Settings & polish** ✅ | localStorage settings, template override + validation, warnings UI, error banner | **Done** — settings persist to `localStorage` (`lib/settings.js`, loaded on startup, saved on every option change, merged over defaults on corrupt/partial data); the Template… button picks a `.typ` file via the dialog plugin and applies it only after probe validation (`validate_template` command, `template::probe_template` — the probe is composed after the prelude and exercises every converter helper plus the title/author path, §6.3); **the template system is now a prelude**: `default.typ` provides default implementations of all converter helpers (`task-done`/`task-todo`/`task-plain`, `blockquote`, `thematic-break`, `inline-code`, `code-block`, `markdown-table`, `ordered-list`, `title-block`) plus `default-article`, and user templates are composed after it so Typst shadowing gives "default unless redefined" — styling title/author means overriding `title-block`, task glyphs via the task helpers, etc.; an active custom template is shown in the toolbar; warnings render as a collapsible list in the status bar; empty doc renders exactly one blank page; 73 Rust + 54 frontend tests green via `./check.sh`. |
 
 ## 12. Security
 
@@ -1118,7 +1144,7 @@ v1 limitations (accept and document in the README):
 
 - Raw HTML in Markdown is stripped to text.
 - No syntax highlighting inside code blocks in the PDF (Typst core has none built in; a `syntect`-or-`@preview/rich-codes` based highlighter can be layered on later).
-- Only one embedded font by default; no CJK coverage out of the box.
+- Only one embedded font by default (DejaVu Sans, regular + bold); no CJK coverage out of the box. **Custom templates cannot reference system fonts** — a `#set text(font: "Times New Roman")` yields the non-fatal unknown-font warning (§9) and falls back to DejaVu. The engine loads only the embedded fonts (§6.3); system-font discovery (`typst-kit-fonts` feature) is gated behind the §13.2 engine cache so the scan runs once per template, not per keystroke.
 - Remote images unsupported; images must be local files reachable through the world's file resolver.
 - No LaTeX math macros (`tex2typst-rs` could be added, as `mdxport` does).
 - No incremental compilation — full recompile per change; large (50+ page) documents may show latency.
@@ -1129,8 +1155,8 @@ v1 limitations (accept and document in the README):
 Future work, in order of leverage:
 
 1. **Incremental preview** — adopt `tinymist`/`typst-preview`-style patched SVG deltas (comemo memoisation) or stream pages via Tauri events instead of one big return value.
-2. **Reusable engine** — cache `TypstEngine` in `State`, rebuild on template change only; use `with_world`/`sys.inputs` to avoid re-reading fonts.
-3. **Syntax highlighting** in code blocks (syntect pre-wrapping or Typst packages).
+ 2. **Reusable engine** — cache `TypstEngine` in `State`, rebuild on template change only; use `with_world`/`sys.inputs` to avoid re-reading fonts. This is also what unblocks system-font support for custom templates (§6.3, §13): with the engine cached per template, `search_fonts_with`/`typst-kit-fonts` can load system fonts once per template change instead of on every keystroke compile.
+3. **Syntax highlighting** in code blocks (syntect pre-wrapping or Typst packages) — the prelude's `code-block` (§6.3) is the single seam to swap in a highlighter for every document.
 4. **HTML export** via `typst-html` (the `mdcast` project demonstrates this).
 5. **Table of contents, page numbers, running headers** — template-driven, zero core changes.
 6. **`Export .typ`** button (show the composed source) — cheap, great for debugging and power users.

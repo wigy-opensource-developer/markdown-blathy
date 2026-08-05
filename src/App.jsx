@@ -1,8 +1,10 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useDebouncedCallback } from "@mantine/hooks";
+import { open } from "@tauri-apps/plugin-dialog";
 import * as api from "./lib/api.js";
 import { marginsForPreset } from "./lib/presets.js";
 import { isStaleResponse } from "./lib/seq.js";
+import { loadSettings, saveSettings } from "./lib/settings.js";
 import { SAMPLE_DOC } from "./lib/sample.js";
 import { docTitle, parentDirectory, safeFileName, windowTitle } from "./lib/title.js";
 import Toolbar from "./components/Toolbar.jsx";
@@ -11,20 +13,14 @@ import Preview from "./components/Preview.jsx";
 import StatusBar from "./components/StatusBar.jsx";
 import ErrorBanner from "./components/ErrorBanner.jsx";
 
-// Frontend options state. `marginPreset` is UI-only and stripped when the
-// payload is built (see lib/api.js); the rest mirrors RenderOptions (§6.1).
-const DEFAULT_OPTIONS = {
-  flavor: "gfm",
-  paper: "a4",
-  marginPreset: "normal",
-  margins: marginsForPreset("normal"),
-  textAlign: "left",
-  templatePath: null,
-};
-
 export default function App() {
+  // Settings are loaded once from localStorage (M5, §8.6) and are the single
+  // source of truth for the toolbar options; every option change persists
+  // through `changeOption`. `marginPreset` is UI-only and stripped when the
+  // payload is built (see lib/api.js); the rest mirrors RenderOptions (§6.1).
+  const [settings, setSettings] = useState(() => loadSettings(window.localStorage));
+  const { options, editorFontSize } = settings;
   const [markdown, setMarkdown] = useState(SAMPLE_DOC);
-  const [options, setOptions] = useState(DEFAULT_OPTIONS);
   const [pages, setPages] = useState([]);
   const [warnings, setWarnings] = useState([]);
   const [error, setError] = useState(null);
@@ -106,18 +102,21 @@ export default function App() {
 
   // Apply a partial options patch; switching the margin preset maps it to
   // millimetre margins. `custom` keeps the current margins (custom margin
-  // editing arrives in a later milestone).
+  // editing arrives in a later milestone). Every change persists to
+  // localStorage so the settings survive a restart (M5, §8.6).
   const changeOption = useCallback(
     (patch) => {
-      setOptions((prev) => {
-        const margins = patch.marginPreset
-          ? marginsForPreset(patch.marginPreset) ?? prev.margins
-          : prev.margins;
-        return { ...prev, ...patch, margins };
-      });
+      const nextOptions = { ...settings.options, ...patch };
+      if (patch.marginPreset) {
+        nextOptions.margins =
+          marginsForPreset(patch.marginPreset) ?? settings.options.margins;
+      }
+      const next = { ...settings, options: nextOptions };
+      setSettings(next);
+      saveSettings(next, window.localStorage);
       refreshPreview();
     },
-    [refreshPreview]
+    [settings, refreshPreview]
   );
 
   // File handlers stay thin: they call the tested `lib/api.js` wrappers and
@@ -159,7 +158,31 @@ export default function App() {
     }
   }, [markdown, title, directory, refreshTitle]);
 
-  const handlePickTemplate = useCallback(() => {}, []); // M5
+  // Template picker (M5, §8.4): choose a `.typ` file via the system dialog,
+  // validate it with a probe compile, and only apply it on success — a broken
+  // template keeps the previous one (or the embedded default) and surfaces
+  // the diagnostics in the error banner. A dismissed dialog is silent (§9).
+  const handlePickTemplate = useCallback(async () => {
+    try {
+      const picked = await open({
+        title: "Choose a Typst template",
+        multiple: false,
+        filters: [{ name: "Typst template", extensions: ["typ"] }],
+        defaultPath: directory ?? undefined,
+      });
+      if (picked === null) return; // canceled — silent
+      await api.validateTemplate(picked);
+      changeOption({ templatePath: picked });
+    } catch (err) {
+      setError(String(err));
+    }
+  }, [directory, changeOption]);
+
+  // Clicking the active-template badge drops it again — back to the embedded
+  // default, as if no template was ever loaded (persisted like any option).
+  const handleClearTemplate = useCallback(() => {
+    changeOption({ templatePath: null });
+  }, [changeOption]);
 
   const handleExport = useCallback(async () => {
     try {
@@ -193,11 +216,17 @@ export default function App() {
         onOpen={handleOpen}
         onSave={handleSave}
         onPickTemplate={handlePickTemplate}
+        onClearTemplate={handleClearTemplate}
         onExport={handleExport}
       />
       <main id="panes">
         <section id="editor-pane">
-          <Editor value={markdown} onChange={handleEditorChange} onSave={handleSave} />
+          <Editor
+            value={markdown}
+            onChange={handleEditorChange}
+            onSave={handleSave}
+            fontSize={editorFontSize}
+          />
         </section>
         <section id="preview-pane">
           <Preview pages={pages} onExternalLink={handleExternalLink} />

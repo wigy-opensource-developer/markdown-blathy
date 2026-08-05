@@ -23,6 +23,7 @@ import {
   renderPreview,
   saveMarkdown,
   setWindowTitle,
+  validateTemplate,
 } from "./api.js";
 import { renderOptionsPayload } from "./presets.js";
 
@@ -101,6 +102,15 @@ describe("openExternal", () => {
     openExternal("https://example.com");
     expect(invoke).toHaveBeenCalledWith("open_external", {
       url: "https://example.com",
+    });
+  });
+});
+
+describe("validateTemplate", () => {
+  it("invokes validate_template with the template path", () => {
+    validateTemplate("/home/u/custom.typ");
+    expect(invoke).toHaveBeenCalledWith("validate_template", {
+      path: "/home/u/custom.typ",
     });
   });
 });

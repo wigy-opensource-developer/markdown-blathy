@@ -182,6 +182,21 @@ mod tests {
         }
     }
 
+    /// M5 acceptance: an empty document renders exactly one blank page — the
+    /// converter emits `[]` (§6.2) and the article invocation still produces a
+    /// page, so the preview never shows the "nothing to render" state.
+    #[test]
+    fn empty_document_renders_one_blank_page() {
+        let source = build_source(DEFAULT_TEMPLATE, &gfm_options(), "").unwrap();
+        let outcome = compile_preview(&source).expect("empty document must compile");
+        assert_eq!(outcome.pages.len(), 1, "empty doc renders one blank page");
+        assert!(
+            outcome.warnings.is_empty(),
+            "blank page must not warn: {:?}",
+            outcome.warnings
+        );
+    }
+
     #[test]
     fn compile_preview_returns_svg_pages() {
         let source = probe_source("= Hello\n\nWorld.");
@@ -291,6 +306,75 @@ mod tests {
         );
     }
 
+    /// Regression: the prelude task helpers must evaluate their body argument
+    /// (`[#body]`), not emit the literal text "body" (`[body]`). Two task
+    /// lists with different item text (same checkbox state, so the glyphs
+    /// match) must render differently — if the body were literal, both pages
+    /// would render the same "body" text and the SVGs would be identical.
+    #[test]
+    fn task_item_content_renders_not_literal_body() {
+        let render = |markdown: &str| {
+            let source = build_source(DEFAULT_TEMPLATE, &gfm_options(), markdown).unwrap();
+            let outcome = compile_preview(&source).expect("task list must compile");
+            outcome.pages[0].clone()
+        };
+        let aaa = render("- [ ] aaa\n- [ ] bbb");
+        let body = render("- [ ] body\n- [ ] body");
+        assert_ne!(
+            aaa, body,
+            "task item content must render, not the literal parameter name"
+        );
+    }
+
+    /// The reference dark theme (`examples/dark.typ`) must compile through
+    /// the full pipeline *without warnings*: it is the worked example for
+    /// theme designers, so its glyph choices (`#sym.checkmark`, `#sym.circle`,
+    /// the en dash) and its helper overrides must keep rendering with the
+    /// embedded DejaVu Sans and the current prelude.
+    #[test]
+    fn dark_theme_example_compiles_without_warnings() {
+        let theme_path = format!("{}/../examples/dark.typ", env!("CARGO_MANIFEST_DIR"));
+        let theme = std::fs::read_to_string(&theme_path).expect("examples/dark.typ must exist");
+        let template = format!("{DEFAULT_TEMPLATE}\n\n{theme}");
+        let markdown = [
+            "---",
+            "title: Dark Probe",
+            "author: Theme Designer",
+            "---",
+            "# White on black",
+            "",
+            "> A block quote on a dark card.",
+            "",
+            "- [x] completed task",
+            "- [ ] open task",
+            "- plain item mixed in",
+            "",
+            "Inline `code` and a code block:",
+            "",
+            "```rust",
+            "fn main() {}",
+            "```",
+            "",
+            "| a | b |",
+            "|---|---|",
+            "| 1 | 2 |",
+            "",
+            "1. one",
+            "2. two",
+            "",
+            "---",
+        ]
+        .join("\n");
+        let source = build_source(&template, &custom_options(), &markdown).unwrap();
+        let outcome = compile_preview(&source).expect("dark theme must compile");
+        assert!(!outcome.pages.is_empty(), "expected at least one page");
+        assert!(
+            outcome.warnings.is_empty(),
+            "dark theme glyphs must render with the embedded font: {:?}",
+            outcome.warnings
+        );
+    }
+
     /// A footnote reference must compile through the full pipeline in the
     /// Custom flavor (§6.2): the marker is inlined at its call site and the
     /// definition renders at the page bottom.
@@ -300,6 +384,56 @@ mod tests {
         let source = build_source(DEFAULT_TEMPLATE, &custom_options(), markdown).unwrap();
         let outcome = compile_preview(&source).expect("footnote document must compile");
         assert!(!outcome.pages.is_empty(), "expected at least one page");
+    }
+
+    /// The dark theme must restyle the footnote divider: the stock separator
+    /// is a black line (invisible on the dark page fill), so `dark.typ`
+    /// sets `footnote.entry(separator: …)` to a visible dark gray. In a doc
+    /// whose only strokes are the separator, the SVG must show the themed
+    /// color and no black.
+    #[test]
+    fn dark_theme_footnote_separator_is_visible() {
+        let theme_path = format!("{}/../examples/dark.typ", env!("CARGO_MANIFEST_DIR"));
+        let theme = std::fs::read_to_string(&theme_path).expect("examples/dark.typ must exist");
+        let template = format!("{DEFAULT_TEMPLATE}\n\n{theme}");
+        let markdown = "Body text.[^1]\n\n[^1]: the note";
+        let source = build_source(&template, &custom_options(), markdown).unwrap();
+        let outcome = compile_preview(&source).expect("dark theme footnote must compile");
+        let svg = &outcome.pages[0];
+        assert!(
+            svg.contains("stroke=\"#30363d\""),
+            "the themed separator must be drawn: {:?}",
+            svg
+        );
+        assert!(
+            !svg.contains("stroke=\"#000000\""),
+            "the stock black separator must be replaced"
+        );
+    }
+
+    /// Regression: the prelude `markdown-table` must lay cells out in columns.
+    /// `columns: auto` is a *single* auto column, which stacks every cell
+    /// vertically; the converter passes the markdown column count and the
+    /// helper builds one `auto` width per column, matching the pre-prelude
+    /// `#table(columns: (auto, auto), …)` layout.
+    #[test]
+    fn table_cells_render_in_columns() {
+        let markdown = "| a | b |\n|---|---|\n| 1 | 2 |";
+        let source = build_source(DEFAULT_TEMPLATE, &gfm_options(), markdown).unwrap();
+        let outcome = compile_preview(&source).expect("table must compile");
+        let svg = &outcome.pages[0];
+
+        let render_ref = |body: &str| {
+            compile_preview(&probe_source(body))
+                .expect("reference table must compile")
+                .pages[0]
+                .clone()
+        };
+        let stacked = render_ref("#table(columns: (auto,), [*a*], [*b*], [1], [2])");
+        let two_cols = render_ref("#table(columns: (auto, auto), [*a*], [*b*], [1], [2])");
+
+        assert_ne!(svg, &stacked, "cells must not stack in a single column");
+        assert_eq!(svg, &two_cols, "cells must lay out in two auto columns");
     }
 
     /// Mirrors the feature set of the startup sample (`lib/sample.js`) so the
@@ -346,12 +480,13 @@ mod tests {
     }
 
     #[test]
-    fn template_without_article_fails_probe_compile() {
-        // A custom template that omits the required `article` function must be
-        // rejected by the probe compile (§6.3).
-        let broken = "#let foo = 1";
+    fn custom_template_with_syntax_error_fails_probe_compile() {
+        // A custom template is composed AFTER the prelude (§6.3); a broken
+        // override (here: an undefined function in a helper the probe body
+        // exercises) must surface as diagnostics, not a panic.
+        let broken = "#let task-list(..items) = boom(1)";
         let source = compose(
-            broken,
+            &format!("{DEFAULT_TEMPLATE}\n\n{broken}"),
             &TemplateArgs {
                 paper: "a4",
                 margin_x_mm: 20.0,
@@ -359,7 +494,7 @@ mod tests {
                 text_align: "left",
                 title: None,
                 author: None,
-                body: "probe",
+                body: "#task-list(task-todo([x]))",
             },
         );
         let err = compile_preview(&source).unwrap_err();

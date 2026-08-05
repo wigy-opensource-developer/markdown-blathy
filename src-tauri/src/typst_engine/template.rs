@@ -9,6 +9,13 @@ use crate::markdown::convert::md_to_typst;
 use crate::options::{RenderOptions, TextAlign};
 
 /// The embedded default template (`templates/default.typ`).
+///
+/// This is the PRELUDE (§6.3): default implementations of every helper the
+/// converter emits (`task-list`/`task-done`/`task-todo`/`task-plain`,
+/// `blockquote`, `thematic-break`, `inline-code`, `code-block`,
+/// `markdown-table`, `ordered-list`, `title-block`) plus a default `article`.
+/// User templates are composed *after* it, so Typst shadowing lets them
+/// override any of these while falling back to the defaults for the rest.
 pub const DEFAULT_TEMPLATE: &str = include_str!("templates/default.typ");
 
 /// Arguments for the template's `article` invocation (§6.3).
@@ -87,18 +94,68 @@ pub fn build_source(
 /// Resolve the template source to compile (§7.4): read the user template at
 /// `options.template_path`, or fall back to the embedded `DEFAULT_TEMPLATE`.
 ///
-/// The error message names the offending path so the UI can surface it (§9).
+/// A user template is composed AFTER the prelude (§6.3), so its definitions
+/// shadow the default helpers while everything it leaves out keeps the
+/// prelude implementation. The error message names the offending path so the
+/// UI can surface it (§9).
 pub fn resolve_template_source(options: &RenderOptions) -> Result<String, String> {
     match &options.template_path {
-        Some(path) => std::fs::read_to_string(path)
-            .map_err(|e| format!("Failed to read template at {path}: {e}")),
+        Some(path) => {
+            let user = std::fs::read_to_string(path)
+                .map_err(|e| format!("Failed to read template at {path}: {e}"))?;
+            Ok(format!("{DEFAULT_TEMPLATE}\n\n{user}"))
+        }
         None => Ok(DEFAULT_TEMPLATE.to_string()),
     }
 }
 
+/// Validate a user-supplied template (§6.3, §7.4). The template source is
+/// composed AFTER the prelude and compiled against a probe document that
+/// exercises every helper the converter emits (except `figure-image`, whose
+/// image file cannot exist during validation) plus the `title`/`author` path.
+///
+/// Because the prelude provides defaults for all helpers, a template that
+/// only restyles — or defines nothing at all — passes; the probe rejects
+/// templates that do not compile at all (syntax errors) or whose *overrides*
+/// are broken (e.g. a `task-list` that calls an undefined function).
+///
+/// Pure (no `tauri` imports): the command layer reads the file and hands the
+/// source over, so this is unit-testable without a running app.
+pub fn probe_template(user_source: &str) -> Result<(), String> {
+    let composed = format!("{DEFAULT_TEMPLATE}\n\n{user_source}");
+    let probe = compose(
+        &composed,
+        &TemplateArgs {
+            paper: "a4",
+            margin_x_mm: 20.0,
+            margin_y_mm: 25.0,
+            text_align: "left",
+            title: Some("Probe"),
+            author: Some("Probe Author"),
+            body: &[
+                "= Probe heading",
+                "#blockquote[Probe quote]",
+                "#task-list(task-done([Done]), task-todo([Todo]), task-plain([Plain]))",
+                "#thematic-break()",
+                "#inline-code(\"code\")",
+                "#code-block(\"rust\", \"fn main() {}\")",
+                "#markdown-table(columns: 2, header: ([a], [b]), rows: (([1], [2]),))",
+                "#ordered-list(1, [One], [Two])",
+            ]
+            .join("\n"),
+        },
+    );
+    crate::typst_engine::engine::compile_preview(&probe)
+        .map(|_| ())
+        .map_err(|e| e.to_string())
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{build_source, compose, resolve_template_source, TemplateArgs, DEFAULT_TEMPLATE};
+    use super::{
+        build_source, compose, probe_template, resolve_template_source, TemplateArgs,
+        DEFAULT_TEMPLATE,
+    };
     use crate::options::{Flavor, Margins, Paper, RenderOptions, TextAlign};
 
     const TMPL: &str = "#let article(paper: \"a4\", margin-x: 20mm, margin-y: 25mm, text-align: \"left\", title: none, author: none, body) = { body }";
@@ -251,7 +308,8 @@ mod tests {
             "tauri-md-editor-template-test-{}.typ",
             std::process::id()
         ));
-        std::fs::write(&path, "#let article(body) = body").unwrap();
+        let user = "#let task-todo(body) = ([TODO], [body])";
+        std::fs::write(&path, user).unwrap();
         let options = RenderOptions {
             flavor: Flavor::Commonmark,
             paper: Paper::A4,
@@ -265,7 +323,16 @@ mod tests {
             template_path: Some(path.to_string_lossy().into_owned()),
         };
         let source = resolve_template_source(&options).expect("user template must resolve");
-        assert_eq!(source, "#let article(body) = body");
+        // The user template is composed AFTER the prelude so its definitions
+        // shadow the defaults (§6.3).
+        assert!(
+            source.starts_with(DEFAULT_TEMPLATE),
+            "prelude must be prepended"
+        );
+        assert!(
+            source.trim_end().ends_with(user),
+            "user source must come after the prelude"
+        );
         let _ = std::fs::remove_file(&path);
     }
 
@@ -313,5 +380,56 @@ mod tests {
             "probe must render at least one page"
         );
         assert!(outcome.pages[0].contains("<svg"), "page must be SVG");
+    }
+
+    /// A user template that only restyles — no `article`, no helper overrides
+    /// — is accepted: the prelude provides every default (§6.3, M5+prelude).
+    #[test]
+    fn probe_template_accepts_styling_only_template() {
+        probe_template("// styling tweaks only").expect("must pass via prelude defaults");
+    }
+
+    /// A user template may override individual helpers; a valid override
+    /// passes the probe and wins over the prelude default (shadowing).
+    #[test]
+    fn probe_template_accepts_helper_override() {
+        probe_template("#let task-todo(body) = ([#text(fill: red)[TODO]], [body])")
+            .expect("valid override must pass");
+    }
+
+    /// A template with a syntax error is rejected — the prelude cannot make
+    /// broken user code compile.
+    #[test]
+    fn probe_template_rejects_syntax_error() {
+        let err = probe_template("#let x = =").unwrap_err();
+        assert!(
+            err.contains("line"),
+            "probe failure should carry a diagnostic: {err}"
+        );
+    }
+
+    /// A template whose *override* of a helper is broken (references an
+    /// undefined function) is rejected because the probe body exercises every
+    /// helper — the override is actually used, so its error surfaces.
+    #[test]
+    fn probe_template_rejects_broken_override() {
+        let err = probe_template("#let task-list(..items) = boom(1)").unwrap_err();
+        assert!(
+            err.contains("boom"),
+            "broken override must surface its own error: {err}"
+        );
+    }
+
+    /// A template whose `article` override is broken is rejected — the probe
+    /// exercises the title/author path, so a broken override surfaces instead
+    /// of silently keeping the default.
+    #[test]
+    fn probe_template_rejects_broken_article_override() {
+        let tmpl = "#let article(..) = undefined-title-thing(title)";
+        let err = probe_template(tmpl).unwrap_err();
+        assert!(
+            err.contains("line"),
+            "probe failure should carry a diagnostic: {err}"
+        );
     }
 }

@@ -223,6 +223,23 @@ pub fn open_external(url: String) -> Result<(), String> {
     open::that(&url).map_err(|e| format!("Failed to open browser: {e}"))
 }
 
+/// Validate a custom `.typ` template by compiling a probe document (§7.4, M5).
+///
+/// A template is accepted only when the probe compiles — a file that cannot be
+/// read, or that omits/misdefines the required `article` function, is rejected
+/// with the offending path and the compile diagnostics (§6.3 / §9). The UI
+/// keeps the previous template (or the embedded default) on failure.
+#[tauri::command]
+pub async fn validate_template(path: String) -> Result<serde_json::Value, String> {
+    let source = std::fs::read_to_string(&path)
+        .map_err(|e| format!("Failed to read template at {path}: {e}"))?;
+    tauri::async_runtime::spawn_blocking(move || template::probe_template(&source))
+        .await
+        .map_err(|e| format!("Validation task failed: {e}"))?
+        .map_err(|e| format!("Template at {path} rejected: {e}"))?;
+    Ok(serde_json::json!({ "valid": true }))
+}
+
 /// `Some(&str)` for a non-empty string, else `None` — used to skip
 /// `set_directory` on dialogs when no working directory is known yet.
 fn non_empty(s: &Option<String>) -> Option<&str> {

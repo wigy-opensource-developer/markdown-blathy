@@ -52,6 +52,12 @@ export const setWindowTitle = (title) => getCurrentWindow().setTitle(title);
  *  them (§7.4 / §9). */
 export const openExternal = (url) => invoke("open_external", { url });
 
+/** Validate a custom `.typ` template by probe-compiling it (§7.4, M5).
+ *  Resolves with `{ valid: true }`; rejects with the offending path and the
+ *  compile diagnostics when the template is broken. The UI only applies a
+ *  template that passes (§6.3). */
+export const validateTemplate = (path) => invoke("validate_template", { path });
+
 /** True when a command result means the user dismissed a dialog — the UI
  *  treats these as silent no-ops (§9). */
 export const isCanceled = (result) => result?.canceled === true;

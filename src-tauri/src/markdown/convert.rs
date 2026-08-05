@@ -132,18 +132,21 @@ fn render_block_at(node: Node, indent: usize, footnotes: &HashMap<String, String
     match &node.data().value {
         NodeValue::Paragraph => render_inlines(node, footnotes),
         NodeValue::CodeBlock(block) => {
+            // The prelude's `code-block` owns the fenced/block styling and
+            // the language fallback; Rust passes the language (or "") and the
+            // source as string arguments — no backtick-fence math needed.
             let lang = block
                 .info
                 .split_whitespace()
                 .next()
                 .filter(|word| !word.is_empty())
-                .unwrap_or("text");
-            // A fence longer than any backtick run in the content is always
-            // unambiguous (min 3, as in CommonMark).
+                .unwrap_or("");
             let content = block.literal.strip_suffix('\n').unwrap_or(&block.literal);
-            let fence_len = (longest_backtick_run(content) + 1).max(3);
-            let fence = "`".repeat(fence_len);
-            format!("{fence}{lang}\n{content}\n{fence}")
+            format!(
+                "#code-block(\"{}\", \"{}\")",
+                escape_typst_string(lang),
+                escape_typst_string(content)
+            )
         }
         NodeValue::Heading(heading) => {
             format!(
@@ -154,9 +157,8 @@ fn render_block_at(node: Node, indent: usize, footnotes: &HashMap<String, String
         }
         NodeValue::List(list) => render_list(node, list, indent, footnotes),
         NodeValue::BlockQuote => format!("#blockquote[{}]", render_block_children(node, footnotes)),
-        NodeValue::ThematicBreak => {
-            "#v(0.6em) #line(length: 100%, stroke: 0.5pt) #v(0.6em)".to_string()
-        }
+        // The prelude's `thematic-break` owns the spacing/stroke constants.
+        NodeValue::ThematicBreak => "#thematic-break()".to_string(),
         // Lossy HTML: keep the literal as plain text, escaped. Never pass
         // HTML through to Typst (§6.2).
         NodeValue::HtmlBlock(html) => escape_text(&html.literal),
@@ -164,25 +166,30 @@ fn render_block_at(node: Node, indent: usize, footnotes: &HashMap<String, String
         // `#footnote[...]` marker must sit at the call site), so the
         // definition block itself contributes nothing (§6.2).
         NodeValue::FootnoteDefinition(_) => String::new(),
+        // The prelude's `markdown-table` owns column sizing and the header
+        // styling; Rust passes the column count plus the header cells and
+        // body rows as data.
         NodeValue::Table(table) => {
-            let columns = vec!["auto"; table.num_columns.max(1)].join(", ");
-            let mut cells: Vec<String> = Vec::new();
+            let columns = table.num_columns.max(1);
+            let mut header: Vec<String> = Vec::new();
+            let mut rows: Vec<String> = Vec::new();
             for row in node.children() {
                 let is_header = matches!(&row.data().value, NodeValue::TableRow(true));
-                for cell in row.children() {
-                    let content = render_inlines(cell, footnotes);
-                    // Header cells are *bold*: emit the strong markup *inside*
-                    // the content block. `*[a]` would be invalid here — table
-                    // arguments are parsed in code mode, where `*` is
-                    // multiplication, not emphasis.
-                    cells.push(if is_header {
-                        format!("[*{content}*]")
-                    } else {
-                        format!("[{content}]")
-                    });
+                let cells: Vec<String> = row
+                    .children()
+                    .map(|cell| format!("[{}]", render_inlines(cell, footnotes)))
+                    .collect();
+                if is_header {
+                    header = cells;
+                } else {
+                    rows.push(array_literal(&cells));
                 }
             }
-            format!("#table(columns: ({columns}), {})", cells.join(", "))
+            format!(
+                "#markdown-table(columns: {columns}, header: {}, rows: {})",
+                array_literal(&header),
+                array_literal(&rows),
+            )
         }
         _ => String::new(),
     }
@@ -194,14 +201,26 @@ fn render_list(
     indent: usize,
     footnotes: &HashMap<String, String>,
 ) -> String {
-    // Task lists become a two-column grid (checkbox glyph + content) so
-    // checked and unchecked items can mix at one level — a native Typst list
-    // has a single marker for all items (§6.2).
+    // Task lists become a grid via the prelude helpers (checkbox glyph +
+    // content) so checked and unchecked items can mix at one level — a native
+    // Typst list has a single marker for all items (§6.2).
     let has_task_items = node
         .children()
         .any(|item| matches!(item.data().value, NodeValue::TaskItem(_)));
     if has_task_items {
-        return render_task_list(node, list, indent, footnotes);
+        return render_task_list(node, list, footnotes);
+    }
+
+    // Ordered lists use the prelude's `ordered-list` helper (a native Typst
+    // enum) so the numbering is themeable — a literal "1. " prefix would be
+    // plain text that no template could style.
+    if list.list_type == comrak::nodes::ListType::Ordered {
+        let sep = if list.tight { "\n" } else { "\n\n" };
+        let items: Vec<String> = node
+            .children()
+            .map(|item| format!("[{}]", render_item_content(item, sep, footnotes)))
+            .collect();
+        return format!("#ordered-list({}, {})", list.start, items.join(", "));
     }
 
     let pad = "  ".repeat(indent);
@@ -211,14 +230,7 @@ fn render_list(
     let sep = if list.tight { "\n" } else { "\n\n" };
 
     let mut lines = Vec::new();
-    let mut ordinal = list.start;
     for item in node.children() {
-        let marker = match list.list_type {
-            comrak::nodes::ListType::Bullet => "- ".to_string(),
-            comrak::nodes::ListType::Ordered => format!("{ordinal}. "),
-        };
-        ordinal += 1;
-
         let blocks: Vec<(bool, String)> = item
             .children()
             .map(|block| {
@@ -228,10 +240,10 @@ fn render_list(
             })
             .collect();
 
-        let mut item_text = String::new();
+        let mut item_text = format!("{pad}- ");
         for (i, (is_list, rendered)) in blocks.iter().enumerate() {
             if i == 0 {
-                item_text.push_str(&format!("{pad}{marker}{rendered}"));
+                item_text.push_str(rendered);
             } else {
                 item_text.push_str(sep);
                 if *is_list {
@@ -247,36 +259,30 @@ fn render_list(
     lines.join("\n")
 }
 
-/// Render a task list as a `#task-list(...)` grid call: alternating
-/// checkbox-glyph and content cells, one pair per item (§6.2).
+/// Render a task list as `#task-list(task-done([…]), task-todo([…]), …)`:
+/// each item becomes a call to the matching prelude helper, which owns the
+/// checkbox glyph and the content cell (§6.2).
 fn render_task_list(
     node: Node,
     list: &comrak::nodes::NodeList,
-    indent: usize,
     footnotes: &HashMap<String, String>,
 ) -> String {
-    let pad = "  ".repeat(indent);
     let sep = if list.tight { "\n" } else { "\n\n" };
-    let cells: Vec<String> = node
+    let items: Vec<String> = node
         .children()
         .map(|item| {
-            let glyph = match &item.data().value {
-                // `sym.ballot` is ☐, `sym.ballot.check` is ☑ (U+2610/U+2611).
-                NodeValue::TaskItem(task) if task.symbol.is_some() => "#sym.ballot.check",
-                NodeValue::TaskItem(_) => "#sym.ballot",
+            let helper = match &item.data().value {
+                // `sym.ballot` is ☐, `sym.ballot.check` is ☑ (U+2610/U+2611);
+                // the glyph itself lives in the prelude helper.
+                NodeValue::TaskItem(task) if task.symbol.is_some() => "task-done",
+                NodeValue::TaskItem(_) => "task-todo",
                 // A plain bullet item mixed into a task list keeps its bullet.
-                _ => "•",
+                _ => "task-plain",
             };
-            format!(
-                "[{glyph}], [{}],",
-                render_item_content(item, sep, footnotes)
-            )
+            format!("{helper}([{}])", render_item_content(item, sep, footnotes))
         })
         .collect();
-    format!(
-        "{pad}#task-list(\n{pad}  {}\n{pad})",
-        cells.join(&format!("\n{pad}  "))
-    )
+    format!("#task-list({})", items.join(", "))
 }
 
 /// The blocks of a task-list item, joined for one grid cell. Nested lists
@@ -296,19 +302,14 @@ fn indent_lines(text: &str, pad: &str) -> String {
         .join("\n")
 }
 
-/// Longest run of consecutive backticks in `text` (0 if none).
-fn longest_backtick_run(text: &str) -> usize {
-    let mut longest = 0;
-    let mut current = 0;
-    for c in text.chars() {
-        if c == '`' {
-            current += 1;
-            longest = longest.max(current);
-        } else {
-            current = 0;
-        }
+/// A Typst array literal from cell strings: `(a, b, c)` — with the trailing
+/// comma a single-element array needs (`(x,)`); empty → `()`.
+fn array_literal(cells: &[String]) -> String {
+    if cells.len() == 1 {
+        format!("({},)", cells[0])
+    } else {
+        format!("({})", cells.join(", "))
     }
-    longest
 }
 
 /// Render a node's inline children into escaped Typst markup.
@@ -328,11 +329,9 @@ fn render_inline(node: Node, footnotes: &HashMap<String, String>) -> String {
         // `\ ` (backslash + space) is a hard line break in Typst markup.
         NodeValue::LineBreak => "\\ ".to_string(),
         NodeValue::Code(code) => {
-            if code.literal.contains('`') {
-                format!("#raw(\"{}\")", escape_typst_string(&code.literal))
-            } else {
-                format!("`{}`", code.literal)
-            }
+            // The prelude's `inline-code` owns the styling; the string
+            // argument avoids the backtick-fence branch entirely (§6.2).
+            format!("#inline-code(\"{}\")", escape_typst_string(&code.literal))
         }
         NodeValue::Strong => format!("*{}*", render_inlines(node, footnotes)),
         NodeValue::Emph => format!("_{}_", render_inlines(node, footnotes)),
@@ -345,8 +344,10 @@ fn render_inline(node: Node, footnotes: &HashMap<String, String>) -> String {
             )
         }
         NodeValue::Image(link) => {
+            // The prelude's `figure-image` owns the default width and caption
+            // placement; Rust passes the URL (data) and the alt text (content).
             format!(
-                "#figure(image(\"{}\", width: 80%), caption: [{}])",
+                "#figure-image(\"{}\", [{}])",
                 escape_typst_string(&link.url),
                 render_inlines(node, footnotes)
             )
@@ -410,29 +411,30 @@ mod tests {
     #[test]
     fn maps_inline_code_and_backtick_containing_code() {
         let plain = md_to_typst("use `code` here", Flavor::Gfm);
-        assert_eq!(plain.body, "use `code` here");
+        assert_eq!(plain.body, "use #inline-code(\"code\") here");
 
-        // ``a `b``  →  code span containing a backtick → must use #raw("…").
+        // ``a `b``  →  a code span containing a backtick; the string argument
+        // needs no fence-length math.
         let backtick = md_to_typst("``a `b``", Flavor::Gfm);
-        assert_eq!(backtick.body, "#raw(\"a `b\")");
+        assert_eq!(backtick.body, "#inline-code(\"a `b\")");
 
-        // A literal with a backtick *and* quotes/backslashes → #raw("…")
-        // with the string content escaped.
+        // A literal with a backtick *and* quotes/backslashes → escaped string.
         let quoted = md_to_typst("```a `b \"c\\```", Flavor::Gfm);
-        assert_eq!(quoted.body, "#raw(\"a `b \\\"c\\\\\")");
+        assert_eq!(quoted.body, "#inline-code(\"a `b \\\"c\\\\\")");
     }
 
     #[test]
     fn maps_code_blocks() {
         let rust = md_to_typst("```rust\nfn main() {}\n```", Flavor::Gfm);
-        assert_eq!(rust.body, "```rust\nfn main() {}\n```");
+        assert_eq!(rust.body, "#code-block(\"rust\", \"fn main() {}\")");
 
+        // No language → the empty string; the prelude owns the fallback.
         let no_lang = md_to_typst("```\nplain\n```", Flavor::Gfm);
-        assert_eq!(no_lang.body, "```text\nplain\n```");
+        assert_eq!(no_lang.body, "#code-block(\"\", \"plain\")");
 
-        // A literal containing a backtick run needs a longer fence.
+        // A literal containing a backtick run needs no longer fence.
         let backticks = md_to_typst("```\na ``` b\n```", Flavor::Gfm);
-        assert_eq!(backticks.body, "````text\na ``` b\n````");
+        assert_eq!(backticks.body, "#code-block(\"\", \"a ``` b\")");
     }
 
     #[test]
@@ -443,7 +445,7 @@ mod tests {
         );
         assert_eq!(
             doc.body,
-            "#link(\"https://example.com\")[label] and #figure(image(\"img.png\", width: 80%), caption: [alt])"
+            "#link(\"https://example.com\")[label] and #figure-image(\"img.png\", [alt])"
         );
 
         // A quote in the URL is escaped inside the Typst string literal.
@@ -453,11 +455,17 @@ mod tests {
 
     #[test]
     fn maps_bullet_and_ordered_lists() {
+        // Bullet lists stay native Typst `- ` lists (themeable via #show list).
         let bullet = md_to_typst("- a\n- b", Flavor::Gfm);
         assert_eq!(bullet.body, "- a\n- b");
 
+        // Ordered lists use the prelude helper (a native enum) so the
+        // numbering is themeable; the markdown start value is preserved.
         let ordered = md_to_typst("1. a\n2. b", Flavor::Gfm);
-        assert_eq!(ordered.body, "1. a\n2. b");
+        assert_eq!(ordered.body, "#ordered-list(1, [a], [b])");
+
+        let starts_at_three = md_to_typst("3. a\n4. b", Flavor::Gfm);
+        assert_eq!(starts_at_three.body, "#ordered-list(3, [a], [b])");
     }
 
     #[test]
@@ -468,24 +476,20 @@ mod tests {
 
     #[test]
     fn maps_task_list_items() {
-        // Task lists become a two-column grid (checkbox glyph + content) so
-        // checked and unchecked items can mix at one level — a native Typst
-        // list has a single marker for all items (§6.2).
+        // Task lists become calls to the prelude helpers, each owning the
+        // checkbox glyph and content cell (§6.2).
         let doc = md_to_typst("- [x] done\n- [ ] todo", Flavor::Gfm);
-        assert_eq!(
-            doc.body,
-            "#task-list(\n  [#sym.ballot.check], [done],\n  [#sym.ballot], [todo],\n)"
-        );
+        assert_eq!(doc.body, "#task-list(task-done([done]), task-todo([todo]))");
     }
 
     #[test]
     fn maps_plain_bullet_item_mixed_into_a_task_list() {
         // GFM allows a non-checkbox bullet item in the same list; it gets the
-        // default bullet glyph in the checkbox column.
+        // `task-plain` helper (default bullet glyph in the checkbox column).
         let doc = md_to_typst("- [x] done\n- plain item", Flavor::Gfm);
         assert_eq!(
             doc.body,
-            "#task-list(\n  [#sym.ballot.check], [done],\n  [•], [plain item],\n)"
+            "#task-list(task-done([done]), task-plain([plain item]))"
         );
     }
 
@@ -500,7 +504,7 @@ mod tests {
         let gfm = md_to_typst("| a | b |\n|---|---|\n| 1 | 2 |", Flavor::Gfm);
         assert_eq!(
             gfm.body,
-            "#table(columns: (auto, auto), [*a*], [*b*], [1], [2])"
+            "#markdown-table(columns: 2, header: ([a], [b]), rows: (([1], [2]),))"
         );
 
         // CommonMark has no table extension: the same source is paragraphs.
@@ -514,10 +518,7 @@ mod tests {
         assert_eq!(quote.body, "#blockquote[quoted text]");
 
         let hr = md_to_typst("a\n\n---\n\nb", Flavor::Gfm);
-        assert_eq!(
-            hr.body,
-            "a\n\n#v(0.6em) #line(length: 100%, stroke: 0.5pt) #v(0.6em)\n\nb"
-        );
+        assert_eq!(hr.body, "a\n\n#thematic-break()\n\nb");
     }
 
     #[test]
@@ -592,10 +593,10 @@ mod tests {
     #[test]
     fn maps_indented_code_blocks() {
         let doc = md_to_typst("    let x = 1;\n", Flavor::Gfm);
-        assert_eq!(doc.body, "```text\nlet x = 1;\n```");
+        assert_eq!(doc.body, "#code-block(\"\", \"let x = 1;\")");
 
         let blank = md_to_typst("    a\n\n    b\n", Flavor::Gfm);
-        assert_eq!(blank.body, "```text\na\n\nb\n```");
+        assert_eq!(blank.body, "#code-block(\"\", \"a\n\nb\")");
     }
 
     #[test]

@@ -80,7 +80,7 @@ body {
 
 .editor .cm-editor .cm-scroller {
   font-family: "Iosevka", monospace;
-  font-size: 16px;
+  font-size: var(--editor-font-size, 16px);
   font-weight: 500;
 }
 
@@ -119,14 +119,48 @@ body {
 
 #status {
   display: flex;
-  gap: 12px;
+  flex-direction: column;
   padding: 5px 12px;
   border-top: 1px solid var(--mantine-color-default-border, #d9d9d9);
   font-size: 15px;
 }
 
-#status #warning-count {
+#status-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+#warning-toggle {
+  border: none;
+  background: transparent;
+  padding: 0;
   color: #b45309;
+  font-size: 15px;
+  font-family: inherit;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+}
+
+#warning-toggle:hover {
+  text-decoration: underline;
+}
+
+#warning-toggle .chevron {
+  font-size: 12px;
+}
+
+#warning-list {
+  margin: 6px 0 2px;
+  padding-left: 18px;
+  color: #92400e;
+  font-size: 13px;
+  line-height: 1.5;
+  max-height: 120px;
+  overflow: auto;
+  list-style: square;
 }
 
 #error-banner {

@@ -1,13 +1,14 @@
 // Toolbar: file buttons, flavor/paper/margins/align selects, template picker
 // and export (§8.4 of SPEC.md). File/template/export handlers arrive in M4/M5.
 import { memo } from "react";
-import { Button, Divider, Group, Select, Tooltip } from "@mantine/core";
+import { Badge, Button, Divider, Group, Select, Tooltip } from "@mantine/core";
 import {
   IconDeviceFloppy,
   IconFilePlus,
   IconFileTypePdf,
   IconFolderOpen,
   IconTemplate,
+  IconTemplateOff,
 } from "@tabler/icons-react";
 import { ALIGNS, FLAVORS, MARGIN_PRESETS, PAPERS } from "../lib/presets.js";
 
@@ -18,8 +19,10 @@ function Toolbar({
   onOpen,
   onSave,
   onPickTemplate,
+  onClearTemplate,
   onExport,
 }) {
+  const customTemplate = options.templatePath;
   return (
     <header id="toolbar">
       <Group gap="xs">
@@ -79,11 +82,39 @@ function Toolbar({
 
       <div className="spacer" />
 
-      <Tooltip label="Choose a custom .typ template">
-        <Button variant="subtle" size="compact-md" leftSection={<IconTemplate size={16} />} onClick={onPickTemplate}>
-          Template…
-        </Button>
-      </Tooltip>
+      <Group gap="xs" align="center">
+        {customTemplate && (
+          <Tooltip label={`Remove custom template (${customTemplate})`}>
+            <Badge
+              variant="light"
+              color="teal"
+              leftSection={<IconTemplateOff size={12} />}
+              onClick={onClearTemplate}
+              style={{ cursor: "pointer" }}
+            >
+              Custom template
+            </Badge>
+          </Tooltip>
+        )}
+        <Tooltip
+          label={
+            customTemplate
+              ? "Replace the custom .typ template"
+              : "Choose a custom .typ template"
+          }
+        >
+          <Button
+            variant={customTemplate ? "light" : "subtle"}
+            size="compact-md"
+            leftSection={
+              customTemplate ? <IconTemplateOff size={16} /> : <IconTemplate size={16} />
+            }
+            onClick={onPickTemplate}
+          >
+            Template…
+          </Button>
+        </Tooltip>
+      </Group>
       <Button color="blue" size="compact-md" leftSection={<IconFileTypePdf size={16} />} onClick={onExport}>
         Export PDF
       </Button>
