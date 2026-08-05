@@ -1,5 +1,5 @@
 // Status bar: page count + warnings (§8.1 of SPEC.md; the full warnings list
-// UI arrives in M5).
+// UI arrives in M5). The document title lives in the OS window title (§8.4).
 import { memo } from "react";
 
 function StatusBar({ pageCount, warnings }) {

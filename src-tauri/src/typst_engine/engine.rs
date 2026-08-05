@@ -175,6 +175,13 @@ mod tests {
         }
     }
 
+    fn custom_options() -> RenderOptions {
+        RenderOptions {
+            flavor: Flavor::Custom,
+            ..gfm_options()
+        }
+    }
+
     #[test]
     fn compile_preview_returns_svg_pages() {
         let source = probe_source("= Hello\n\nWorld.");
@@ -253,6 +260,89 @@ mod tests {
             "warning should mention the font: {:?}",
             outcome.warnings
         );
+    }
+
+    /// Regression: a blockquote must compile through the full pipeline. The
+    /// converter emits `#blockquote[...]` (§6.2), so the default template must
+    /// define the helper — the startup sample document surfaced that it did
+    /// not ("unknown variable: blockquote").
+    #[test]
+    fn blockquote_compiles_through_full_pipeline() {
+        let markdown = "> Tip: add YAML front-matter — `title: My Doc`.\n>\n> Second paragraph.";
+        let source = build_source(DEFAULT_TEMPLATE, &gfm_options(), markdown).unwrap();
+        let outcome = compile_preview(&source).expect("blockquote document must compile");
+        assert!(!outcome.pages.is_empty(), "expected at least one page");
+    }
+
+    /// A task list must compile through the full pipeline *without glyph
+    /// warnings*: the converter emits `sym.ballot` (☐) / `sym.ballot.check`
+    /// (☑) as checkbox cells (§6.2), which requires the embedded DejaVu Sans
+    /// to actually cover U+2610/U+2611.
+    #[test]
+    fn task_list_compiles_without_glyph_warnings() {
+        let markdown = "- [ ] todo\n- [x] done";
+        let source = build_source(DEFAULT_TEMPLATE, &gfm_options(), markdown).unwrap();
+        let outcome = compile_preview(&source).expect("task list must compile");
+        assert!(!outcome.pages.is_empty(), "expected at least one page");
+        assert!(
+            outcome.warnings.is_empty(),
+            "ballot glyphs must render with the embedded font: {:?}",
+            outcome.warnings
+        );
+    }
+
+    /// A footnote reference must compile through the full pipeline in the
+    /// Custom flavor (§6.2): the marker is inlined at its call site and the
+    /// definition renders at the page bottom.
+    #[test]
+    fn footnote_compiles_through_full_pipeline() {
+        let markdown = "- bullet item [^1]\n- another item\n\n[^1]: the note";
+        let source = build_source(DEFAULT_TEMPLATE, &custom_options(), markdown).unwrap();
+        let outcome = compile_preview(&source).expect("footnote document must compile");
+        assert!(!outcome.pages.is_empty(), "expected at least one page");
+    }
+
+    /// Mirrors the feature set of the startup sample (`lib/sample.js`) so the
+    /// class of documents it represents stays compile-green: headings, text
+    /// styles, links, blockquote, nested lists, task lists, code, GFM table,
+    /// thematic break and soft breaks — none of which the probe tests used.
+    #[test]
+    fn kitchen_sink_document_compiles_through_full_pipeline() {
+        let markdown = [
+            "# Hello, Markdown editor",
+            "",
+            "**Bold**, *italic*, `inline code` and ~~strikethrough~~.",
+            "",
+            "[a link](https://example.com)",
+            "",
+            "> Tip: add YAML front-matter — `title: My Doc`.",
+            "",
+            "- bullet item",
+            "  - nested item",
+            "",
+            "1. ordered item",
+            "2. second item",
+            "",
+            "- [x] completed task",
+            "- [ ] open task",
+            "",
+            "```rust",
+            "fn main() { println!(\"hello\"); }",
+            "```",
+            "",
+            "| Feature   | Flavor     |",
+            "| --------- | ---------- |",
+            "| Tables    | GFM, Custom |",
+            "",
+            "---",
+            "",
+            "*A soft break continues",
+            "on the next line*",
+        ]
+        .join("\n");
+        let source = build_source(DEFAULT_TEMPLATE, &gfm_options(), &markdown).unwrap();
+        let outcome = compile_preview(&source).expect("kitchen sink must compile");
+        assert!(!outcome.pages.is_empty(), "expected at least one page");
     }
 
     #[test]

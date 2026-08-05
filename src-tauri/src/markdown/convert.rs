@@ -3,6 +3,8 @@
 //! Walks the comrak AST and emits escaped Typst markup, plus any YAML
 //! front-matter `title`/`author` for the template (§6.3).
 
+use std::collections::HashMap;
+
 use comrak::nodes::{Node, NodeValue};
 use comrak::{parse_document, Arena};
 
@@ -29,26 +31,54 @@ pub fn md_to_typst(markdown: &str, flavor: Flavor) -> ConvertedDocument {
     let mut title = None;
     let mut author = None;
     let mut blocks: Vec<String> = Vec::new();
+
+    // Footnote definitions are rendered inline at their references —
+    // `#footnote[...]` attaches the superscript marker where it is called, so
+    // the definition block itself must not emit anything (§6.2).
+    let mut footnote_defs: HashMap<String, String> = HashMap::new();
+    collect_footnotes(root, &mut footnote_defs);
+
     for child in root.children() {
         if let NodeValue::FrontMatter(yaml) = &child.data().value {
             let (t, a) = parse_front_matter(yaml);
             title = t;
             author = a;
         } else {
-            blocks.push(render_block_at(child, 0));
+            blocks.push(render_block_at(child, 0, &footnote_defs));
         }
     }
 
     // Empty document → an empty content block so compile always succeeds.
+    // Footnote definitions render inline at their references and contribute
+    // an empty block here, so drop empties before joining.
     let body = if blocks.is_empty() {
         "[]".to_string()
     } else {
-        blocks.join("\n\n")
+        let non_empty: Vec<String> = blocks.into_iter().filter(|b| !b.is_empty()).collect();
+        if non_empty.is_empty() {
+            "[]".to_string()
+        } else {
+            non_empty.join("\n\n")
+        }
     };
     ConvertedDocument {
         body,
         title,
         author,
+    }
+}
+
+/// Walk the tree collecting footnote definitions (`name` → rendered content)
+/// so references can pull their definition's content at the call site.
+fn collect_footnotes(node: Node, defs: &mut HashMap<String, String>) {
+    for child in node.children() {
+        if let NodeValue::FootnoteDefinition(def) = &child.data().value {
+            if !defs.contains_key(def.name.as_str()) {
+                let content = render_block_children(child, defs);
+                defs.insert(def.name.clone(), content);
+            }
+        }
+        collect_footnotes(child, defs);
     }
 }
 
@@ -91,16 +121,16 @@ fn clean_yaml_value(value: &str) -> String {
 
 /// Render a node's block children joined with blank lines (used by
 /// `#blockquote[…]` and `#footnote[…]` containers).
-fn render_block_children(node: Node) -> String {
+fn render_block_children(node: Node, footnotes: &HashMap<String, String>) -> String {
     node.children()
-        .map(|child| render_block_at(child, 0))
+        .map(|child| render_block_at(child, 0, footnotes))
         .collect::<Vec<_>>()
         .join("\n\n")
 }
 
-fn render_block_at(node: Node, indent: usize) -> String {
+fn render_block_at(node: Node, indent: usize, footnotes: &HashMap<String, String>) -> String {
     match &node.data().value {
-        NodeValue::Paragraph => render_inlines(node),
+        NodeValue::Paragraph => render_inlines(node, footnotes),
         NodeValue::CodeBlock(block) => {
             let lang = block
                 .info
@@ -119,25 +149,28 @@ fn render_block_at(node: Node, indent: usize) -> String {
             format!(
                 "{} {}",
                 "=".repeat(heading.level as usize),
-                render_inlines(node)
+                render_inlines(node, footnotes)
             )
         }
-        NodeValue::List(list) => render_list(node, list, indent),
-        NodeValue::BlockQuote => format!("#blockquote[{}]", render_block_children(node)),
+        NodeValue::List(list) => render_list(node, list, indent, footnotes),
+        NodeValue::BlockQuote => format!("#blockquote[{}]", render_block_children(node, footnotes)),
         NodeValue::ThematicBreak => {
             "#v(0.6em) #line(length: 100%, stroke: 0.5pt) #v(0.6em)".to_string()
         }
         // Lossy HTML: keep the literal as plain text, escaped. Never pass
         // HTML through to Typst (§6.2).
         NodeValue::HtmlBlock(html) => escape_text(&html.literal),
-        NodeValue::FootnoteDefinition(_) => format!("#footnote[{}]", render_block_children(node)),
+        // Footnote definitions are emitted inline at their references (the
+        // `#footnote[...]` marker must sit at the call site), so the
+        // definition block itself contributes nothing (§6.2).
+        NodeValue::FootnoteDefinition(_) => String::new(),
         NodeValue::Table(table) => {
             let columns = vec!["auto"; table.num_columns.max(1)].join(", ");
             let mut cells: Vec<String> = Vec::new();
             for row in node.children() {
                 let is_header = matches!(&row.data().value, NodeValue::TableRow(true));
                 for cell in row.children() {
-                    let content = render_inlines(cell);
+                    let content = render_inlines(cell, footnotes);
                     // Header cells are *bold*: emit the strong markup *inside*
                     // the content block. `*[a]` would be invalid here — table
                     // arguments are parsed in code mode, where `*` is
@@ -155,7 +188,22 @@ fn render_block_at(node: Node, indent: usize) -> String {
     }
 }
 
-fn render_list(node: Node, list: &comrak::nodes::NodeList, indent: usize) -> String {
+fn render_list(
+    node: Node,
+    list: &comrak::nodes::NodeList,
+    indent: usize,
+    footnotes: &HashMap<String, String>,
+) -> String {
+    // Task lists become a two-column grid (checkbox glyph + content) so
+    // checked and unchecked items can mix at one level — a native Typst list
+    // has a single marker for all items (§6.2).
+    let has_task_items = node
+        .children()
+        .any(|item| matches!(item.data().value, NodeValue::TaskItem(_)));
+    if has_task_items {
+        return render_task_list(node, list, indent, footnotes);
+    }
+
     let pad = "  ".repeat(indent);
     let pad_next = "  ".repeat(indent + 1);
     // Tight lists put every block on the next line; loose lists separate
@@ -171,18 +219,11 @@ fn render_list(node: Node, list: &comrak::nodes::NodeList, indent: usize) -> Str
         };
         ordinal += 1;
 
-        // Task-list items: the item node's value is TaskItem (§6.2); the
-        // checkbox becomes #task(checked) right after the marker.
-        let task = match &item.data().value {
-            NodeValue::TaskItem(task) => format!("#task({}) ", task.symbol.is_some()),
-            _ => String::new(),
-        };
-
         let blocks: Vec<(bool, String)> = item
             .children()
             .map(|block| {
                 let is_list = matches!(block.data().value, NodeValue::List(_));
-                let rendered = render_block_at(block, indent + 1);
+                let rendered = render_block_at(block, indent + 1, footnotes);
                 (is_list, rendered)
             })
             .collect();
@@ -190,7 +231,7 @@ fn render_list(node: Node, list: &comrak::nodes::NodeList, indent: usize) -> Str
         let mut item_text = String::new();
         for (i, (is_list, rendered)) in blocks.iter().enumerate() {
             if i == 0 {
-                item_text.push_str(&format!("{pad}{marker}{task}{rendered}"));
+                item_text.push_str(&format!("{pad}{marker}{rendered}"));
             } else {
                 item_text.push_str(sep);
                 if *is_list {
@@ -204,6 +245,47 @@ fn render_list(node: Node, list: &comrak::nodes::NodeList, indent: usize) -> Str
         lines.push(item_text);
     }
     lines.join("\n")
+}
+
+/// Render a task list as a `#task-list(...)` grid call: alternating
+/// checkbox-glyph and content cells, one pair per item (§6.2).
+fn render_task_list(
+    node: Node,
+    list: &comrak::nodes::NodeList,
+    indent: usize,
+    footnotes: &HashMap<String, String>,
+) -> String {
+    let pad = "  ".repeat(indent);
+    let sep = if list.tight { "\n" } else { "\n\n" };
+    let cells: Vec<String> = node
+        .children()
+        .map(|item| {
+            let glyph = match &item.data().value {
+                // `sym.ballot` is ☐, `sym.ballot.check` is ☑ (U+2610/U+2611).
+                NodeValue::TaskItem(task) if task.symbol.is_some() => "#sym.ballot.check",
+                NodeValue::TaskItem(_) => "#sym.ballot",
+                // A plain bullet item mixed into a task list keeps its bullet.
+                _ => "•",
+            };
+            format!(
+                "[{glyph}], [{}],",
+                render_item_content(item, sep, footnotes)
+            )
+        })
+        .collect();
+    format!(
+        "{pad}#task-list(\n{pad}  {}\n{pad})",
+        cells.join(&format!("\n{pad}  "))
+    )
+}
+
+/// The blocks of a task-list item, joined for one grid cell. Nested lists
+/// carry their own indentation; text is escaped by the block renderer (§6.2).
+fn render_item_content(item: Node, sep: &str, footnotes: &HashMap<String, String>) -> String {
+    item.children()
+        .map(|block| render_block_at(block, 0, footnotes))
+        .collect::<Vec<_>>()
+        .join(sep)
 }
 
 /// Prefix every line of `text` with `pad`.
@@ -230,16 +312,16 @@ fn longest_backtick_run(text: &str) -> usize {
 }
 
 /// Render a node's inline children into escaped Typst markup.
-fn render_inlines(node: Node) -> String {
+fn render_inlines(node: Node, footnotes: &HashMap<String, String>) -> String {
     let mut out = String::new();
     for child in node.children() {
-        out.push_str(&render_inline(child));
+        out.push_str(&render_inline(child, footnotes));
     }
     out
 }
 
 /// Render a single inline node.
-fn render_inline(node: Node) -> String {
+fn render_inline(node: Node, footnotes: &HashMap<String, String>) -> String {
     match &node.data().value {
         NodeValue::Text(text) => escape_text(text),
         NodeValue::SoftBreak => " ".to_string(),
@@ -252,21 +334,21 @@ fn render_inline(node: Node) -> String {
                 format!("`{}`", code.literal)
             }
         }
-        NodeValue::Strong => format!("*{}*", render_inlines(node)),
-        NodeValue::Emph => format!("_{}_", render_inlines(node)),
-        NodeValue::Strikethrough => format!("#strike[{}]", render_inlines(node)),
+        NodeValue::Strong => format!("*{}*", render_inlines(node, footnotes)),
+        NodeValue::Emph => format!("_{}_", render_inlines(node, footnotes)),
+        NodeValue::Strikethrough => format!("#strike[{}]", render_inlines(node, footnotes)),
         NodeValue::Link(link) => {
             format!(
                 "#link(\"{}\")[{}]",
                 escape_typst_string(&link.url),
-                render_inlines(node)
+                render_inlines(node, footnotes)
             )
         }
         NodeValue::Image(link) => {
             format!(
                 "#figure(image(\"{}\", width: 80%), caption: [{}])",
                 escape_typst_string(&link.url),
-                render_inlines(node)
+                render_inlines(node, footnotes)
             )
         }
         NodeValue::HtmlInline(html) => escape_text(html),
@@ -278,6 +360,13 @@ fn render_inline(node: Node) -> String {
                 format!("${}$", math.literal)
             }
         }
+        // A footnote reference is inlined at the call site — `#footnote[...]`
+        // attaches the superscript marker where it is called (§6.2).
+        NodeValue::FootnoteReference(reference) => match footnotes.get(&reference.name) {
+            Some(content) => format!("#footnote[{content}]"),
+            // Dangling reference: drop rather than emit a broken marker.
+            None => String::new(),
+        },
         _ => String::new(),
     }
 }
@@ -379,8 +468,25 @@ mod tests {
 
     #[test]
     fn maps_task_list_items() {
+        // Task lists become a two-column grid (checkbox glyph + content) so
+        // checked and unchecked items can mix at one level — a native Typst
+        // list has a single marker for all items (§6.2).
         let doc = md_to_typst("- [x] done\n- [ ] todo", Flavor::Gfm);
-        assert_eq!(doc.body, "- #task(true) done\n- #task(false) todo");
+        assert_eq!(
+            doc.body,
+            "#task-list(\n  [#sym.ballot.check], [done],\n  [#sym.ballot], [todo],\n)"
+        );
+    }
+
+    #[test]
+    fn maps_plain_bullet_item_mixed_into_a_task_list() {
+        // GFM allows a non-checkbox bullet item in the same list; it gets the
+        // default bullet glyph in the checkbox column.
+        let doc = md_to_typst("- [x] done\n- plain item", Flavor::Gfm);
+        assert_eq!(
+            doc.body,
+            "#task-list(\n  [#sym.ballot.check], [done],\n  [•], [plain item],\n)"
+        );
     }
 
     #[test]
@@ -428,10 +534,11 @@ mod tests {
 
     #[test]
     fn maps_footnotes_and_math_in_custom_flavor_only() {
-        // v1: the definition's content becomes the #footnote (at its own
-        // position); the inline reference marker is dropped (§6.2).
+        // A footnote reference is inlined at its call site — `#footnote[...]`
+        // puts the superscript marker where it is called (§6.2); the
+        // definition block itself is dropped from the flow.
         let custom = md_to_typst("text[^1]\n\n[^1]: the note", Flavor::Custom);
-        assert_eq!(custom.body, "text\n\n#footnote[the note]");
+        assert_eq!(custom.body, "text#footnote[the note]");
 
         let math = md_to_typst("Inline $x^2$ and display $$y$$.", Flavor::Custom);
         assert_eq!(math.body, "Inline $x^2$ and display $ y $.");
@@ -439,6 +546,25 @@ mod tests {
         // Without the extension the syntax is ordinary (escaped) text.
         let gfm = md_to_typst("text[^1] and $x^2$", Flavor::Gfm);
         assert_eq!(gfm.body, "text\\[^1\\] and \\$x^2\\$");
+    }
+
+    #[test]
+    fn maps_footnote_reference_inside_a_list_item() {
+        // The marker must stay inline in the bullet item, not drift to the
+        // definition at the end of the document.
+        let custom = md_to_typst(
+            "- bullet [^1]\n- another item\n\n[^1]: the note",
+            Flavor::Custom,
+        );
+        assert_eq!(custom.body, "- bullet #footnote[the note]\n- another item");
+    }
+
+    #[test]
+    fn leaves_unresolved_footnote_syntax_as_literal_text() {
+        // comrak only recognizes `[^1]` as a footnote reference when a
+        // matching definition exists; otherwise it is ordinary escaped text.
+        let custom = md_to_typst("text[^1]", Flavor::Custom);
+        assert_eq!(custom.body, "text\\[^1\\]");
     }
 
     #[test]

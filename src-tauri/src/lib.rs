@@ -6,6 +6,7 @@
 
 pub mod commands;
 pub mod files;
+pub mod links;
 pub mod markdown;
 pub mod options;
 pub mod typst_engine;
@@ -18,6 +19,8 @@ pub fn run() {
             commands::open_markdown,
             commands::save_markdown,
             commands::export_pdf,
+            commands::get_initial_directory,
+            commands::open_external,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -18,8 +18,26 @@
 // Links: styled like the classic markdown look.
 #show link: set text(fill: rgb("#0366d6"))
 
-// Task-list helper used by the converter (§6.2).
-#let task(checked) = if checked { "[x]" } else { "[ ]" }
+// Task-list helper used by the converter (§6.2): a two-column grid (checkbox
+// glyph + content) so checked and unchecked items can mix at one level — a
+// native Typst list has a single marker for all items. The converter emits
+// alternating cells: `#task-list([#sym.ballot] [todo], [#sym.ballot.check]
+// [done],)`.
+//
+// `row-gutter` matches the default `par.leading` (0.65em), so the space
+// between rows equals the space between wrapped lines inside a row — mixed
+// single-line and multi-line tasks keep one uniform line rhythm.
+#let task-list(..cells) = grid(
+  columns: (auto, 1fr),
+  column-gutter: 8pt,
+  row-gutter: 0.65em,
+  ..cells,
+)
+
+// Blockquote helper used by the converter (§6.2). Typst's `quote` element is
+// native since 0.13; `block: true` renders it as a standalone block quote
+// (left border + spacing via the standard library's show rule).
+#let blockquote(body) = quote(block: true)[#body]
 
 // Optional title/author from YAML front matter (§6.2), rendered as a
 // centered title block when present.

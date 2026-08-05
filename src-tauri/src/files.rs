@@ -3,9 +3,19 @@
 //! The dialog-bearing commands in `commands.rs` delegate writes here so the
 //! behaviour is unit-testable without a Tauri runtime.
 
+use std::ffi::OsString;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
+
+/// The app's working directory at startup: `$XDG_DATA_HOME` when set and
+/// non-empty, else `$HOME` (SPEC §8.4). Values are injected so the fallback
+/// logic is testable without mutating the process environment.
+pub fn initial_directory(xdg_data_home: Option<OsString>, home: Option<OsString>) -> PathBuf {
+    let xdg = xdg_data_home.as_deref().filter(|p| !p.is_empty());
+    let home = home.as_deref().filter(|p| !p.is_empty());
+    xdg.or(home).map(PathBuf::from).unwrap_or_default()
+}
 
 /// Write `content` to `path` atomically: write to a temporary sibling file in
 /// the same directory, then rename over the target. `rename` is atomic on
@@ -95,5 +105,29 @@ mod tests {
 
         assert!(matches!(err.kind(), io::ErrorKind::NotFound));
         assert!(!target.exists(), "must not create the target on failure");
+    }
+
+    #[test]
+    fn initial_directory_prefers_xdg_data_home() {
+        let dir = initial_directory(Some("/xdg/data".into()), Some("/home/u".into()));
+        assert_eq!(dir, PathBuf::from("/xdg/data"));
+    }
+
+    #[test]
+    fn initial_directory_falls_back_to_home_when_xdg_empty() {
+        let dir = initial_directory(Some("".into()), Some("/home/u".into()));
+        assert_eq!(dir, PathBuf::from("/home/u"));
+    }
+
+    #[test]
+    fn initial_directory_falls_back_to_home_when_xdg_missing() {
+        let dir = initial_directory(None, Some("/home/u".into()));
+        assert_eq!(dir, PathBuf::from("/home/u"));
+    }
+
+    #[test]
+    fn initial_directory_is_empty_when_neither_var_is_set() {
+        let dir = initial_directory(None, None);
+        assert_eq!(dir, PathBuf::new());
     }
 }

@@ -33,7 +33,7 @@ function Toolbar({
             Open
           </Button>
         </Tooltip>
-        <Tooltip label="Save Markdown file">
+        <Tooltip label="Save Markdown As…">
           <Button variant="subtle" size="compact-md" leftSection={<IconDeviceFloppy size={16} />} onClick={onSave}>
             Save
           </Button>

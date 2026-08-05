@@ -8,12 +8,21 @@ import { describe, expect, it, vi } from "vitest";
 const { invoke } = vi.hoisted(() => ({ invoke: vi.fn() }));
 vi.mock("@tauri-apps/api/core", () => ({ invoke }));
 
+const { getCurrentWindow } = vi.hoisted(() => {
+  const setTitle = vi.fn();
+  return { getCurrentWindow: vi.fn(() => ({ setTitle })) };
+});
+vi.mock("@tauri-apps/api/window", () => ({ getCurrentWindow }));
+
 import {
   exportPdf,
+  getInitialDirectory,
   isCanceled,
+  openExternal,
   openMarkdown,
   renderPreview,
   saveMarkdown,
+  setWindowTitle,
 } from "./api.js";
 import { renderOptionsPayload } from "./presets.js";
 
@@ -36,35 +45,62 @@ describe("renderPreview", () => {
 });
 
 describe("openMarkdown", () => {
-  it("invokes open_markdown with no arguments", () => {
-    openMarkdown();
-    expect(invoke).toHaveBeenCalledWith("open_markdown");
+  it("invokes open_markdown with the directory to start browsing in", () => {
+    openMarkdown("/home/u/Documents");
+    expect(invoke).toHaveBeenCalledWith("open_markdown", {
+      directory: "/home/u/Documents",
+    });
+  });
+
+  it("passes null directory before the initial directory resolves", () => {
+    openMarkdown(null);
+    expect(invoke).toHaveBeenCalledWith("open_markdown", { directory: null });
   });
 });
 
 describe("saveMarkdown", () => {
-  it("invokes save_markdown with path and content", () => {
-    saveMarkdown("/tmp/doc.md", "# Hi");
+  it("invokes save_markdown with content, sanitized title and directory", () => {
+    saveMarkdown("# Hi", "My Doc", "/home/u/Documents");
     expect(invoke).toHaveBeenCalledWith("save_markdown", {
-      path: "/tmp/doc.md",
       content: "# Hi",
-    });
-  });
-
-  it("passes null as the path for an untitled document", () => {
-    saveMarkdown(null, "# Hi");
-    expect(invoke).toHaveBeenCalledWith("save_markdown", {
-      path: null,
-      content: "# Hi",
+      title: "My Doc",
+      directory: "/home/u/Documents",
     });
   });
 });
 
 describe("exportPdf", () => {
-  it("invokes export_pdf with the render payload (seq unused, 0)", () => {
-    exportPdf("# Hi", OPTIONS);
+  it("invokes export_pdf with the render payload, title and directory", () => {
+    exportPdf("# Hi", OPTIONS, "My Doc", "/home/u/Documents");
     expect(invoke).toHaveBeenCalledWith("export_pdf", {
       payload: { markdown: "# Hi", options: renderOptionsPayload(OPTIONS), seq: 0 },
+      title: "My Doc",
+      directory: "/home/u/Documents",
+    });
+  });
+});
+
+describe("getInitialDirectory", () => {
+  it("invokes get_initial_directory with no arguments", () => {
+    getInitialDirectory();
+    expect(invoke).toHaveBeenCalledWith("get_initial_directory");
+  });
+});
+
+describe("setWindowTitle", () => {
+  it("sets the OS window title via the Tauri window API", () => {
+    setWindowTitle("Sample - Markdown to PDF");
+    expect(getCurrentWindow().setTitle).toHaveBeenCalledWith(
+      "Sample - Markdown to PDF"
+    );
+  });
+});
+
+describe("openExternal", () => {
+  it("invokes open_external with the url", () => {
+    openExternal("https://example.com");
+    expect(invoke).toHaveBeenCalledWith("open_external", {
+      url: "https://example.com",
     });
   });
 });

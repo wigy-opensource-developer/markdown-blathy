@@ -298,11 +298,11 @@ Implementation sketch: parse with `comrak::parse_document(&arena, markdown, &opt
 | `Image(Box<NodeLink> { url, .. })` | `#figure(image("url", width: 80%), caption: [ …optional alt text… ])` |
 | `List(NodeList { list_type, start, .. })` | `- ` / `1. ` per item (list type via `NodeList.list_type: ListType::Bullet|Ordered`, ordinal via `start`) |
 | `Item(NodeList)` | recurse children |
-| `TaskItem(NodeTaskItem { symbol, .. })` | `#task(true/false)` + item text; checked ⇔ `symbol.is_some()` (template defines `#task`, §6.3) |
+| `TaskItem(NodeTaskItem { symbol, .. })` | a task list becomes a `#task-list(...)` grid: alternating checkbox-glyph and content cells (`[#sym.ballot]` unchecked / `[#sym.ballot.check]` checked; plain bullet items keep `•`). A grid is used because a native Typst list has a *single* marker for all items (§6.3) |
 | `BlockQuote` | `#blockquote[…children…]` (native since Typst 0.13; else fallback `#quote[block(…)]`) |
 | `Table(Box<NodeTable>)` / `TableRow(bool)` / `TableCell` | `#table(columns: (auto, …), [cell], [cell], …)`; header row (`TableRow(true)`) cells are bold: `[*cell*]` — the strong markup goes *inside* the content block, because `#table(...)` arguments are parsed in code mode where `*[a]` would be a multiplication (compile error "unexpected star") |
 | `ThematicBreak` | `#v(0.6em) #line(length: 100%, stroke: 0.5pt) #v(0.6em)` |
-| `FootnoteReference(Box<NodeFootnoteReference>)` / `FootnoteDefinition(NodeFootnoteDefinition)` | `#footnote[…]` |
+| `FootnoteReference(Box<NodeFootnoteReference>)` / `FootnoteDefinition(NodeFootnoteDefinition)` | the *reference* is inlined at its call site as `#footnote[<definition content>]` — Typst draws the superscript marker where the function is called and the note at the page bottom; the definition block itself is dropped. Definitions are collected first (label → content) and matched by `name`; comrak only recognizes `[^n]` as a reference when a definition exists, so unresolved syntax stays literal text |
 | `Math(NodeMath { display_math, literal, .. })` | passthrough: inline `$…$`, block `$ … $` (LaTeX macros are **not** converted in v1; document the limitation) |
 | `FrontMatter(String)` | parse YAML `title` / `author` only → `ConvertedDocument.title/author`; emit nothing in the body; everything else ignored |
 | `HtmlInline(String)` / `HtmlBlock(NodeHtmlBlock { literal, .. })` | **lossy**: emit the raw literal as plain text, escaped. Never pass HTML through to Typst |
@@ -356,8 +356,18 @@ Embedded default template (`include_str!("templates/default.typ")`):
 // Links: styled like the classic markdown look.
 #show link: set text(fill: rgb("#0366d6"))
 
-// Task-list helper used by the converter (§6.2).
-#let task(checked) = if checked { "[x]" } else { "[ ]" }
+// Task-list helper used by the converter (§6.2): a two-column grid so
+// checked and unchecked items can mix at one level — a native Typst list has
+// a single marker for all items. The converter emits alternating cells:
+// `#task-list([#sym.ballot] [todo], [#sym.ballot.check] [done],)`.
+// `row-gutter` matches the default `par.leading` (0.65em) so mixed
+// single-line and multi-line tasks keep one uniform line rhythm.
+#let task-list(..cells) = grid(
+  columns: (auto, 1fr),
+  column-gutter: 8pt,
+  row-gutter: 0.65em,
+  ..cells,
+)
 
 // Optional title/author from YAML front matter (§6.2), rendered as a
 // centered title block when present.
@@ -550,11 +560,11 @@ CSP notes: `style-src 'unsafe-inline'` is required for CodeMirror's injected sty
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
   "windows": ["main"],
-  "permissions": ["core:default", "dialog:default"]
+  "permissions": ["core:default", "dialog:default", "core:window:allow-set-title"]
 }
 ```
 
-`dialog:default` covers open/save/message dialogs. Do **not** add `core:webview` or any filesystem plugin permissions — file I/O happens inside Rust commands via `std::fs` (§7.4), not through frontend plugins. This is the principle of least privilege.
+`dialog:default` covers open/save/message dialogs; `core:window:allow-set-title` lets the frontend keep the OS window title in sync with the document title (§8.4). Do **not** add `core:webview` or any filesystem plugin permissions — file I/O happens inside Rust commands via `std::fs` (§7.4), not through frontend plugins. This is the principle of least privilege.
 
 ### 7.4 Commands (`commands.rs`)
 
@@ -661,7 +671,7 @@ pub async fn validate_template(path: String) -> Result<serde_json::Value, String
 }
 ```
 
-**Implementation notes (M4, verified against tauri-plugin-dialog 2.7):** the *blocking* dialog variants return `Option<FilePath>` directly (no `Result`); call `FilePath::into_path()` to obtain a `PathBuf`. Writes use `files.rs::write_atomically` (temp sibling + rename — atomic on POSIX, replaces on Windows). Exported PDFs are then opened in the system viewer with the `open` crate — Rust-side only, so it adds no webview capability and keeps the §7.3 least-privilege posture. A dismissed dialog resolves as `{ "canceled": true }`, which the UI treats as silent (§9).
+**Implementation notes (M4, verified against tauri-plugin-dialog 2.7):** the *blocking* dialog variants return `Option<FilePath>` directly (no `Result`); call `FilePath::into_path()` to obtain a `PathBuf`. Writes use `files.rs::write_atomically` (temp sibling + rename — atomic on POSIX, replaces on Windows). Exported PDFs are then opened in the system viewer with the `open` crate — Rust-side only, so it adds no webview capability and keeps the §7.3 least-privilege posture. A dismissed dialog resolves as `{ "canceled": true }`, which the UI treats as silent (§9). The dialog-bearing commands take `directory: Option<String>` (dialogs start there via `set_directory`, skipped when empty) and `title: String` (default file name via `set_file_name("<title>.md"` / `"<title>.pdf"`)); `get_initial_directory` reads `$XDG_DATA_HOME`/`$HOME` for the startup working directory (§8.4). `open_external(url)` validates the scheme with `links::is_browser_url` (http/https only, §7.4) and forwards it to the system browser via the `open` crate — the webview never navigates to a link (§9); a `tauri::Builder`-level `on_navigation` interception is future hardening (§13). Footnote markers are internal links in the PDF export (Typst emits `DirectLinkElem`), so PDF viewers can jump marker → note and back via viewer navigation; in the SVG preview typst-svg emits no `href` for internal destinations (no link resolver is passed), so footnote markers are not clickable there — and if a resolver is ever added, fragment links already bypass the external-link gate (§9).
 
 **`build_source` — shared pure logic** (kept in `template.rs` so it is unit-testable without Tauri):
 
@@ -703,10 +713,11 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .invoke_handler(tauri::generate_handler![
             commands::render_preview,
-            commands::export_pdf,
             commands::open_markdown,
             commands::save_markdown,
-            commands::validate_template,
+            commands::export_pdf,
+            commands::get_initial_directory, // §8.4
+            // commands::validate_template — M5
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
@@ -957,6 +968,8 @@ export default function Toolbar({ options, onOptionChange, onExport, onOpen, onS
 
 File handlers stay thin: `onOpen` → `api.openMarkdown()` → `setMarkdown(res.content)`, `filePath.current = res.path`; `onSave` → `api.saveMarkdown(filePath.current, markdown)` and update the ref; `onExport` → `api.exportPdf({ markdown, options })`; `onPickTemplate` → `tauri-plugin-dialog`'s `open()` from the frontend (filter `.typ`), then `api.validateTemplate(path)` and only on success `onOptionChange({ templatePath: path })`. `canceled: true` results are silent (§9).
 
+**Title & working directory (M4, §8.4).** The app always knows the current document's `title` and a `directory` it works in. Title derivation (`lib/title.js`): front-matter `title` wins (parsed with the same rules as the Rust `parse_front_matter` — split on `": "`, trim, strip one pair of double quotes), else the opened file's stem, else `Sample` for the untitled sample document. The directory starts as `$XDG_DATA_HOME` (else `$HOME`, via `get_initial_directory`) and follows Open: the opened file's parent directory becomes the new Directory. Save is always a "Save As…" dialog defaulting to `<title>.md` in the Directory; Export defaults to `<title>.pdf` there. Titles are sanitized before use as file names (`safeFileName`: strips `/`, `\`, reserved characters and control chars, collapses whitespace, falls back to `document`). The OS window title is kept in sync as `<title> - Markdown to PDF` (`windowTitle`, granted via `core:window:allow-set-title`, §7.3) so multiple instances are distinguishable in the window manager. Title derivation (frontmatter parsing) and the window-title IPC update ride the same 200 ms debounce as the preview (§7.5): typing in the frontmatter never parses the document or pushes a window-title update per keystroke — `title` is state refreshed by a debounced callback.
+
 ### 8.5 Styles (`styles.css`)
 
 Mantine styles the controls; the stylesheet covers only the app skeleton and the preview pages. Same flexbox fundamentals as before: `display:flex` on the panes row, `flex:1` on each pane.
@@ -1023,6 +1036,7 @@ export const ALIGNS = [
 - **Warnings** (missing font, etc.): shown in the status bar as `N warning(s)` and in a collapsible list; never fail the render.
 - **Missing/custom template:** errors on read or probe compile are surfaced with the offending path.
 - **Export cancel:** the dialog returning `None` is *not* an error (the JSON includes `canceled: true`); the UI must not show a banner for it.
+- **External links:** the preview SVG contains real `<a>` links (Typst emits them, §6.4). The frontend intercepts every click (`Preview.jsx` `preventDefault` on `closest("a")`) and calls `open_external(url)`: http(s) opens in the system default browser, any other scheme is rejected with a banner error ("Blocked external link: …"). Same-document fragment links (`href` starting with `#`) are internal (e.g. PDF-style footnote/label jumps) and are left to the webview to scroll natively — they are never forwarded to the browser. The webview must never navigate away from the app.
 
 ## 10. Testing (TDD)
 
@@ -1036,7 +1050,7 @@ Follow red-green-refactor. Because `markdown/` and `typst_engine/` are plain Rus
 - `maps inline code and code blocks (with language, without language, containing backticks)`
 - `maps links with and without label, URL containing quotes`
 - `maps ordered and unordered lists, nested lists`
-- `maps task list items to #task(...)`
+- `maps task list items to a #task-list(...) grid with ☐/☑ cells`
 - `maps GFM table to #table(...)` (only when flavor = GFM/Custom; in CommonMark comrak yields paragraphs)
 - `maps footnotes and math in Custom flavor; leaves them as text otherwise`
 - `strips HTML tags and keeps text` (lossy path)
@@ -1087,7 +1101,7 @@ fn escapes_special_characters_in_text() {
 | **M1 — Converter** ✅ | `markdown/convert.rs` + `escape.rs` (TDD) | **Done** — commit `556911b`: 27 unit tests green; CommonMark/GFM/Custom flavour differences verified by tests. |
 | **M2 — Engine** ✅ | `typst_engine/` — template, compose, compile | **Done** — `compile_preview(sample)` returns ≥1 SVG containing `<svg`; `compile_pdf` produces bytes starting with `%PDF`; error path yields `line N: …` diagnostics; warnings are collected, not fatal. |
 | **M3 — UI loop** ✅ | Editor + preview + debounce + seq guard | **Done** — CodeMirror 6 editor, Typst SVG preview, 200 ms debounce + seq guard in `App.jsx`; `render_preview` Tauri command registered; Vitest suite for `lib/presets.js` + `lib/seq.js` (14 frontend + 45 Rust tests green via `./check.sh`). |
-| **M4 — Files & export** ✅ | Open/Save/Export commands wired to toolbar | **Done** — `open_markdown`/`save_markdown`/`export_pdf` registered in `lib.rs`; writes are atomic (`files.rs::write_atomically`, temp sibling + rename); dialogs via `tauri-plugin-dialog`; exported PDF opens in the system viewer via the `open` crate (Rust-side only, no new capability); canceled dialogs are silent; 52 Rust + 20 frontend tests green via `./check.sh`. |
+| **M4 — Files & export** ✅ | Open/Save/Export commands wired to toolbar | **Done** — `open_markdown`/`save_markdown`/`export_pdf`/`get_initial_directory`/`open_external` registered in `lib.rs`; writes are atomic (`files.rs::write_atomically`); dialogs via `tauri-plugin-dialog` start in the working Directory and default to `<title>.md`/`<title>.pdf` (title from frontmatter → file stem → "Sample", §8.4); exported PDF opens in the system viewer via the `open` crate (Rust-side only, no new capability); task lists render as a checkbox grid and footnote references are inlined at their call site (§6.2); preview links go to the system browser, other schemes are rejected, fragment links stay internal (§9); canceled dialogs are silent; 66 Rust + 47 frontend tests green via `./check.sh`. |
 | **M5 — Settings & polish** | localStorage settings, template override + validation, warnings UI, error banner | Settings survive restart; custom template accepted only after probe validation; warnings displayed; empty doc renders one blank page. |
 
 ## 12. Security

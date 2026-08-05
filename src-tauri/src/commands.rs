@@ -105,13 +105,19 @@ pub async fn render_preview(payload: RenderPayload) -> Result<PreviewOutcome, St
     })
 }
 
-/// Export: markdown + options → system save dialog → write the PDF atomically
-/// → open it in the system viewer (§7.4, M4).
+/// Export: markdown + options → system save dialog (defaulting to `<title>.pdf`
+/// in `directory`) → write the PDF atomically → open it in the system viewer
+/// (§7.4, M4).
 ///
 /// Compilation is CPU-bound, so it runs on `spawn_blocking`; the save dialog
 /// blocks too, which is fine off the UI thread.
 #[tauri::command]
-pub async fn export_pdf(app: AppHandle, payload: RenderPayload) -> Result<FileOutcome, String> {
+pub async fn export_pdf(
+    app: AppHandle,
+    payload: RenderPayload,
+    title: String,
+    directory: Option<String>,
+) -> Result<FileOutcome, String> {
     let template_source = resolve_template_source(&payload.options)?;
     let source = template::build_source(&template_source, &payload.options, &payload.markdown)?;
 
@@ -120,13 +126,16 @@ pub async fn export_pdf(app: AppHandle, payload: RenderPayload) -> Result<FileOu
         .map_err(|e| format!("Export task failed: {e}"))?
         .map_err(|e| e.to_string())?;
 
-    let picked = app
+    let mut dialog = app
         .dialog()
         .file()
         .set_title("Export PDF")
         .add_filter("PDF", &["pdf"])
-        .set_file_name("document.pdf")
-        .blocking_save_file();
+        .set_file_name(format!("{title}.pdf"));
+    if let Some(dir) = non_empty(&directory) {
+        dialog = dialog.set_directory(dir);
+    }
+    let picked = dialog.blocking_save_file();
     let Some(path) = dialog_path(picked)? else {
         return Ok(FileOutcome::canceled());
     };
@@ -136,16 +145,23 @@ pub async fn export_pdf(app: AppHandle, payload: RenderPayload) -> Result<FileOu
     Ok(FileOutcome::saved(&path))
 }
 
-/// Open a Markdown file via the system dialog and read it (§7.4, M4).
+/// Open a Markdown file via the system dialog (starting in `directory` when
+/// given) and read it (§7.4, M4).
 #[tauri::command]
-pub async fn open_markdown(app: AppHandle) -> Result<FileOutcome, String> {
-    let picked = app
+pub async fn open_markdown(
+    app: AppHandle,
+    directory: Option<String>,
+) -> Result<FileOutcome, String> {
+    let mut dialog = app
         .dialog()
         .file()
         .set_title("Open Markdown")
         .add_filter("Markdown", &["md", "markdown"])
-        .add_filter("All files", &["*"])
-        .blocking_pick_file();
+        .add_filter("All files", &["*"]);
+    if let Some(dir) = non_empty(&directory) {
+        dialog = dialog.set_directory(dir);
+    }
+    let picked = dialog.blocking_pick_file();
     let Some(path) = dialog_path(picked)? else {
         return Ok(FileOutcome::canceled());
     };
@@ -155,35 +171,62 @@ pub async fn open_markdown(app: AppHandle) -> Result<FileOutcome, String> {
     Ok(FileOutcome::opened(&path, content))
 }
 
-/// Save Markdown to `path`, or ask via the system dialog when the document
-/// has no path yet (untitled). Writes atomically (§7.4, M4).
+/// Save Markdown via a "Save As…" dialog: the filename defaults to
+/// `<title>.md` in `directory`, and the write is atomic (§7.4, M4).
 #[tauri::command]
 pub async fn save_markdown(
     app: AppHandle,
-    path: Option<String>,
     content: String,
+    title: String,
+    directory: Option<String>,
 ) -> Result<FileOutcome, String> {
-    let path = match path {
-        Some(p) => Some(std::path::PathBuf::from(p)),
-        None => {
-            let picked = app
-                .dialog()
-                .file()
-                .set_title("Save Markdown")
-                .add_filter("Markdown", &["md"])
-                .set_file_name("document.md")
-                .blocking_save_file();
-            dialog_path(picked)?
-        }
-    };
+    let mut dialog = app
+        .dialog()
+        .file()
+        .set_title("Save Markdown As…")
+        .add_filter("Markdown", &["md"])
+        .set_file_name(format!("{title}.md"));
+    if let Some(dir) = non_empty(&directory) {
+        dialog = dialog.set_directory(dir);
+    }
+    let picked = dialog.blocking_save_file();
 
-    let Some(path) = path else {
+    let Some(path) = dialog_path(picked)? else {
         return Ok(FileOutcome::canceled());
     };
 
     files::write_atomically(&path, content.as_bytes())
         .map_err(|e| format!("Failed to save: {e}"))?;
     Ok(FileOutcome::saved(&path))
+}
+
+/// The working directory at startup: `$XDG_DATA_HOME` when set and non-empty,
+/// else `$HOME` (SPEC §8.4).
+#[tauri::command]
+pub fn get_initial_directory() -> String {
+    files::initial_directory(std::env::var_os("XDG_DATA_HOME"), std::env::var_os("HOME"))
+        .to_string_lossy()
+        .into_owned()
+}
+
+/// Open an http(s) URL in the system default browser (§7.4, M4).
+///
+/// Preview links must never navigate the webview: only http(s) is forwarded
+/// to the browser; every other scheme is rejected with an error (§9).
+#[tauri::command]
+pub fn open_external(url: String) -> Result<(), String> {
+    if !crate::links::is_browser_url(&url) {
+        return Err(format!(
+            "Blocked external link: only http(s) URLs can be opened in the browser — got: {url}"
+        ));
+    }
+    open::that(&url).map_err(|e| format!("Failed to open browser: {e}"))
+}
+
+/// `Some(&str)` for a non-empty string, else `None` — used to skip
+/// `set_directory` on dialogs when no working directory is known yet.
+fn non_empty(s: &Option<String>) -> Option<&str> {
+    s.as_deref().filter(|s| !s.is_empty())
 }
 
 /// Convert a blocking dialog result into a `PathBuf`, mapping the (rare)
