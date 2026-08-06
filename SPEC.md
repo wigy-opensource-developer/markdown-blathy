@@ -1259,8 +1259,9 @@ Future work, in order of leverage:
 
 **Deferred issues (noted, not yet fixed):**
 
-- **Alignment control has no effect** (§8.4) — left/center/justified render identically (verified: the three produce byte-identical SVGs). Root cause: in `default-article` (`default.typ`) the `set align(…)` / `set par(justify: …)` rules sit *inside* the `if text-align == …` block, and Typst scopes a `set` rule to the (empty) conditional block, so it never reaches `body`. Fix: make the set unconditional with a conditional value — `set align(if text-align == "center" { center } else { left })` and `set par(justify: text-align == "justified")` — and pin it with a test that left/center/justified produce different SVGs.
 - **Re-selecting the current Flavor in the toolbar deselects it** — Mantine `Select` fires `onChange(null)` when the already-selected option is clicked again (`allowDeselect` defaults to true), and `changeOption` applies the patch blindly, so `flavor: null` corrupts the settings and the IPC payload (the render then fails to deserialize). Fix: ignore `null` patches in `changeOption` (or set `allowDeselect={false}` on the toolbar Selects); the same guard applies to every single-select control in the toolbar.
+
+*Fixed:* the **Alignment control has no effect** bug (previously listed here) is resolved in `default-article` (`default.typ`) — the text-align `set` rules are now unconditional with a conditional value (`set align(if text-align == "center" { center } else { left })`, `set par(justify: text-align == "justified")`), pinned by a test asserting left/center/justified produce distinct SVGs (`text_alignment_changes_the_render` in `engine.rs`).
 
 ## 14. References
 

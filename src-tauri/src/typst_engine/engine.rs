@@ -358,6 +358,63 @@ mod tests {
         compile_preview_with_inputs(&engine, &inputs).expect("must compile")
     }
 
+    /// The leftmost glyph x (absolute) in a page SVG. For a left-aligned list
+    /// this is the left margin; for a centered, shrink-wrapped list it sits
+    /// well inside the page. Walks the `<g transform="…">` nesting so a glyph
+    /// inside `align(center, block(width: auto)[…])` reports its true page
+    /// position (translate offsets + matrix offset + run offset).
+    fn min_glyph_x(svg: &str) -> f64 {
+        let mut stack: Vec<f64> = Vec::new();
+        let mut min_x = f64::MAX;
+        let mut pos = 0;
+        while pos < svg.len() {
+            let open = svg[pos..].find("<g");
+            let close = svg[pos..].find("</g");
+            let next = match (open, close) {
+                (Some(a), Some(b)) => a.min(b),
+                (Some(a), None) => a,
+                (None, Some(b)) => b,
+                (None, None) => break,
+            };
+            pos += next;
+            if svg[pos..].starts_with("</g>") {
+                stack.pop();
+                pos += 4;
+                continue;
+            }
+            let end = pos + svg[pos..].find('>').expect("open tag ends");
+            let tag = &svg[pos..end];
+            if let Some(rest) = tag.strip_prefix("<g transform=\"translate(") {
+                let x: f64 = rest[..rest.find(' ').expect("translate has x y")]
+                    .parse()
+                    .unwrap_or(0.0);
+                stack.push(x);
+            } else if let Some(rest) = tag.strip_prefix("<g transform=\"matrix(1 0 0 -1 ") {
+                let mx: f64 = rest[..rest.find(' ').expect("matrix has x y")]
+                    .parse()
+                    .unwrap_or(0.0);
+                let inner_end = svg[end..]
+                    .find("</g>")
+                    .map(|i| end + i)
+                    .unwrap_or(svg.len());
+                let runs = &svg[end + 1..inner_end];
+                let base = stack.iter().sum::<f64>() + mx;
+                let mut rest = runs;
+                while let Some(i) = rest.find("x=\"") {
+                    let val = &rest[i + 3..];
+                    let v_end = val.find('"').expect("run offset closes");
+                    let rx: f64 = val[..v_end].parse().unwrap_or(0.0);
+                    min_x = min_x.min(base + rx);
+                    rest = &val[v_end..];
+                }
+                pos = inner_end + 4; // skip this group including its `</g>`
+                continue;
+            }
+            pos = end + 1;
+        }
+        min_x
+    }
+
     /// M5 acceptance: an empty document renders exactly one blank page — the
     /// converter emits `[]` (§6.2) and the article invocation still produces a
     /// page, so the preview never shows the "nothing to render" state.
@@ -384,6 +441,99 @@ mod tests {
         let bytes = compile_pdf_body("= Hello\n\nWorld.");
         assert!(!bytes.is_empty());
         assert_eq!(&bytes[..4], b"%PDF", "PDF magic header");
+    }
+
+    /// Deferred issue (§13): the Align toolbar control (left/center/justified)
+    /// rendered identically — the `set align(…)` / `set par(justify: …)`
+    /// rules sat inside empty `if` blocks, and Typst scopes a `set` rule to
+    /// its enclosing block, so neither ever reached `body`. Regression: each
+    /// alignment must produce a distinct render.
+    #[test]
+    fn text_alignment_changes_the_render() {
+        // Several lines per paragraph so justification has room to stretch
+        // lines to the full text width and centering visibly shifts them.
+        let markdown = [
+            "A paragraph with enough words to wrap across several lines so",
+            "that the justified alignment has room to stretch every line out",
+            "to the full text width.",
+            "",
+            "A second paragraph keeps the document tall enough to matter.",
+        ]
+        .join("\n");
+
+        let render = |align: TextAlign| {
+            let options = RenderOptions {
+                text_align: align,
+                ..gfm_options()
+            };
+            compile_markdown(&markdown, &options).pages[0].clone()
+        };
+
+        let left = render(TextAlign::Left);
+        let center = render(TextAlign::Center);
+        let justified = render(TextAlign::Justified);
+
+        assert_ne!(left, center, "centered alignment must shift line positions");
+        assert_ne!(
+            left, justified,
+            "justified alignment must stretch lines to the full width"
+        );
+        assert_ne!(
+            center, justified,
+            "center and justified must remain distinct alignments"
+        );
+    }
+
+    /// Deferred issue (§13): in center mode a bullet list rendered with the
+    /// bullets pinned to the left margin while each text line centered
+    /// independently — the bullet sat detached from its text. The list must
+    /// instead behave as one block: items left-aligned (bullets adjacent to
+    /// their text) and the whole block centered, so for a short list the
+    /// bullets move well inside the page.
+    #[test]
+    fn center_alignment_centers_list_blocks() {
+        let markdown = "- alpha\n- beta";
+
+        let render = |align: TextAlign| {
+            let options = RenderOptions {
+                text_align: align,
+                ..gfm_options()
+            };
+            compile_markdown(markdown, &options).pages[0].clone()
+        };
+
+        let left = min_glyph_x(&render(TextAlign::Left));
+        let center = min_glyph_x(&render(TextAlign::Center));
+
+        // Left: bullets at the 20mm left margin (~56.7pt on A4). Center: the
+        // shrink-wrapped block is centered, so its bullets sit far inside.
+        assert!(
+            center > left + 50.0,
+            "centered list bullets must shift well inside the page: left {left} vs center {center}"
+        );
+    }
+
+    /// The task-list variant of the center-mode fix: the checkbox column must
+    /// travel with its text instead of staying pinned to the left margin.
+    #[test]
+    fn center_alignment_centers_task_lists() {
+        let markdown = "- [ ] todo\n- [x] done";
+
+        let render = |align: TextAlign| {
+            let options = RenderOptions {
+                text_align: align,
+                ..gfm_options()
+            };
+            compile_markdown(markdown, &options).pages[0].clone()
+        };
+
+        let left = min_glyph_x(&render(TextAlign::Left));
+        let center = min_glyph_x(&render(TextAlign::Center));
+
+        assert!(
+            center > left + 50.0,
+            "centered task-list checkboxes must shift well inside the page: left {left} vs center {center}"
+        );
     }
 
     /// M4 acceptance: exported PDF bytes land on disk via the atomic writer.
