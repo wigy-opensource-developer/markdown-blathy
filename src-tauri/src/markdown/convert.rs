@@ -211,18 +211,38 @@ fn render_list(
         return render_task_list(node, list, footnotes);
     }
 
-    // Ordered lists use the prelude's `ordered-list` helper (a native Typst
-    // enum) so the numbering is themeable — a literal "1. " prefix would be
-    // plain text that no template could style.
     if list.list_type == comrak::nodes::ListType::Ordered {
-        let sep = if list.tight { "\n" } else { "\n\n" };
-        let items: Vec<String> = node
-            .children()
-            .map(|item| format!("[{}]", render_item_content(item, sep, footnotes)))
-            .collect();
-        return format!("#ordered-list({}, {})", list.start, items.join(", "));
+        render_ordered_list(node, list, footnotes)
+    } else {
+        render_bullet_list(node, list, indent, footnotes)
     }
+}
 
+/// Ordered lists use the prelude's `ordered-list` helper (a native Typst
+/// enum) so the numbering is themeable — a literal "1. " prefix would be
+/// plain text that no template could style.
+fn render_ordered_list(
+    node: Node,
+    list: &comrak::nodes::NodeList,
+    footnotes: &HashMap<String, String>,
+) -> String {
+    let sep = if list.tight { "\n" } else { "\n\n" };
+    let items: Vec<String> = node
+        .children()
+        .map(|item| format!("[{}]", render_item_content(item, sep, footnotes)))
+        .collect();
+    format!("#ordered-list({}, {})", list.start, items.join(", "))
+}
+
+/// Bullet lists stay native Typst `- ` lists so the marker is themeable via
+/// `#show list`. Nested lists keep their own indentation; other blocks are
+/// indented two spaces per level.
+fn render_bullet_list(
+    node: Node,
+    list: &comrak::nodes::NodeList,
+    indent: usize,
+    footnotes: &HashMap<String, String>,
+) -> String {
     let pad = "  ".repeat(indent);
     let pad_next = "  ".repeat(indent + 1);
     // Tight lists put every block on the next line; loose lists separate

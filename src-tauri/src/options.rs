@@ -67,9 +67,32 @@ impl Paper {
     }
 }
 
+impl TextAlign {
+    /// Typst `text-align` value ("left" | "center" | "justified", §6.3).
+    pub fn typst_name(self) -> &'static str {
+        match self {
+            TextAlign::Left => "left",
+            TextAlign::Center => "center",
+            TextAlign::Justified => "justified",
+        }
+    }
+}
+
+impl Margins {
+    /// Horizontal page margin in mm: the smaller of left/right (§7.4).
+    pub fn x_mm(self) -> f32 {
+        self.left_mm.min(self.right_mm)
+    }
+
+    /// Vertical page margin in mm: the smaller of top/bottom (§7.4).
+    pub fn y_mm(self) -> f32 {
+        self.top_mm.min(self.bottom_mm)
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{Flavor, Paper, RenderOptions, TextAlign};
+    use super::{Flavor, Margins, Paper, RenderOptions, TextAlign};
 
     #[test]
     fn paper_maps_to_typst_names() {
@@ -77,6 +100,33 @@ mod tests {
         assert_eq!(Paper::A5.typst_name(), "a5");
         assert_eq!(Paper::Letter.typst_name(), "us-letter");
         assert_eq!(Paper::Legal.typst_name(), "us-legal");
+    }
+
+    #[test]
+    fn text_align_maps_to_typst_names() {
+        assert_eq!(TextAlign::Left.typst_name(), "left");
+        assert_eq!(TextAlign::Center.typst_name(), "center");
+        assert_eq!(TextAlign::Justified.typst_name(), "justified");
+    }
+
+    #[test]
+    fn margins_use_the_smaller_value_per_axis() {
+        let margins = Margins {
+            top_mm: 20.0,
+            bottom_mm: 25.0,
+            left_mm: 15.0,
+            right_mm: 30.0,
+        };
+        assert_eq!(
+            margins.x_mm(),
+            15.0,
+            "x is the smaller of left/right (§7.4)"
+        );
+        assert_eq!(
+            margins.y_mm(),
+            20.0,
+            "y is the smaller of top/bottom (§7.4)"
+        );
     }
 
     #[test]

@@ -12,6 +12,30 @@ import {
 } from "@tabler/icons-react";
 import { ALIGNS, FLAVORS, MARGIN_PRESETS, PAPERS } from "../lib/presets.js";
 
+// The four toolbar option selects differ only in label, option table, width
+// and which options field they write; a config row + one component removes
+// the copy-pasted <Select> blocks.
+const OPTION_SELECTS = [
+  { label: "Flavor", data: FLAVORS, width: 130, field: "flavor" },
+  { label: "Paper", data: PAPERS, width: 110, field: "paper" },
+  { label: "Margins", data: MARGIN_PRESETS, width: 190, field: "marginPreset" },
+  { label: "Align", data: ALIGNS, width: 110, field: "textAlign" },
+];
+
+/** A single toolbar option select: writes `{ [field]: value }` up to the app. */
+function OptionSelect({ label, data, width, field, value, onOptionChange }) {
+  return (
+    <Select
+      label={label}
+      size="sm"
+      w={width}
+      data={data}
+      value={value}
+      onChange={(v) => onOptionChange({ [field]: v })}
+    />
+  );
+}
+
 function Toolbar({
   options,
   onOptionChange,
@@ -46,38 +70,14 @@ function Toolbar({
       <Divider orientation="vertical" />
 
       <Group gap="xs" align="end">
-        <Select
-          label="Flavor"
-          size="sm"
-          w={130}
-          data={FLAVORS}
-          value={options.flavor}
-          onChange={(v) => onOptionChange({ flavor: v })}
-        />
-        <Select
-          label="Paper"
-          size="sm"
-          w={110}
-          data={PAPERS}
-          value={options.paper}
-          onChange={(v) => onOptionChange({ paper: v })}
-        />
-        <Select
-          label="Margins"
-          size="sm"
-          w={190}
-          data={MARGIN_PRESETS}
-          value={options.marginPreset}
-          onChange={(v) => onOptionChange({ marginPreset: v })}
-        />
-        <Select
-          label="Align"
-          size="sm"
-          w={110}
-          data={ALIGNS}
-          value={options.textAlign}
-          onChange={(v) => onOptionChange({ textAlign: v })}
-        />
+        {OPTION_SELECTS.map((select) => (
+          <OptionSelect
+            key={select.field}
+            {...select}
+            value={options[select.field]}
+            onOptionChange={onOptionChange}
+          />
+        ))}
       </Group>
 
       <div className="spacer" />

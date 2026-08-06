@@ -9,7 +9,8 @@
 //! the markdown body is passed per render via `render_inputs`.
 
 use crate::markdown::convert::md_to_typst;
-use crate::options::{RenderOptions, TextAlign};
+use crate::options::RenderOptions;
+use crate::typst_engine::engine::FontOptions;
 use typst::foundations::{Dict, IntoValue};
 
 /// The embedded default template (`templates/default.typ`).
@@ -39,6 +40,36 @@ pub struct TemplateArgs<'a> {
     pub text_align: &'a str,
 }
 
+/// The converter-emitted prelude helpers, listed in the order the converter
+/// may call them (§6.2). Every entry must be visible to the eval'd body: the
+/// article invocation passes each as an explicit `scope:` binding (§6.3), so
+/// a missed entry fails template validation (the probe body exercises all of
+/// them). Single source of truth — the tests build the expected string from
+/// this constant instead of mirroring it by hand.
+pub const PRELUDE_HELPERS: &[&str] = &[
+    "task-list",
+    "task-done",
+    "task-todo",
+    "task-plain",
+    "blockquote",
+    "thematic-break",
+    "inline-code",
+    "code-block",
+    "markdown-table",
+    "ordered-list",
+    "figure-image",
+];
+
+/// The `scope: (name: name, …)` list for the eval call: each helper resolves
+/// to itself at the eval call site, so a user template's overrides win.
+fn helper_scope() -> String {
+    PRELUDE_HELPERS
+        .iter()
+        .map(|name| format!("{name}: {name}"))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
 /// Concatenate the template source with the `#article(...)` invocation.
 ///
 /// The invocation reads `title`/`author`/`body` from `sys.inputs` and eval's
@@ -49,24 +80,8 @@ pub struct TemplateArgs<'a> {
 /// `text_align` are emitted with Rust's `{:?}` formatting, which yields a
 /// Rust string literal that is also a valid Typst string literal for these
 /// ASCII values.
-///
-/// Keep the scope list in sync with the converter's emissions (§6.2): the
-/// probe body exercises every helper, so a missed entry fails validation.
 pub fn compose(template_source: &str, args: &TemplateArgs) -> String {
-    let scope = [
-        "task-list: task-list",
-        "task-done: task-done",
-        "task-todo: task-todo",
-        "task-plain: task-plain",
-        "blockquote: blockquote",
-        "thematic-break: thematic-break",
-        "inline-code: inline-code",
-        "code-block: code-block",
-        "markdown-table: markdown-table",
-        "ordered-list: ordered-list",
-        "figure-image: figure-image",
-    ]
-    .join(", ");
+    let scope = helper_scope();
     format!(
         "{template_source}\n\n#article(\n  paper: {:?},\n  margin-x: {}mm,\n  margin-y: {}mm,\n  text-align: {:?},\n  title: sys.inputs.title,\n  author: sys.inputs.author,\n)[\n#eval(sys.inputs.body, mode: \"markup\", scope: ({scope}))\n]",
         args.paper, args.margin_x_mm, args.margin_y_mm, args.text_align,
@@ -88,13 +103,9 @@ pub fn build_static_source(
             paper: options.paper.typst_name(),
             // The smaller of the two horizontal/vertical margins is used for
             // the template's `x`/`y` shorthand (SPEC §7.4).
-            margin_x_mm: options.margins.left_mm.min(options.margins.right_mm),
-            margin_y_mm: options.margins.top_mm.min(options.margins.bottom_mm),
-            text_align: match options.text_align {
-                TextAlign::Left => "left",
-                TextAlign::Center => "center",
-                TextAlign::Justified => "justified",
-            },
+            margin_x_mm: options.margins.x_mm(),
+            margin_y_mm: options.margins.y_mm(),
+            text_align: options.text_align.typst_name(),
         },
     ))
 }
@@ -135,28 +146,56 @@ pub fn referenced_font_families(source: &str) -> Vec<String> {
     families
 }
 
-/// Resolve the template source to compile (§7.4): read the user template at
-/// `options.template_path`, or fall back to the embedded `DEFAULT_TEMPLATE`.
+/// Resolve the template to compile (§7.4): read the user template at
+/// `options.template_path` — or fall back to the embedded `DEFAULT_TEMPLATE` —
+/// and derive the font options for it from the same single read.
 ///
 /// A user template is composed AFTER the prelude (§6.3), so its definitions
 /// shadow the default helpers while everything it leaves out keeps the
 /// prelude implementation. The error message names the offending path so the
 /// UI can surface it (§9).
-pub fn resolve_template_source(options: &RenderOptions) -> Result<String, String> {
+pub fn resolve_template(options: &RenderOptions) -> Result<(String, FontOptions), String> {
     match &options.template_path {
         Some(path) => {
             let user = std::fs::read_to_string(path)
                 .map_err(|e| format!("Failed to read template at {path}: {e}"))?;
-            Ok(format!("{DEFAULT_TEMPLATE}\n\n{user}"))
+            let source = format!("{DEFAULT_TEMPLATE}\n\n{user}");
+            let fonts = crate::typst_engine::engine::font_options_for_source(path, &user);
+            Ok((source, fonts))
         }
-        None => Ok(DEFAULT_TEMPLATE.to_string()),
+        None => Ok((DEFAULT_TEMPLATE.to_string(), FontOptions::default())),
     }
+}
+
+/// Everything a render needs that is not the engine itself (M6, §7.5):
+/// the static source (selects the cached engine — rebuilt only when the
+/// template/options change), the per-render `sys.inputs` (the markdown
+/// body travels here, so typing never rebuilds the engine) and the font
+/// options used when the engine is (re)built.
+pub struct PreparedRender {
+    pub static_source: String,
+    pub inputs: Dict,
+    pub fonts: FontOptions,
+}
+
+/// Prepare a render: resolve the template (one file read), bake the toolbar
+/// options into the static source and convert the markdown into `sys.inputs`.
+///
+/// This is the single setup path for both preview and export — the command
+/// layer calls it instead of repeating the resolve/build/convert/fonts dance.
+pub fn prepare_render(markdown: &str, options: &RenderOptions) -> Result<PreparedRender, String> {
+    let (template_source, fonts) = resolve_template(options)?;
+    Ok(PreparedRender {
+        static_source: build_static_source(&template_source, options)?,
+        inputs: render_inputs(markdown, options)?,
+        fonts,
+    })
 }
 
 /// The probe document's `sys.inputs` (M6): a title/author pair plus a body
 /// that exercises every helper the converter emits (except `figure-image`,
 /// whose image file cannot exist during validation). Shared by
-/// `probe_template` and the command layer's template validation (§7.4).
+/// `build_and_probe` and the command layer's template validation (§7.4).
 pub fn probe_inputs() -> Dict {
     let mut inputs = Dict::new();
     inputs.insert("title".into(), "Probe".into_value());
@@ -179,46 +218,34 @@ pub fn probe_inputs() -> Dict {
     inputs
 }
 
-/// Validate a user-supplied template (§6.3, §7.4). The template source is
-/// composed AFTER the prelude and compiled against a probe document that
-/// exercises every helper the converter emits plus the `title`/`author` path.
+/// Build the engine for a static source and verify it compiles the probe
+/// document (every converter helper plus the `title`/`author` path, §6.3/§7.4).
 ///
-/// Because the prelude provides defaults for all helpers, a template that
-/// only restyles — or defines nothing at all — passes; the probe rejects
-/// templates that do not compile at all (syntax errors) or whose *overrides*
-/// are broken (e.g. a `task-list` that calls an undefined function).
+/// Returns the ready engine so the command layer can hand it to the cache —
+/// validation pays the font scan exactly once and the next render reuses it.
+/// Because the prelude provides defaults for all helpers, a template that only
+/// restyles — or defines nothing at all — passes; the probe rejects templates
+/// that do not compile at all (syntax errors) or whose *overrides* are broken
+/// (e.g. a `task-list` that calls an undefined function).
 ///
-/// Pure (no `tauri` imports): the command layer reads the file and hands the
-/// source over, so this is unit-testable without a running app. `fonts`
-/// mirrors how the template will actually render (M6) — most importantly
-/// whether system fonts / a font folder are available.
-pub fn probe_template(
-    user_source: &str,
-    fonts: &crate::typst_engine::engine::FontOptions,
-) -> Result<(), String> {
+/// Pure (no `tauri` imports): the command layer reads the file, composes the
+/// static source and hands it over, so this is unit-testable with `cargo test`.
+pub fn build_and_probe(
+    static_source: &str,
+    fonts: &FontOptions,
+) -> Result<typst_as_lib::TypstEngine<typst_as_lib::TypstTemplateMainFile>, String> {
     use crate::typst_engine::engine::{build_engine, compile_preview_with_inputs};
 
-    let composed = format!("{DEFAULT_TEMPLATE}\n\n{user_source}");
-    let source = compose(
-        &composed,
-        &TemplateArgs {
-            paper: "a4",
-            margin_x_mm: 20.0,
-            margin_y_mm: 25.0,
-            text_align: "left",
-        },
-    );
-    let engine = build_engine(&source, fonts).map_err(|e| e.to_string())?;
-    compile_preview_with_inputs(&engine, &probe_inputs())
-        .map(|_| ())
-        .map_err(|e| e.to_string())
+    let engine = build_engine(static_source, fonts).map_err(|e| e.to_string())?;
+    compile_preview_with_inputs(&engine, &probe_inputs()).map_err(|e| e.to_string())?;
+    Ok(engine)
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
-        build_static_source, compose, probe_template, referenced_font_families, render_inputs,
-        resolve_template_source, TemplateArgs, DEFAULT_TEMPLATE,
+        build_and_probe, build_static_source, compose, prepare_render, referenced_font_families,
+        render_inputs, resolve_template, TemplateArgs, DEFAULT_TEMPLATE,
     };
     use crate::options::{Flavor, Margins, Paper, RenderOptions, TextAlign};
     use crate::typst_engine::engine::FontOptions;
@@ -226,19 +253,21 @@ mod tests {
 
     const TMPL: &str = "#let article(paper: \"a4\", margin-x: 20mm, margin-y: 25mm, text-align: \"left\", title: none, author: none, body) = { body }";
 
-    fn options(
-        flavor: Flavor,
-        paper: Paper,
-        margins: Margins,
-        text_align: TextAlign,
-        template_path: Option<String>,
-    ) -> RenderOptions {
+    /// Default render options for tests: CommonMark on A4 with the standard
+    /// 20/20/20/20 mm margins, left alignment and no custom template. Tests
+    /// override the fields they care about via struct-update syntax.
+    fn default_options() -> RenderOptions {
         RenderOptions {
-            flavor,
-            paper,
-            margins,
-            text_align,
-            template_path,
+            flavor: Flavor::Commonmark,
+            paper: Paper::A4,
+            margins: Margins {
+                top_mm: 20.0,
+                bottom_mm: 20.0,
+                left_mm: 20.0,
+                right_mm: 20.0,
+            },
+            text_align: TextAlign::Left,
+            template_path: None,
         }
     }
 
@@ -251,21 +280,14 @@ mod tests {
             text_align: "left",
         };
         // The static source carries the toolbar options; the per-render data
-        // (title/author/body) is read from sys.inputs (M6, §7.5).
-        let scope = [
-            "task-list: task-list",
-            "task-done: task-done",
-            "task-todo: task-todo",
-            "task-plain: task-plain",
-            "blockquote: blockquote",
-            "thematic-break: thematic-break",
-            "inline-code: inline-code",
-            "code-block: code-block",
-            "markdown-table: markdown-table",
-            "ordered-list: ordered-list",
-            "figure-image: figure-image",
-        ]
-        .join(", ");
+        // (title/author/body) is read from sys.inputs (M6, §7.5). The scope
+        // list comes from the same PRELUDE_HELPERS constant `compose` uses,
+        // so adding a helper cannot drift the two apart.
+        let scope = super::PRELUDE_HELPERS
+            .iter()
+            .map(|name| format!("{name}: {name}"))
+            .collect::<Vec<_>>()
+            .join(", ");
         let expected = format!(
             "{TMPL}\n\n#article(\n  paper: \"a4\",\n  margin-x: 20mm,\n  margin-y: 25mm,\n  text-align: \"left\",\n  title: sys.inputs.title,\n  author: sys.inputs.author,\n)[\n#eval(sys.inputs.body, mode: \"markup\", scope: ({scope}))\n]"
         );
@@ -295,18 +317,17 @@ mod tests {
 
     #[test]
     fn build_static_source_maps_options() {
-        let options = options(
-            Flavor::Custom,
-            Paper::A4,
-            Margins {
+        let options = RenderOptions {
+            flavor: Flavor::Custom,
+            margins: Margins {
                 top_mm: 20.0,
                 bottom_mm: 25.0,
                 left_mm: 15.0,
                 right_mm: 15.0,
             },
-            TextAlign::Justified,
-            None,
-        );
+            text_align: TextAlign::Justified,
+            ..default_options()
+        };
         let out = build_static_source(TMPL, &options).unwrap();
         assert!(out.contains("paper: \"a4\""), "{out}");
         assert!(out.contains("margin-x: 15mm"), "{out}"); // smaller of left/right
@@ -320,18 +341,10 @@ mod tests {
 
     #[test]
     fn render_inputs_forwards_front_matter_and_body() {
-        let options = options(
-            Flavor::Custom,
-            Paper::A4,
-            Margins {
-                top_mm: 20.0,
-                bottom_mm: 20.0,
-                left_mm: 20.0,
-                right_mm: 20.0,
-            },
-            TextAlign::Left,
-            None,
-        );
+        let options = RenderOptions {
+            flavor: Flavor::Custom,
+            ..default_options()
+        };
         let inputs =
             render_inputs("---\ntitle: \"My Doc\"\nauthor: Ada\n---\n# Hi", &options).unwrap();
         match inputs.get("title").unwrap() {
@@ -353,18 +366,7 @@ mod tests {
 
     #[test]
     fn render_inputs_emits_none_without_front_matter() {
-        let options = options(
-            Flavor::Commonmark,
-            Paper::A4,
-            Margins {
-                top_mm: 20.0,
-                bottom_mm: 20.0,
-                left_mm: 20.0,
-                right_mm: 20.0,
-            },
-            TextAlign::Left,
-            None,
-        );
+        let options = default_options();
         let inputs = render_inputs("plain text", &options).unwrap();
         assert!(matches!(inputs.get("title").ok(), Some(Value::None)));
         assert!(matches!(inputs.get("author").ok(), Some(Value::None)));
@@ -394,51 +396,36 @@ mod tests {
         );
     }
 
-    /// `resolve_template_source` (§7.4): the embedded default template is used
-    /// when no `template_path` is set; a user path is read verbatim.
+    /// `resolve_template` (§7.4): the embedded default template is used when
+    /// no `template_path` is set; a user path is read verbatim. The tuple
+    /// carries the composed source plus the font options derived from the
+    /// same single read.
     #[test]
-    fn resolve_template_source_returns_default_without_path() {
-        let options = RenderOptions {
-            flavor: Flavor::Commonmark,
-            paper: Paper::A4,
-            margins: Margins {
-                top_mm: 20.0,
-                bottom_mm: 20.0,
-                left_mm: 20.0,
-                right_mm: 20.0,
-            },
-            text_align: TextAlign::Left,
-            template_path: None,
-        };
-        let source = resolve_template_source(&options).expect("default must resolve");
+    fn resolve_template_returns_default_without_path() {
+        let options = default_options();
+        let (source, fonts) = resolve_template(&options).expect("default must resolve");
         assert!(
             source.contains("#let article"),
             "default template must define `article`"
         );
         assert_eq!(source, DEFAULT_TEMPLATE);
+        assert_eq!(fonts.families, Vec::<String>::new(), "no families to load");
+        assert!(!fonts.system_fonts, "default template needs no system scan");
     }
 
     #[test]
-    fn resolve_template_source_reads_user_template() {
+    fn resolve_template_reads_user_template() {
         let path = std::env::temp_dir().join(format!(
             "tauri-md-editor-template-test-{}.typ",
             std::process::id()
         ));
-        let user = "#let task-todo(body) = ([TODO], [body])";
+        let user = "#set text(font: \"Ubuntu\")";
         std::fs::write(&path, user).unwrap();
         let options = RenderOptions {
-            flavor: Flavor::Commonmark,
-            paper: Paper::A4,
-            margins: Margins {
-                top_mm: 20.0,
-                bottom_mm: 20.0,
-                left_mm: 20.0,
-                right_mm: 20.0,
-            },
-            text_align: TextAlign::Left,
             template_path: Some(path.to_string_lossy().into_owned()),
+            ..default_options()
         };
-        let source = resolve_template_source(&options).expect("user template must resolve");
+        let (source, fonts) = resolve_template(&options).expect("user template must resolve");
         // The user template is composed AFTER the prelude so its definitions
         // shadow the defaults (§6.3).
         assert!(
@@ -449,28 +436,52 @@ mod tests {
             source.trim_end().ends_with(user),
             "user source must come after the prelude"
         );
+        // The font family scan runs on the same read.
+        assert_eq!(fonts.families, vec!["Ubuntu".to_string()]);
+        assert!(!fonts.system_fonts, "referenced families subset the book");
         let _ = std::fs::remove_file(&path);
     }
 
     #[test]
-    fn resolve_template_source_reports_missing_path() {
+    fn resolve_template_reports_missing_path() {
         let options = RenderOptions {
-            flavor: Flavor::Commonmark,
-            paper: Paper::A4,
-            margins: Margins {
-                top_mm: 20.0,
-                bottom_mm: 20.0,
-                left_mm: 20.0,
-                right_mm: 20.0,
-            },
-            text_align: TextAlign::Left,
             template_path: Some("/nonexistent/tauri-md-editor/does-not-exist.typ".to_string()),
+            ..default_options()
         };
-        let err = resolve_template_source(&options).unwrap_err();
+        let err = resolve_template(&options).unwrap_err();
         assert!(
             err.contains("does-not-exist.typ"),
             "error should mention the offending path: {err}"
         );
+    }
+
+    /// `prepare_render` (§7.5, M6): the shared setup path for preview and
+    /// export — one template read producing the static source, the per-render
+    /// inputs and the font options.
+    #[test]
+    fn prepare_render_bundles_static_source_inputs_and_fonts() {
+        let options = RenderOptions {
+            flavor: Flavor::Gfm,
+            ..default_options()
+        };
+        let prepared = prepare_render("# Hi", &options).expect("must prepare");
+        // Static source carries the toolbar options and the sys.inputs reads…
+        assert!(
+            prepared.static_source.contains("paper: \"a4\""),
+            "{}",
+            prepared.static_source
+        );
+        assert!(
+            prepared.static_source.contains("sys.inputs"),
+            "{}",
+            prepared.static_source
+        );
+        // …the converted body travels in the inputs, never the static source.
+        match prepared.inputs.get("body").unwrap() {
+            Value::Str(s) => assert_eq!(s.as_str(), "= Hi"),
+            other => panic!("body must be a string, got {other:?}"),
+        }
+        assert_eq!(prepared.fonts.families, Vec::<String>::new());
     }
 
     /// §10: the default template must define `article` with the required
@@ -501,30 +512,36 @@ mod tests {
         assert!(outcome.pages[0].contains("<svg"), "page must be SVG");
     }
 
+    /// Probe a user template exactly as the `validate_template` command does
+    /// (§7.4): compose it after the prelude and build a static source from
+    /// real render options, then build + probe-compile the engine.
+    fn probe_user_template(user_source: &str) -> Result<(), String> {
+        let template = format!("{DEFAULT_TEMPLATE}\n\n{user_source}");
+        let static_source =
+            build_static_source(&template, &default_options()).expect("static source");
+        build_and_probe(&static_source, &FontOptions::default()).map(|_| ())
+    }
+
     /// A user template that only restyles — no `article`, no helper overrides
     /// — is accepted: the prelude provides every default (§6.3, M5+prelude).
     #[test]
-    fn probe_template_accepts_styling_only_template() {
-        probe_template("// styling tweaks only", &FontOptions::default())
-            .expect("must pass via prelude defaults");
+    fn probe_accepts_styling_only_template() {
+        probe_user_template("// styling tweaks only").expect("must pass via prelude defaults");
     }
 
     /// A user template may override individual helpers; a valid override
     /// passes the probe and wins over the prelude default (shadowing).
     #[test]
-    fn probe_template_accepts_helper_override() {
-        probe_template(
-            "#let task-todo(body) = ([#text(fill: red)[TODO]], [body])",
-            &FontOptions::default(),
-        )
-        .expect("valid override must pass");
+    fn probe_accepts_helper_override() {
+        probe_user_template("#let task-todo(body) = ([#text(fill: red)[TODO]], [body])")
+            .expect("valid override must pass");
     }
 
     /// A template with a syntax error is rejected — the prelude cannot make
     /// broken user code compile.
     #[test]
-    fn probe_template_rejects_syntax_error() {
-        let err = probe_template("#let x = =", &FontOptions::default()).unwrap_err();
+    fn probe_rejects_syntax_error() {
+        let err = probe_user_template("#let x = =").unwrap_err();
         assert!(
             err.contains("line"),
             "probe failure should carry a diagnostic: {err}"
@@ -535,9 +552,8 @@ mod tests {
     /// undefined function) is rejected because the probe body exercises every
     /// helper — the override is actually used, so its error surfaces.
     #[test]
-    fn probe_template_rejects_broken_override() {
-        let err = probe_template("#let task-list(..items) = boom(1)", &FontOptions::default())
-            .unwrap_err();
+    fn probe_rejects_broken_override() {
+        let err = probe_user_template("#let task-list(..items) = boom(1)").unwrap_err();
         assert!(
             err.contains("boom"),
             "broken override must surface its own error: {err}"
@@ -548,9 +564,9 @@ mod tests {
     /// exercises the title/author path, so a broken override surfaces instead
     /// of silently keeping the default.
     #[test]
-    fn probe_template_rejects_broken_article_override() {
-        let tmpl = "#let article(..) = undefined-title-thing(title)";
-        let err = probe_template(tmpl, &FontOptions::default()).unwrap_err();
+    fn probe_rejects_broken_article_override() {
+        let err =
+            probe_user_template("#let article(..) = undefined-title-thing(title)").unwrap_err();
         assert!(
             err.contains("line"),
             "probe failure should carry a diagnostic: {err}"

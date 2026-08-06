@@ -5,6 +5,7 @@
 // Desktop-only: Linux + macOS.
 
 pub mod commands;
+pub mod engine_cache;
 pub mod files;
 pub mod links;
 pub mod markdown;
@@ -18,7 +19,7 @@ pub fn run() {
         // rebuilt (and fonts re-scanned) only when the template/options change.
         // Arc so commands can hand an owned handle to the blocking thread.
         .manage(std::sync::Arc::new(std::sync::Mutex::new(
-            commands::TemplateEngineCache::new(),
+            engine_cache::TemplateEngineCache::new(),
         )))
         .invoke_handler(tauri::generate_handler![
             commands::render_preview,

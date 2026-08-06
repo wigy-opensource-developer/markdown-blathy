@@ -119,6 +119,17 @@ export default function App() {
     [settings, refreshPreview]
   );
 
+  // Every file/template/link handler shares one error path: surface the
+  // message in the banner and keep the last good state (§9). Wrapping the
+  // action here removes the repeated try/catch from each handler below.
+  const runFileAction = useCallback(async (action) => {
+    try {
+      await action();
+    } catch (err) {
+      setError(String(err));
+    }
+  }, []);
+
   // File handlers stay thin: they call the tested `lib/api.js` wrappers and
   // map the outcome onto state. A dismissed dialog is silent (§9); any other
   // failure surfaces in the error banner. All are stable so the memoized
@@ -130,53 +141,53 @@ export default function App() {
     refreshTitle();
   }, [refreshPreview, refreshTitle]);
 
-  const handleOpen = useCallback(async () => {
-    try {
-      const res = await api.openMarkdown(directory);
-      if (api.isCanceled(res)) return;
-      setFilePath(res.path);
-      setMarkdown(res.content);
-      setDirectory(parentDirectory(res.path));
-      refreshPreview();
-      refreshTitle();
-    } catch (err) {
-      setError(String(err));
-    }
-  }, [directory, refreshPreview, refreshTitle]);
+  const handleOpen = useCallback(
+    () =>
+      runFileAction(async () => {
+        const res = await api.openMarkdown(directory);
+        if (api.isCanceled(res)) return;
+        setFilePath(res.path);
+        setMarkdown(res.content);
+        setDirectory(parentDirectory(res.path));
+        refreshPreview();
+        refreshTitle();
+      }),
+    [runFileAction, directory, refreshPreview, refreshTitle]
+  );
 
   // Always a "Save As…" dialog: the filename defaults to `<title>.md` in the
   // working Directory (§8.4). The returned path becomes the new filePath, so
   // the title picks up the new stem when there is no frontmatter.
-  const handleSave = useCallback(async () => {
-    try {
-      const res = await api.saveMarkdown(markdown, safeFileName(title), directory);
-      if (api.isCanceled(res)) return;
-      setFilePath(res.path);
-      refreshTitle();
-    } catch (err) {
-      setError(String(err));
-    }
-  }, [markdown, title, directory, refreshTitle]);
+  const handleSave = useCallback(
+    () =>
+      runFileAction(async () => {
+        const res = await api.saveMarkdown(markdown, safeFileName(title), directory);
+        if (api.isCanceled(res)) return;
+        setFilePath(res.path);
+        refreshTitle();
+      }),
+    [runFileAction, markdown, title, directory, refreshTitle]
+  );
 
   // Template picker (M5, §8.4): choose a `.typ` file via the system dialog,
   // validate it with a probe compile, and only apply it on success — a broken
   // template keeps the previous one (or the embedded default) and surfaces
   // the diagnostics in the error banner. A dismissed dialog is silent (§9).
-  const handlePickTemplate = useCallback(async () => {
-    try {
-      const picked = await open({
-        title: "Choose a Typst template",
-        multiple: false,
-        filters: [{ name: "Typst template", extensions: ["typ"] }],
-        defaultPath: directory ?? undefined,
-      });
-      if (picked === null) return; // canceled — silent
-      await api.validateTemplate(picked, options);
-      changeOption({ templatePath: picked });
-    } catch (err) {
-      setError(String(err));
-    }
-  }, [directory, options, changeOption]);
+  const handlePickTemplate = useCallback(
+    () =>
+      runFileAction(async () => {
+        const picked = await open({
+          title: "Choose a Typst template",
+          multiple: false,
+          filters: [{ name: "Typst template", extensions: ["typ"] }],
+          defaultPath: directory ?? undefined,
+        });
+        if (picked === null) return; // canceled — silent
+        await api.validateTemplate(picked, options);
+        changeOption({ templatePath: picked });
+      }),
+    [runFileAction, directory, options, changeOption]
+  );
 
   // Clicking the active-template badge drops it again — back to the embedded
   // default, as if no template was ever loaded (persisted like any option).
@@ -184,28 +195,25 @@ export default function App() {
     changeOption({ templatePath: null });
   }, [changeOption]);
 
-  const handleExport = useCallback(async () => {
-    try {
-      const res = await api.exportPdf(markdown, options, safeFileName(title), directory);
-      if (api.isCanceled(res)) return;
-      // The PDF is written and opened in the system viewer by the backend.
-    } catch (err) {
-      setError(String(err));
-    }
-  }, [markdown, options, title, directory]);
+  const handleExport = useCallback(
+    () =>
+      runFileAction(async () => {
+        const res = await api.exportPdf(markdown, options, safeFileName(title), directory);
+        if (api.isCanceled(res)) return;
+        // The PDF is written and opened in the system viewer by the backend.
+      }),
+    [runFileAction, markdown, options, title, directory]
+  );
 
   const dismissError = useCallback(() => setError(null), []);
 
   // Preview links are intercepted in Preview.jsx and forwarded here: http(s)
   // opens in the system browser, anything else is rejected by the backend
   // with an error (§7.4 / §9) — the webview never navigates to a link.
-  const handleExternalLink = useCallback(async (url) => {
-    try {
-      await api.openExternal(url);
-    } catch (err) {
-      setError(String(err));
-    }
-  }, []);
+  const handleExternalLink = useCallback(
+    (url) => runFileAction(() => api.openExternal(url)),
+    [runFileAction]
+  );
 
   return (
     <div className="app">

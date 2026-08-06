@@ -11,7 +11,7 @@
 
 use std::error::Error;
 use std::fmt;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use typst::foundations::Dict;
 use typst_as_lib::{TypstEngine, TypstTemplateMainFile};
@@ -63,6 +63,24 @@ pub struct FontOptions {
     /// the embedded DejaVu Sans and the `extra_dirs`). A small font book keeps
     /// per-render compiles fast — a 700-face book makes them ~5× slower.
     pub families: Vec<String>,
+}
+
+/// Font loading for a template whose source has already been read. Used by
+/// `template::prepare_render` / validation so the template file is read exactly
+/// once — the same bytes feed both the composed source and the font-family
+/// scan.
+pub fn font_options_for_source(path: &str, source: &str) -> FontOptions {
+    let dir = Path::new(path)
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .map(|p| p.to_path_buf());
+    let families = crate::typst_engine::template::referenced_font_families(source);
+    FontOptions {
+        // When no families are detected, keep the conservative full scan.
+        system_fonts: families.is_empty(),
+        extra_dirs: dir.into_iter().collect(),
+        families,
+    }
 }
 
 /// A cached scan of the system's fonts: `(path, family)`. The full scan is
