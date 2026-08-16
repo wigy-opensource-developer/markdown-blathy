@@ -4,7 +4,7 @@ import { open } from "@tauri-apps/plugin-dialog";
 import * as api from "./lib/api.js";
 import { marginsForPreset } from "./lib/presets.js";
 import { isStaleResponse } from "./lib/seq.js";
-import { loadSettings, saveSettings } from "./lib/settings.js";
+import { applyOptionsPatch, loadSettings, saveSettings } from "./lib/settings.js";
 import { SAMPLE_DOC } from "./lib/sample.js";
 import { docTitle, parentDirectory, safeFileName, windowTitle } from "./lib/title.js";
 import Toolbar from "./components/Toolbar.jsx";
@@ -103,10 +103,13 @@ export default function App() {
   // Apply a partial options patch; switching the margin preset maps it to
   // millimetre margins. `custom` keeps the current margins (custom margin
   // editing arrives in a later milestone). Every change persists to
-  // localStorage so the settings survive a restart (M5, §8.6).
+  // localStorage so the settings survive a restart (M5, §8.6). The patch is
+  // merged through applyOptionsPatch, which drops the null a Mantine Select
+  // emits when the selected option is re-clicked, so a deselect can't corrupt
+  // the options (§13).
   const changeOption = useCallback(
     (patch) => {
-      const nextOptions = { ...settings.options, ...patch };
+      const nextOptions = applyOptionsPatch(settings.options, patch);
       if (patch.marginPreset) {
         nextOptions.margins =
           marginsForPreset(patch.marginPreset) ?? settings.options.margins;

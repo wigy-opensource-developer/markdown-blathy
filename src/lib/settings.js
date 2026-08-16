@@ -37,6 +37,25 @@ export function saveSettings(settings, storage) {
   storage.setItem(STORAGE_KEY, JSON.stringify(settings));
 }
 
+// Option fields where `null` is a real value rather than Select deselect
+// noise: `templatePath: null` means "the embedded default template" (clearing
+// the custom template, §8.4).
+const NULLABLE_OPTION_FIELDS = new Set(["templatePath"]);
+
+/** Merge a partial patch into the toolbar options, dropping null values for
+ *  fields that cannot be empty. Mantine Select fires `onChange(null)` when
+ *  the already-selected option is clicked again (`allowDeselect` defaults to
+ *  true); applying that blindly would corrupt the settings and the IPC
+ *  payload (§13). */
+export function applyOptionsPatch(options, patch) {
+  const cleaned = {};
+  for (const [field, value] of Object.entries(patch)) {
+    if (value === null && !NULLABLE_OPTION_FIELDS.has(field)) continue;
+    cleaned[field] = value;
+  }
+  return { ...options, ...cleaned };
+}
+
 /** Merge parsed settings onto the defaults, dropping anything malformed. */
 function mergeSettings(parsed) {
   if (parsed === null || typeof parsed !== "object") {

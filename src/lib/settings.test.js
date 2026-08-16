@@ -1,7 +1,12 @@
 // localStorage-backed settings (§8.6 of SPEC.md) — pure module, testable in
 // vitest via an injected storage object (node has no `window.localStorage`).
 import { describe, expect, it } from "vitest";
-import { DEFAULT_SETTINGS, loadSettings, saveSettings } from "./settings.js";
+import {
+  applyOptionsPatch,
+  DEFAULT_SETTINGS,
+  loadSettings,
+  saveSettings,
+} from "./settings.js";
 
 /** A minimal in-memory stand-in for `window.localStorage`. */
 function fakeStorage(initial = {}) {
@@ -70,5 +75,31 @@ describe("saveSettings", () => {
     saveSettings(DEFAULT_SETTINGS, storage);
     const raw = storage.getItem("tauri-md-editor.settings");
     expect(JSON.parse(raw)).toEqual(DEFAULT_SETTINGS);
+  });
+});
+
+describe("applyOptionsPatch", () => {
+  it("ignores a null patch for a field that cannot be empty (Select deselect, §13)", () => {
+    // Mantine Select fires onChange(null) when the already-selected option is
+    // clicked again; applying that blindly corrupts the IPC payload.
+    const next = applyOptionsPatch(DEFAULT_SETTINGS.options, { flavor: null });
+    expect(next.flavor).toBe("gfm");
+  });
+
+  it("keeps a null templatePath — clearing the custom template is legitimate (§8.4)", () => {
+    const options = { ...DEFAULT_SETTINGS.options, templatePath: "/tmp/dark.typ" };
+    const next = applyOptionsPatch(options, { templatePath: null });
+    expect(next.templatePath).toBeNull();
+  });
+
+  it("applies real values and leaves unpatched fields untouched", () => {
+    const next = applyOptionsPatch(DEFAULT_SETTINGS.options, {
+      flavor: null, // deselect noise — dropped
+      paper: "a5",
+    });
+    expect(next.paper).toBe("a5");
+    expect(next.flavor).toBe("gfm");
+    expect(next.textAlign).toBe("left");
+    expect(next.margins).toEqual(DEFAULT_SETTINGS.options.margins);
   });
 });

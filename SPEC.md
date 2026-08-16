@@ -1257,9 +1257,9 @@ Future work, in order of leverage:
 7. **`Export .typ`** button (show the composed source) — cheap, great for debugging and power users.
 8. **SyncTeX-like preview↔source jumping** (click page → cursor).
 
-**Deferred issues (noted, not yet fixed):**
+**Deferred issues (noted, not yet fixed):** (none currently)
 
-- **Re-selecting the current Flavor in the toolbar deselects it** — Mantine `Select` fires `onChange(null)` when the already-selected option is clicked again (`allowDeselect` defaults to true), and `changeOption` applies the patch blindly, so `flavor: null` corrupts the settings and the IPC payload (the render then fails to deserialize). Fix: ignore `null` patches in `changeOption` (or set `allowDeselect={false}` on the toolbar Selects); the same guard applies to every single-select control in the toolbar.
+*Fixed:* **Re-selecting the current Flavor in the toolbar deselected it** (previously listed here) — Mantine `Select` fires `onChange(null)` when the already-selected option is clicked again (`allowDeselect` defaults to true), and `changeOption` applied the patch blindly, so `flavor: null` corrupted the settings and the IPC payload. Now `changeOption` merges every patch through `applyOptionsPatch` (`lib/settings.js`), which drops `null` values for fields that cannot be empty — the guard covers every single-select control in the toolbar at once, while `templatePath: null` stays a legitimate patch (clearing the custom template, §8.4). Pinned by the `applyOptionsPatch` tests in `settings.test.js`.
 
 *Fixed:* the **Alignment control has no effect** bug (previously listed here) is resolved in `default-article` (`default.typ`) — the text-align `set` rules are now unconditional with a conditional value (`set align(if text-align == "center" { center } else { left })`, `set par(justify: text-align == "justified")`), pinned by a test asserting left/center/justified produce distinct SVGs (`text_alignment_changes_the_render` in `engine.rs`).
 
