@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # Quality gate: frontend build + Rust checks.
+# See SPEC.md, IMPLEMENTATION.md, and TESTING.md for project structure.
 # The Rust crate lives in src-tauri/, so cargo runs must happen there.
 # Usage: ./check.sh
 set -euo pipefail

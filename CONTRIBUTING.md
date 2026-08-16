@@ -30,3 +30,11 @@ npm run tauri build
 ```
 
 Output lands in `src-tauri/target/release/bundle/`.
+
+## Specification
+
+Three documents describe the project:
+
+- **SPEC.md** — Product overview, architecture, flavor support, milestones, limitations. Read this first.
+- **IMPLEMENTATION.md** — Module structure, API contracts, converter mapping, engine details, implementation decisions. The implementor's guide.
+- **TESTING.md** — Test matrix with priorities, milestone acceptance checklists, test quality rules.
