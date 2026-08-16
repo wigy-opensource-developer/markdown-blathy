@@ -51,4 +51,8 @@ typst-kit = { version = "0.15", features = ["scan-fonts"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
+# comemo: memoization cache used by `#[comemo::track]` on LateLinkResolver.
+# Required for svg_in_bundle link resolution (footnote/heading anchors).
+comemo = "0.5"
+
 [dev-dependencies]

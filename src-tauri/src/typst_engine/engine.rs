@@ -9,11 +9,16 @@
 //!   re-runs the font scan) only when the static source changes.
 //! - `build_engine` + `compile_pdf_with_inputs`: PDF bytes for export.
 
+use std::collections::HashMap;
 use std::error::Error;
 use std::fmt;
 use std::path::{Path, PathBuf};
 
+use comemo::Track;
+use typst::diag::EcoString;
 use typst::foundations::Dict;
+use typst::layout::{FrameItem, Point};
+use typst::model::{Destination, LateLinkResolver, ResolvedLink};
 use typst_as_lib::{TypstEngine, TypstTemplateMainFile};
 use typst_layout::PagedDocument;
 
@@ -160,6 +165,11 @@ pub fn build_engine(
 
 /// Compile the engine's static source with the per-render `sys.inputs` and
 /// render preview pages as SVG (§6.4).
+///
+/// Uses `svg_in_bundle` with a `LateLinkResolver` so internal links —
+/// footnote markers ↔ notes, heading anchors, cross-references — resolve to
+/// clickable `<a>` elements in the SVG. The plain `typst_svg::svg()` omits
+/// `href` on every internal link.
 pub fn compile_preview_with_inputs(
     engine: &TypstEngine<TypstTemplateMainFile>,
     inputs: &Dict,
@@ -173,14 +183,47 @@ pub fn compile_preview_with_inputs(
         .iter()
         .map(|diag| render_diagnostic(engine, diag))
         .collect();
-    // typst-svg 0.15: `svg(page: &Page, opts: &SvgOptions)` takes the whole
-    // page, not `&page.frame` as in older versions.
-    let pages = doc
-        .pages()
-        .iter()
-        .map(|page| typst_svg::svg(page, &Default::default()))
-        .collect();
+
+    let pages = compile_preview_pages(&doc);
     Ok(PreviewOutcome { pages, warnings })
+}
+
+/// Render all pages as SVG with internal link resolution (footnotes, heading
+/// anchors, cross-references).
+///
+/// Walks every page's frame for `FrameItem::Link(Destination::Location, …)`,
+/// resolves each location via the `LateLinkResolver` to get the anchor string,
+/// then calls `svg_in_bundle` with the collected anchors and a tracked
+/// resolver.
+fn compile_preview_pages(doc: &PagedDocument) -> Vec<String> {
+    let resolver = LateLinkResolver::new(None, doc.introspector().as_ref());
+    let tracked = resolver.track();
+
+    // Collect (position, anchor_id) pairs per page.
+    let mut anchors_by_page: HashMap<usize, Vec<(Point, EcoString)>> = HashMap::new();
+    for page in doc.pages().iter() {
+        for (_, item) in page.frame.items() {
+            if let FrameItem::Link(Destination::Location(loc), _) = item {
+                if let Some(pos) = doc.introspector().position(*loc) {
+                    if let Some(ResolvedLink::Local { anchor }) = tracked.resolve(*loc) {
+                        anchors_by_page
+                            .entry(pos.page.get())
+                            .or_default()
+                            .push((pos.point, anchor));
+                    }
+                }
+            }
+        }
+    }
+
+    doc.pages()
+        .iter()
+        .enumerate()
+        .map(|(page_idx, page)| {
+            let anchors = anchors_by_page.get(&page_idx).cloned().unwrap_or_default();
+            typst_svg::svg_in_bundle(page, &Default::default(), &anchors, tracked)
+        })
+        .collect()
 }
 
 /// Compile the engine's static source with the per-render `sys.inputs` and
@@ -877,6 +920,27 @@ mod tests {
         let markdown = "- bullet item [^1]\n- another item\n\n[^1]: the note";
         let outcome = compile_markdown(markdown, &custom_options());
         assert!(!outcome.pages.is_empty(), "expected at least one page");
+    }
+
+    /// Footnote markers in the SVG preview must have `href="#..."` anchors so
+    /// they are clickable — the `svg_in_bundle` path resolves `Destination::
+    /// Location` items via `LateLinkResolver` (§6.4).
+    #[test]
+    fn footnote_markers_have_svg_href_anchors() {
+        let markdown = "Body text.[^1]\n\n[^1]: the note";
+        let outcome = compile_markdown(markdown, &custom_options());
+        assert!(!outcome.pages.is_empty(), "expected at least one page");
+        let svg = &outcome.pages[0];
+
+        // Debug: dump the SVG so we can inspect the footnote link structure.
+        eprintln!("=== SVG for footnote test ===\n{svg}\n=== end ===");
+
+        // The SVG renderer emits `<a href="#…">` for resolved internal links.
+        assert!(
+            svg.contains("href=\"#"),
+            "footnote marker must have an href anchor in SVG: {:?}",
+            svg
+        );
     }
 
     /// The dark theme must restyle the footnote divider: the stock separator

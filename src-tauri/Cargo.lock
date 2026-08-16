@@ -4462,6 +4462,7 @@ dependencies = [
 name = "tauri-md-editor"
 version = "0.1.0"
 dependencies = [
+ "comemo",
  "comrak",
  "open",
  "serde",
