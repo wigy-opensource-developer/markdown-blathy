@@ -46,4 +46,9 @@ typst-svg = "0.15"
 typst-as-lib = { version = "0.16", features = ["typst-kit-fonts"] }
 typst-kit = { version = "0.15", features = ["scan-fonts"] }
 
+# M7: structured diagnostic logging — replaces eprintln! with leveled
+# tracing output controlled by RUST_LOG (default: warn).
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
 [dev-dependencies]

@@ -5,6 +5,8 @@
 //! shared command-layer state type — so the cache behaviour is unit-testable
 //! with plain `cargo test`.
 
+use tracing::debug;
+
 use typst_as_lib::{TypstEngine, TypstTemplateMainFile};
 
 use crate::typst_engine::engine::{self, FontOptions};
@@ -36,14 +38,12 @@ impl TemplateEngineCache {
         fonts: &FontOptions,
     ) -> Result<&TypstEngine<TypstTemplateMainFile>, String> {
         if self.key != static_source {
-            // Diagnostic (stderr): a rebuild re-runs the font scan, which is
-            // the ~1.5s cost the user may see on the first render after a
-            // template change. Each line here should correspond to an actual
-            // template/options change, never to steady-state typing.
-            eprintln!(
-                "[engine cache] rebuild: static source changed ({} -> {} chars)",
-                self.key.len(),
-                static_source.len()
+            // Each line should correspond to an actual template/options change,
+            // never to steady-state typing.
+            debug!(
+                prev_len = self.key.len(),
+                new_len = static_source.len(),
+                "engine cache rebuild"
             );
             self.engine =
                 Some(engine::build_engine(static_source, fonts).map_err(|e| e.to_string())?);

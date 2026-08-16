@@ -10,6 +10,7 @@ use std::sync::{Arc, Mutex};
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, State};
 use tauri_plugin_dialog::DialogExt;
+use tracing::{debug, info, instrument};
 use typst::foundations::Dict;
 use typst_as_lib::{TypstEngine, TypstTemplateMainFile};
 
@@ -122,6 +123,7 @@ async fn with_cached_engine<R: Send + 'static>(
 /// on `spawn_blocking`; `seq` is echoed back so the frontend can drop stale
 /// responses.
 #[tauri::command]
+#[instrument(skip(state, payload), fields(seq = payload.seq, md_len = payload.markdown.len()))]
 pub async fn render_preview(
     state: State<'_, Arc<Mutex<TemplateEngineCache>>>,
     payload: RenderPayload,
@@ -135,19 +137,23 @@ pub async fn render_preview(
     })
     .await?;
 
-    // Diagnostic: where does the per-render time go? `setup` is the frontend
-    // payload handling (template read + conversion), `render` is the cached
-    // engine compile + SVG generation. If `render` is small but the user still
-    // sees ~1s, the cost is on the frontend (IPC/DOM), not the backend.
     let t2 = std::time::Instant::now();
     let svg_bytes: usize = outcome.pages.iter().map(|p| p.len()).sum();
-    eprintln!(
-        "[preview] setup={:?} render={:?} total={:?} pages={} svg={svg_bytes}B",
-        t1.duration_since(t0),
-        t2.duration_since(t1),
-        t2.duration_since(t0),
-        outcome.pages.len(),
+
+    // Timing breakdown at debug level (RUST_LOG=debug) — `setup` is the
+    // frontend payload handling, `render` is the cached engine compile + SVG
+    // generation. If `render` is small but the user still sees ~1s, the cost
+    // is on the frontend (IPC/DOM), not the backend.
+    debug!(
+        setup_ms = t1.duration_since(t0).as_millis(),
+        render_ms = t2.duration_since(t1).as_millis(),
+        total_ms = t2.duration_since(t0).as_millis(),
+        "render timing"
     );
+
+    // Summary at info level — return value contains full SVG pages (too large
+    // for `#[instrument] ret`).
+    info!(pages = outcome.pages.len(), svg_bytes, "preview rendered");
 
     Ok(PreviewOutcome {
         pages: outcome.pages,
@@ -163,6 +169,7 @@ pub async fn render_preview(
 /// Shares the M6 engine cache with the preview, so exporting does not re-scan
 /// fonts. Compilation and the blocking save dialog run off the UI thread.
 #[tauri::command]
+#[instrument(skip(app, state, payload), fields(title, directory))]
 pub async fn export_pdf(
     app: AppHandle,
     state: State<'_, Arc<Mutex<TemplateEngineCache>>>,
@@ -185,11 +192,13 @@ pub async fn export_pdf(
         &directory,
     )?
     else {
+        info!(canceled = true, "export PDF canceled");
         return Ok(FileOutcome::canceled());
     };
 
     files::write_atomically(&path, &pdf).map_err(|e| format!("Failed to write PDF: {e}"))?;
     open_in_viewer(&path);
+    info!(path = %path.display(), "export PDF saved");
     Ok(FileOutcome::saved(&path))
 }
 
@@ -238,6 +247,7 @@ fn pick_save_path(
 /// Open a Markdown file via the system dialog (starting in `directory` when
 /// given) and read it (§7.4, M4).
 #[tauri::command]
+#[instrument(skip(app), fields(directory))]
 pub async fn open_markdown(
     app: AppHandle,
     directory: Option<String>,
@@ -249,17 +259,20 @@ pub async fn open_markdown(
         &directory,
     )?
     else {
+        info!(canceled = true, "open markdown canceled");
         return Ok(FileOutcome::canceled());
     };
 
     let content =
         std::fs::read_to_string(&path).map_err(|e| format!("Failed to read file: {e}"))?;
+    info!(path = %path.display(), "markdown opened");
     Ok(FileOutcome::opened(&path, content))
 }
 
 /// Save Markdown via a "Save As…" dialog: the filename defaults to
 /// `<title>.md` in `directory`, and the write is atomic (§7.4, M4).
 #[tauri::command]
+#[instrument(skip(app, content), fields(title, directory))]
 pub async fn save_markdown(
     app: AppHandle,
     content: String,
@@ -274,17 +287,20 @@ pub async fn save_markdown(
         &directory,
     )?
     else {
+        info!(canceled = true, "save markdown canceled");
         return Ok(FileOutcome::canceled());
     };
 
     files::write_atomically(&path, content.as_bytes())
         .map_err(|e| format!("Failed to save: {e}"))?;
+    info!(path = %path.display(), "markdown saved");
     Ok(FileOutcome::saved(&path))
 }
 
 /// The working directory at startup: `$XDG_DATA_HOME` when set and non-empty,
 /// else `$HOME` (SPEC §8.4).
 #[tauri::command]
+#[instrument]
 pub fn get_initial_directory() -> String {
     files::initial_directory(std::env::var_os("XDG_DATA_HOME"), std::env::var_os("HOME"))
         .to_string_lossy()
@@ -296,6 +312,7 @@ pub fn get_initial_directory() -> String {
 /// Preview links must never navigate the webview: only http(s) is forwarded
 /// to the browser; every other scheme is rejected with an error (§9).
 #[tauri::command]
+#[instrument]
 pub fn open_external(url: String) -> Result<(), String> {
     if !crate::links::is_browser_url(&url) {
         return Err(format!(
@@ -318,6 +335,7 @@ pub fn open_external(url: String) -> Result<(), String> {
 /// its static source. The next `render_preview` for the same template finds it
 /// ready, so the document re-renders immediately instead of re-scanning.
 #[tauri::command]
+#[instrument(skip(state), fields(path, options))]
 pub async fn validate_template(
     state: State<'_, Arc<Mutex<TemplateEngineCache>>>,
     path: String,
@@ -371,7 +389,7 @@ fn dialog_path(
 /// succeeded on disk even if no viewer can be launched.
 fn open_in_viewer(path: &Path) {
     if let Err(err) = open::that(path) {
-        eprintln!("Failed to open PDF in viewer: {err}");
+        tracing::warn!(error = %err, "failed to open PDF in viewer");
     }
 }
 
