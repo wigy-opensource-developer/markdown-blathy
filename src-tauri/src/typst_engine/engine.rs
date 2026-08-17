@@ -299,7 +299,7 @@ mod tests {
         build_engine, compile_pdf_with_inputs, compile_preview_with_inputs, FontOptions,
         PreviewOutcome,
     };
-    use crate::options::{Flavor, Margins, Paper, RenderOptions, TextAlign};
+    use crate::options::{Flavor, HeadingIds, Margins, Paper, RenderOptions, TextAlign};
     use crate::typst_engine::template::{
         build_static_source, compose, render_inputs, TemplateArgs, DEFAULT_TEMPLATE,
     };
@@ -318,6 +318,7 @@ mod tests {
             },
             text_align: TextAlign::Left,
             template_path: None,
+            heading_ids: HeadingIds::default(),
         }
     }
 
@@ -387,7 +388,7 @@ mod tests {
     /// Full pipeline: markdown → converter → static source + inputs → compile.
     fn compile_markdown(markdown: &str, options: &RenderOptions) -> PreviewOutcome {
         let static_source = build_static_source(DEFAULT_TEMPLATE, options).unwrap();
-        let inputs = render_inputs(markdown, options).unwrap();
+        let (inputs, _warnings) = render_inputs(markdown, options).unwrap();
         let engine = build_engine(&static_source, &FontOptions::default()).expect("engine");
         compile_preview_with_inputs(&engine, &inputs).expect("must compile")
     }
@@ -396,7 +397,7 @@ mod tests {
     /// file) with the Custom flavor — the M6 flow used by the theme tests.
     fn compile_custom_theme(template: &str, markdown: &str) -> PreviewOutcome {
         let static_source = build_static_source(template, &custom_options()).unwrap();
-        let inputs = render_inputs(markdown, &custom_options()).unwrap();
+        let (inputs, _warnings) = render_inputs(markdown, &custom_options()).unwrap();
         let engine = build_engine(&static_source, &FontOptions::default()).expect("engine");
         compile_preview_with_inputs(&engine, &inputs).expect("must compile")
     }
@@ -761,7 +762,7 @@ mod tests {
         };
         let render = |template: &str| {
             let source = build_static_source(template, &gfm_options()).unwrap();
-            let inputs = render_inputs("Hello world.", &gfm_options()).unwrap();
+            let (inputs, _warnings) = render_inputs("Hello world.", &gfm_options()).unwrap();
             let engine = build_engine(&source, &fonts).expect("engine");
             compile_preview_with_inputs(&engine, &inputs)
                 .expect("must compile")
@@ -847,7 +848,7 @@ mod tests {
         };
         let render = |template: &str| {
             let static_source = build_static_source(template, &gfm_options()).unwrap();
-            let inputs = render_inputs("- [ ]", &gfm_options()).unwrap();
+            let (inputs, _warnings) = render_inputs("- [ ]", &gfm_options()).unwrap();
             let engine = build_engine(&static_source, &fonts).expect("engine");
             compile_preview_with_inputs(&engine, &inputs)
                 .expect("must compile")
@@ -925,6 +926,16 @@ mod tests {
     /// Footnote markers in the SVG preview must have `href="#..."` anchors so
     /// they are clickable — the `svg_in_bundle` path resolves `Destination::
     /// Location` items via `LateLinkResolver` (§6.4).
+    ///
+    /// IGNORED on typst 0.15: the paged introspector implements `anchor()`
+    /// as `None` (anchors exist only in the HTML export path), so
+    /// `LateLinkResolver` never resolves a Location link and the SVG
+    /// renderer emits `<a>` without `href`. The resolution machinery in
+    /// `compile_preview_pages` is in place and needs no change — un-ignore
+    /// this once typst grows paged anchors. (The old assertion
+    /// `contains("href=\"#")` was a false positive: glyph-reuse
+    /// `<use href="#g…">` references matched it.)
+    #[ignore = "typst 0.15 paged introspector has no anchors; SVG Location links unresolved"]
     #[test]
     fn footnote_markers_have_svg_href_anchors() {
         let markdown = "Body text.[^1]\n\n[^1]: the note";
@@ -932,12 +943,10 @@ mod tests {
         assert!(!outcome.pages.is_empty(), "expected at least one page");
         let svg = &outcome.pages[0];
 
-        // Debug: dump the SVG so we can inspect the footnote link structure.
-        eprintln!("=== SVG for footnote test ===\n{svg}\n=== end ===");
-
-        // The SVG renderer emits `<a href="#…">` for resolved internal links.
+        // A resolved internal link is an ANCHOR element with an href —
+        // `<a href="#…">`. Glyph-reuse `<use href="#g…">` refs don't count.
         assert!(
-            svg.contains("href=\"#"),
+            svg.contains("<a href=\"#"),
             "footnote marker must have an href anchor in SVG: {:?}",
             svg
         );
@@ -1028,6 +1037,67 @@ mod tests {
         assert!(!outcome.pages.is_empty(), "expected at least one page");
     }
 
+    /// Heading IDs attach as real Typst labels (§6.2): the emitted
+    /// `#label("…")` must render nothing visible (the old `{\#id}` form
+    /// leaked literal text into the output) and must be a real link target
+    /// (a link to a missing label is a compile error, so a clean compile
+    /// proves the label exists). SVG `href` resolution itself is a typst
+    /// 0.15 limitation: the paged introspector implements `anchor()` as
+    /// `None`, so `LateLinkResolver` never resolves Location links.
+    #[test]
+    fn heading_ids_render_invisible_labels_that_links_resolve() {
+        // Invisible: a heading with an ID renders the same glyphs as the
+        // same heading without one.
+        let mut no_ids = gfm_options();
+        no_ids.heading_ids = HeadingIds { max_level: 0 };
+        let plain = compile_markdown("# Title", &no_ids);
+        let labeled = compile_markdown("# Title", &gfm_options());
+        assert_eq!(
+            plain.pages[0].matches("<path").count(),
+            labeled.pages[0].matches("<path").count(),
+            "the label must not render visible glyphs"
+        );
+
+        // Real link target: referencing the converted body's label compiles
+        // cleanly — with the old `{\#id}` emission this failed with
+        // "label `title` does not exist in the document".
+        let (inputs, _warnings) = render_inputs("# Title", &gfm_options()).unwrap();
+        let body = match inputs.get("body").unwrap() {
+            Value::Str(s) => s.as_str().to_string(),
+            other => panic!("body must be a string, got {other:?}"),
+        };
+        let outcome = compile_body(&format!("{body}\n\n#link(label(\"title\"))[go]"));
+        assert!(!outcome.pages.is_empty(), "label link must compile");
+    }
+
+    /// `[go](#title)` targets the heading's label through the prelude's
+    /// `internal-link` helper (§6.2): the link resolves in the PDF (and in
+    /// the SVG once typst resolves Location links there).
+    #[test]
+    fn internal_link_to_heading_compiles_through_full_pipeline() {
+        let outcome = compile_markdown("# Title\n\n[go](#title)", &gfm_options());
+        assert!(!outcome.pages.is_empty(), "expected at least one page");
+        // The link renders as an actual link element.
+        assert!(
+            outcome.pages[0].contains("<a "),
+            "the internal link must render as a link element"
+        );
+    }
+
+    /// A broken TOC entry (`[go](#missing)` with no such heading) must not
+    /// fail the render: the prelude helper degrades it to plain text —
+    /// consistent with the converter's lossy-HTML / dangling-footnote
+    /// philosophy (§6.2).
+    #[test]
+    fn dangling_internal_link_degrades_to_plain_text() {
+        let outcome = compile_markdown("# Title\n\n[go](#missing)", &gfm_options());
+        assert!(!outcome.pages.is_empty(), "expected at least one page");
+        assert!(
+            !outcome.pages[0].contains("<a "),
+            "a dangling link must not render as a link element"
+        );
+    }
+
     #[test]
     fn custom_template_with_syntax_error_fails_probe_compile() {
         // A custom template is composed AFTER the prelude (§6.3); a broken
@@ -1036,7 +1106,7 @@ mod tests {
         let broken = "#let task-list(..items) = boom(1)";
         let template = format!("{DEFAULT_TEMPLATE}\n\n{broken}");
         let static_source = build_static_source(&template, &gfm_options()).unwrap();
-        let inputs = render_inputs("- [x] done", &gfm_options()).unwrap();
+        let (inputs, _warnings) = render_inputs("- [x] done", &gfm_options()).unwrap();
         let engine = build_engine(&static_source, &FontOptions::default()).expect("engine");
         let err = compile_preview_with_inputs(&engine, &inputs).unwrap_err();
         assert!(err.to_string().contains("line"), "{err}");

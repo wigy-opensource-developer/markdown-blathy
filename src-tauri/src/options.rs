@@ -43,6 +43,26 @@ pub struct Margins {
     pub right_mm: f32,
 }
 
+/// Heading ID generation (§6.2): `max_level` limits AUTO-slug generation to
+/// headings of level 1 through N (0 = no auto-slugs at all).
+///
+/// Manual `{#custom-id}` IDs are the author's explicit intent: they are
+/// always honored — at every level, even when `max_level` is 0. All IDs
+/// (manual and auto) share one uniqueness namespace; the first occurrence
+/// wins and later duplicates are dropped with a warning.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HeadingIds {
+    /// Maximum heading level (1-based) that gets an AUTO-slug. 0 = disabled.
+    pub max_level: u8,
+}
+
+impl Default for HeadingIds {
+    fn default() -> Self {
+        Self { max_level: 6 }
+    }
+}
+
 /// Everything the user can tweak, serialized over IPC from the frontend.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -53,6 +73,9 @@ pub struct RenderOptions {
     pub text_align: TextAlign,
     /// Absolute path to a user template; None = embedded default.
     pub template_path: Option<String>,
+    /// Heading ID generation settings (§6.2). Defaults to enabling all 6 levels.
+    #[serde(default)]
+    pub heading_ids: HeadingIds,
 }
 
 impl Paper {
@@ -92,7 +115,7 @@ impl Margins {
 
 #[cfg(test)]
 mod tests {
-    use super::{Flavor, Margins, Paper, RenderOptions, TextAlign};
+    use super::{Flavor, HeadingIds, Margins, Paper, RenderOptions, TextAlign};
 
     #[test]
     fn paper_maps_to_typst_names() {
@@ -155,6 +178,7 @@ mod tests {
             },
             text_align: TextAlign::Justified,
             template_path: Some("/tmp/t.typ".into()),
+            heading_ids: HeadingIds::default(),
         };
         let json = serde_json::to_string(&options).unwrap();
         assert!(json.contains("\"textAlign\":\"justified\""), "{json}");

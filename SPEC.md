@@ -117,6 +117,7 @@ See **IMPLEMENTATION.md** for acceptance criteria and test plans per milestone.
 - **Emoji shortcodes** (`:smile:`) are not expanded — the author pastes actual emoji characters.
 - **Automatic URL linking** is not enabled — users write explicit bare links (`<https://example.com>`) when they want a link.
 - **Table of contents**: manual TOCs work via heading IDs (a list of `[Title](#slug)` links). An auto-marker `[[_TOC_]]` (GitLab convention) triggers auto-TOC in Custom flavor.
+- **Internal links in the SVG preview are inert on typst 0.15** — the paged introspector has no anchors, so footnote/heading/TOC links carry no `href` in the preview; they work in the exported PDF. The resolution machinery is in place and activates once typst grows paged anchors.
 
 ## 7. References
 

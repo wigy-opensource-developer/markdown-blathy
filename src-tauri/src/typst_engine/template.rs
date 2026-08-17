@@ -58,6 +58,7 @@ pub const PRELUDE_HELPERS: &[&str] = &[
     "markdown-table",
     "ordered-list",
     "figure-image",
+    "internal-link",
 ];
 
 /// The `scope: (name: name, …)` list for the eval call: each helper resolves
@@ -110,16 +111,21 @@ pub fn build_static_source(
     ))
 }
 
-/// The per-render `sys.inputs` dictionary: `title`/`author` from the YAML
-/// front matter (as `none` or a string) and `body` (the converted + escaped
-/// Typst markup). Built on every render; the engine is untouched by it (M6).
-pub fn render_inputs(markdown: &str, options: &RenderOptions) -> Result<Dict, String> {
-    let converted = md_to_typst(markdown, options.flavor);
+/// The per-render `sys.inputs` dictionary plus converter warnings:
+/// `title`/`author` from the YAML front matter (as `none` or a string) and
+/// `body` (the converted + escaped Typst markup). Built on every render; the
+/// engine is untouched by it (M6). The command layer merges the warnings
+/// with the engine's (§3).
+pub fn render_inputs(
+    markdown: &str,
+    options: &RenderOptions,
+) -> Result<(Dict, Vec<String>), String> {
+    let converted = md_to_typst(markdown, options.flavor, &options.heading_ids);
     let mut inputs = Dict::new();
     inputs.insert("title".into(), converted.title.into_value());
     inputs.insert("author".into(), converted.author.into_value());
     inputs.insert("body".into(), converted.body.into_value());
-    Ok(inputs)
+    Ok((inputs, converted.warnings))
 }
 
 /// The font families a template references via `#set text(font: ...)` (§6.3).
@@ -170,12 +176,14 @@ pub fn resolve_template(options: &RenderOptions) -> Result<(String, FontOptions)
 /// Everything a render needs that is not the engine itself (M6, §7.5):
 /// the static source (selects the cached engine — rebuilt only when the
 /// template/options change), the per-render `sys.inputs` (the markdown
-/// body travels here, so typing never rebuilds the engine) and the font
-/// options used when the engine is (re)built.
+/// body travels here, so typing never rebuilds the engine), the font
+/// options used when the engine is (re)built and the converter warnings
+/// (merged with the engine's by the command layer, §3).
 pub struct PreparedRender {
     pub static_source: String,
     pub inputs: Dict,
     pub fonts: FontOptions,
+    pub warnings: Vec<String>,
 }
 
 /// Prepare a render: resolve the template (one file read), bake the toolbar
@@ -185,10 +193,12 @@ pub struct PreparedRender {
 /// layer calls it instead of repeating the resolve/build/convert/fonts dance.
 pub fn prepare_render(markdown: &str, options: &RenderOptions) -> Result<PreparedRender, String> {
     let (template_source, fonts) = resolve_template(options)?;
+    let (inputs, warnings) = render_inputs(markdown, options)?;
     Ok(PreparedRender {
         static_source: build_static_source(&template_source, options)?,
-        inputs: render_inputs(markdown, options)?,
+        inputs,
         fonts,
+        warnings,
     })
 }
 
@@ -203,7 +213,7 @@ pub fn probe_inputs() -> Dict {
     inputs.insert(
         "body".into(),
         [
-            "= Probe heading",
+            "= Probe heading #label(\"probe-heading\")",
             "#blockquote[Probe quote]",
             "#task-list(task-done([Done]), task-todo([Todo]), task-plain([Plain]))",
             "#thematic-break()",
@@ -211,6 +221,7 @@ pub fn probe_inputs() -> Dict {
             "#code-block(\"rust\", \"fn main() {}\")",
             "#markdown-table(columns: 2, header: ([a], [b]), rows: (([1], [2]),))",
             "#ordered-list(1, [One], [Two])",
+            "#internal-link(\"probe-heading\")[Probe link]",
         ]
         .join("\n")
         .into_value(),
@@ -247,7 +258,7 @@ mod tests {
         build_and_probe, build_static_source, compose, prepare_render, referenced_font_families,
         render_inputs, resolve_template, TemplateArgs, DEFAULT_TEMPLATE,
     };
-    use crate::options::{Flavor, Margins, Paper, RenderOptions, TextAlign};
+    use crate::options::{Flavor, HeadingIds, Margins, Paper, RenderOptions, TextAlign};
     use crate::typst_engine::engine::FontOptions;
     use typst::foundations::{Dict, IntoValue, Value};
 
@@ -268,6 +279,7 @@ mod tests {
             },
             text_align: TextAlign::Left,
             template_path: None,
+            heading_ids: HeadingIds::default(),
         }
     }
 
@@ -345,8 +357,9 @@ mod tests {
             flavor: Flavor::Custom,
             ..default_options()
         };
-        let inputs =
+        let (inputs, warnings) =
             render_inputs("---\ntitle: \"My Doc\"\nauthor: Ada\n---\n# Hi", &options).unwrap();
+        assert!(warnings.is_empty(), "no warnings for this document");
         match inputs.get("title").unwrap() {
             Value::Str(s) => assert_eq!(s.as_str(), "My Doc"),
             other => panic!("title must be a string, got {other:?}"),
@@ -364,10 +377,27 @@ mod tests {
         }
     }
 
+    /// Converter warnings (e.g. duplicate heading IDs) travel alongside the
+    /// inputs so the command layer can merge them with engine warnings (§3) —
+    /// they must not be dropped on the floor.
+    #[test]
+    fn render_inputs_returns_converter_warnings() {
+        let options = RenderOptions {
+            flavor: Flavor::Gfm,
+            ..default_options()
+        };
+        let (inputs, warnings) = render_inputs("# Section\n\n## Section", &options).unwrap();
+        assert!(inputs.get("body").is_ok());
+        assert!(
+            warnings.iter().any(|w| w.contains("duplicate")),
+            "expected the duplicate heading warning: {warnings:?}"
+        );
+    }
+
     #[test]
     fn render_inputs_emits_none_without_front_matter() {
         let options = default_options();
-        let inputs = render_inputs("plain text", &options).unwrap();
+        let (inputs, _warnings) = render_inputs("plain text", &options).unwrap();
         assert!(matches!(inputs.get("title").ok(), Some(Value::None)));
         assert!(matches!(inputs.get("author").ok(), Some(Value::None)));
         assert!(inputs.get("body").is_ok());
@@ -478,7 +508,7 @@ mod tests {
         );
         // …the converted body travels in the inputs, never the static source.
         match prepared.inputs.get("body").unwrap() {
-            Value::Str(s) => assert_eq!(s.as_str(), "= Hi"),
+            Value::Str(s) => assert_eq!(s.as_str(), "= Hi #label(\"hi\")"),
             other => panic!("body must be a string, got {other:?}"),
         }
         assert_eq!(prepared.fonts.families, Vec::<String>::new());

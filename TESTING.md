@@ -15,12 +15,13 @@
 | maps task list items to `#task-list(task-done([…]), task-todo([…]), task-plain([…]))` | unit | high |
 | maps GFM table to `#markdown-table(header: …, rows: …)` (GFM/Custom only) | unit | high |
 | maps footnotes and math in Custom flavor; leaves them as text otherwise | unit | high |
-| maps heading IDs: `{#custom-id}` parsed from header_attributes; auto-slug = kebab-case of plain text; duplicate slugs → warning in `ConvertedDocument.warnings`, first wins | unit | high |
+| maps heading IDs: manual `{#custom-id}` always honored (every level, any `maxLevel`); auto-slug = kebab-case of plain text, gated by `maxLevel`; one uniqueness namespace, duplicates → warning, first wins; emitted as `#label("id")` | unit | high |
+| maps internal links `[x](#slug)` to `#internal-link("slug")[x]`; external URLs keep `#link("url")`; empty fragment stays a URL link | unit | high |
 | maps explicit bare links `<url>` as Link with label = URL text | unit | high |
 | maps highlight, subscript, superscript in Custom flavor; leaves as text in CommonMark/GFM | unit | high |
 | maps definition lists in Custom flavor; leaves as text otherwise | unit | high |
 | strips HTML tags and keeps text (lossy path) | unit | high |
-| parses YAML front matter title/author; ignores other keys | unit | high |
+| parses YAML front matter title/author + `headingIdsMaxLevel` override (invalid value warns, keeps toolbar setting); ignores other keys | unit | high |
 | empty input returns `[]` | unit | high |
 
 ### `typst_engine/template.rs` (unit)
@@ -44,8 +45,11 @@
 | custom template with a broken override fails the probe compile | integration | high |
 | warnings are collected not fatal (unknown font → warning, not error) | integration | high |
 | system fonts are used when enabled (real installed family renders warning-free with `FontOptions::system_fonts`, warns without) | integration | medium |
-| compile_preview_pages resolves internal links: SVG contains `href="#` for footnote markers and heading anchors, and matching `id="..."` target points | integration | high |
-| svg_in_bundle with LateLinkResolver + anchors produces clickable internal links (verified by inspecting SVG output for `href="#..."` and `id="..."`) | integration | high |
+| compile_preview_pages resolves internal links: SVG contains `href="#` for footnote markers and heading anchors, and matching `id="..."` target points — **`#[ignore]`d**: typst 0.15 paged introspector has no anchors, so SVG Location links are unresolved (PDF links work); un-ignore when typst grows paged anchors | integration | high |
+| svg_in_bundle with LateLinkResolver + anchors produces clickable internal links (verified by inspecting SVG output for `href="#..."` and `id="..."`) — **`#[ignore]`d**, same typst 0.15 limitation | integration | high |
+| heading labels render invisibly (same glyph count with/without ID) and are real link targets (`#link(label(...))` to the converted body compiles) | integration | high |
+| internal links: `[go](#title)` renders a link element; dangling `[go](#missing)` degrades to plain text without failing the compile | integration | high |
+| converter warnings (duplicate heading IDs, invalid front-matter values) reach the command layer and are merged ahead of engine warnings | unit | high |
 | duplicate heading IDs produce a warning in `ConvertedDocument.warnings`; only first heading carries the label | integration | high |
 | heading slug = kebab-case(plain text) for all flavors; custom `{#id}` overrides slug | integration | high |
 | highlight/subscript/superscript map to `#mark`/`#subscript`/`#superscript` in Custom flavor; not mapped in CommonMark/GFM | integration | high |
@@ -120,8 +124,9 @@ Component tests (React Testing Library) are not required for v1; the seq guard a
 
 ### M7 — Logging & extended syntax
 - [ ] `tracing` + `EnvFilter` replaces `eprintln!`; `RUST_LOG=debug` shows cache rebuilds and preview timing
-- [ ] SVG internal link resolution via `svg_in_bundle` with `LateLinkResolver` + anchors
-- [ ] Heading IDs: auto slug = kebab-case(plain text); `{#custom-id}` overrides; duplicate warning
+- [ ] SVG internal link resolution via `svg_in_bundle` with `LateLinkResolver` + anchors — machinery in place; inert in SVG on typst 0.15 (no paged anchors), PDF links work; href test `#[ignore]`d until typst catches up
+- [ ] Heading IDs: manual `{#custom-id}` always honored; auto slug = kebab-case(plain text) gated by `maxLevel` (toolbar setting, overridable per doc via front-matter `headingIdsMaxLevel`); one uniqueness namespace, duplicate warning; emitted as invisible `#label("id")`
+- [ ] Internal links: `[x](#slug)` → prelude `internal-link` (works in PDF; broken targets degrade to plain text)
 - [ ] Explicit bare links (`<url>`) supported in all flavors
 - [ ] Highlight/subscript/superscript/definition lists in Custom flavor
 - [ ] TOC: `[[_TOC_]]` marker triggers `#markdown-toc()` in Custom flavor

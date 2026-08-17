@@ -22,6 +22,11 @@ pub fn comrak_options(flavor: Flavor) -> Options<'static> {
             footnotes: flavor == Flavor::Custom,
             math_dollars: flavor == Flavor::Custom,
             front_matter_delimiter: (flavor == Flavor::Custom).then(|| "---".to_owned()),
+            // Heading IDs (auto slug + {#custom-id} override) are core app
+            // behavior (anchor links, TOC), not a flavor extension. Labels are
+            // invisible metadata — they don't affect rendering. Enabling
+            // header_attributes in all flavors keeps the feature consistent.
+            header_attributes: true,
             ..Default::default()
         },
         ..Options::default()
@@ -43,6 +48,7 @@ mod tests {
         assert!(!commonmark.footnotes);
         assert!(!commonmark.math_dollars);
         assert_eq!(commonmark.front_matter_delimiter, None);
+        assert!(commonmark.header_attributes, "header_attributes always on");
 
         let gfm = comrak_options(Flavor::Gfm).extension;
         assert!(gfm.strikethrough);
@@ -52,6 +58,7 @@ mod tests {
         assert!(!gfm.footnotes);
         assert!(!gfm.math_dollars);
         assert_eq!(gfm.front_matter_delimiter, None);
+        assert!(gfm.header_attributes, "header_attributes always on");
 
         let custom = comrak_options(Flavor::Custom).extension;
         assert!(custom.strikethrough);
@@ -61,6 +68,7 @@ mod tests {
         assert!(custom.footnotes);
         assert!(custom.math_dollars);
         assert_eq!(custom.front_matter_delimiter.as_deref(), Some("---"));
+        assert!(custom.header_attributes, "header_attributes always on");
     }
 
     #[test]

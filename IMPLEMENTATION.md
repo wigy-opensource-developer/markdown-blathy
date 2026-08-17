@@ -75,7 +75,7 @@ pub struct PreviewOutcome { pub pages: Vec<String>, pub warnings: Vec<String>, p
 
 | Markdown node | Typst output |
 |---|---|
-| `Heading` | `"="` × level + space + inline + ` <slug>` (label attachment) |
+| `Heading` | `"="` × level + space + inline + `#label("slug")` (see slug algorithm) |
 | `Text` | escaped text (see table below) |
 | `Strong` | `*…*` |
 | `Emph` | `_…_` |
@@ -85,7 +85,7 @@ pub struct PreviewOutcome { pub pages: Vec<String>, pub warnings: Vec<String>, p
 | `Superscript` | `#superscript(body)` |
 | `Code` | `#inline-code("…")` |
 | `CodeBlock` | `#code-block("lang", "source")` |
-| `Link` (url starts with `#`) | `#link(label("slug"))[label]` (internal) |
+| `Link` (url starts with `#`) | `#internal-link("slug")[label]` (prelude guards missing labels) |
 | `Link` (external url) | `#link("url")[label]` |
 | `Image` | `#figure-image("url", [alt])` |
 | `List` | native Typst `- ` lists; ordered → `#ordered-list(start, …)` |
@@ -96,7 +96,7 @@ pub struct PreviewOutcome { pub pages: Vec<String>, pub warnings: Vec<String>, p
 | `FootnoteReference` | inlined at call site as `#footnote[<definition>]` |
 | `FootnoteDefinition` | dropped (collected for matching) |
 | `Math` | passthrough: inline `$…$`, block `$ … $` |
-| `FrontMatter` | parsed → `title`/`author` in `ConvertedDocument`; nothing in body |
+| `FrontMatter` | parsed → `title`/`author` in `ConvertedDocument` + `headingIdsMaxLevel` override; nothing in body |
 | `HtmlInline` / `HtmlBlock` | **lossy**: raw literal as plain text, escaped |
 | `DescriptionList` | `#definition-list((term, [def]), …)` |
 
@@ -115,10 +115,39 @@ pub struct PreviewOutcome { pub pages: Vec<String>, pub warnings: Vec<String>, p
 
 ### Slug algorithm
 
-1. Extract plain text from the heading's inline content only (Text, Code, Strong, Emph, etc. — children of the heading node, not sibling paragraphs below it).
-2. If `ast.attrs.id` is present (from comrak's `header_attributes`), use it as-is (trimmed).
-3. Otherwise: lowercase, replace non-alphanumeric runs with `-`, collapse consecutive `-`, trim ends.
-4. Duplicate slugs: first occurrence wins and gets the label; subsequent duplicates emit a warning to `ConvertedDocument.warnings` and skip the label.
+IDs attach to headings as `#label("id")` — the function form (not the native
+`<id>` literal) takes a string argument, so manual IDs with spaces, quotes or
+unicode stay valid once escaped, and the call renders nothing.
+
+1. **Manual ID wins**: if `ast.attrs.id` is present (from comrak's
+   `header_attributes`, i.e. `# Heading {#custom-id}`), it is used as-is
+   (trimmed) — at every level, regardless of `maxLevel`. A manual ID is the
+   author's explicit intent; `maxLevel` limits auto-generation only.
+2. **Auto-slug** otherwise: extract plain text from the heading's inline
+   content only (Text, Code, Strong, Emph, etc. — children of the heading
+   node, not sibling paragraphs below it); lowercase, replace
+   non-alphanumeric runs with `-`, collapse consecutive `-`, trim ends.
+   `{#…}` attribute syntax left in the text (comrak only parses it at end of
+   line) is stripped before slugifying. Auto-slugs are generated only for
+   levels 1..=`maxLevel` (`maxLevel: 0` disables them entirely).
+3. **One uniqueness namespace**: manual and auto IDs share it. The first
+   occurrence wins and gets the label; later duplicates (auto↔auto,
+   manual↔manual, or mixed) are dropped with a warning to
+   `ConvertedDocument.warnings` — Typst accepts duplicate labels at compile
+   time but any reference to them fails.
+4. **`maxLevel` sources**: the toolbar `RenderOptions.heading_ids`,
+   overridable per document by the YAML front-matter key
+   `headingIdsMaxLevel: N` (Custom flavor only, like all front matter). An
+   invalid value warns and keeps the toolbar setting.
+
+### Internal links
+
+`[text](#fragment)` becomes `#internal-link("fragment")[text]`; the prelude
+helper checks the label exists (`context { query(label(fragment)) }`) and
+degrades a broken TOC entry to plain text instead of failing the compile —
+the lossy philosophy the converter applies to HTML and dangling footnotes.
+Links resolve in the PDF; the SVG preview follows once typst resolves
+Location links there (see below).
 
 ### comrak options
 
@@ -148,7 +177,7 @@ pub fn comrak_options(flavor: Flavor) -> comrak::Options<'static> {
 
 The embedded `default.typ` provides default implementations of every helper the converter emits. A user template is composed **after** the prelude (`{prelude}\n\n{user}`), so Typst shadowing applies — any function the user redefines wins, everything else falls back to the prelude default.
 
-**Helpers:** `task-list`/`task-done`/`task-todo`/`task-plain`, `blockquote`, `thematic-break`, `inline-code`, `code-block`, `markdown-table`, `ordered-list`, `title-block`, `mark`, `superscript`, `subscript`, `definition-list`, `markdown-toc`, `figure-image`.
+**Helpers:** `task-list`/`task-done`/`task-todo`/`task-plain`, `blockquote`, `thematic-break`, `inline-code`, `code-block`, `markdown-table`, `ordered-list`, `internal-link`, `title-block`, `mark`, `superscript`, `subscript`, `definition-list`, `markdown-toc`, `figure-image`.
 
 The probe body exercises all helpers except `figure-image` (its image file cannot exist during validation).
 
@@ -180,6 +209,14 @@ The plain `typst_svg::svg(page, opts)` does not resolve internal `Destination::L
 - Footnote markers ↔ notes (bidirectional links)
 - Heading anchors (e.g. `[Section](#section-id)`)
 - Any other internal link the document contains
+
+**typst 0.15 limitation:** the paged introspector (typst-layout) implements
+`anchor()` as `None` — anchors exist only in the HTML export path — so
+`LateLinkResolver` never resolves a Location link and the SVG renderer emits
+`<a>` elements without `href`. The machinery stays in place unchanged: PDF
+links work today (typst-pdf resolves destinations natively), and SVG links
+start working as soon as typst grows paged anchors. The
+`footnote_markers_have_svg_href_anchors` test is `#[ignore]`d until then.
 
 ```rust
 fn compile_preview_pages(document: &PagedDocument) -> Result<Vec<String>, EngineError> {

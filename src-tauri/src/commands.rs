@@ -10,7 +10,7 @@ use std::sync::{Arc, Mutex};
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, State};
 use tauri_plugin_dialog::DialogExt;
-use tracing::{debug, info, instrument};
+use tracing::{debug, info, instrument, warn};
 use typst::foundations::Dict;
 use typst_as_lib::{TypstEngine, TypstTemplateMainFile};
 
@@ -88,6 +88,13 @@ fn is_false(b: &bool) -> bool {
     !b
 }
 
+/// The UI shows converter warnings (e.g. duplicate heading IDs) and engine
+/// warnings (e.g. missing fonts) together (§3): converter first, engine after.
+fn merged_warnings(mut converter: Vec<String>, engine: Vec<String>) -> Vec<String> {
+    converter.extend(engine);
+    converter
+}
+
 /// Run `work` against the cached engine for a prepared render (§7.5, M6).
 ///
 /// Compilation is CPU-bound, so the cache lock, the engine lookup/rebuild and
@@ -157,7 +164,7 @@ pub async fn render_preview(
 
     Ok(PreviewOutcome {
         pages: outcome.pages,
-        warnings: outcome.warnings,
+        warnings: merged_warnings(prepared.warnings.clone(), outcome.warnings),
         seq: payload.seq,
     })
 }
@@ -178,6 +185,12 @@ pub async fn export_pdf(
     directory: Option<String>,
 ) -> Result<FileOutcome, String> {
     let prepared = template::prepare_render(&payload.markdown, &payload.options)?;
+
+    // `FileOutcome` has no warnings channel (§8.4), so converter warnings
+    // are logged rather than surfaced in the UI on export.
+    if !prepared.warnings.is_empty() {
+        warn!(warnings = ?prepared.warnings, "converter warnings during export");
+    }
 
     let pdf = with_cached_engine(&state, &prepared, "Export task", |engine, inputs| {
         engine::compile_pdf_with_inputs(engine, inputs).map_err(|e| e.to_string())
@@ -429,6 +442,33 @@ mod tests {
         );
         assert_eq!(payload.options.text_align, TextAlign::Left);
         assert!(payload.options.template_path.is_none());
+    }
+
+    /// Converter warnings come first, engine warnings after — the order the
+    /// StatusBar lists them in (§3, §9).
+    #[test]
+    fn merged_warnings_chains_converter_then_engine() {
+        let merged = super::merged_warnings(
+            vec!["duplicate heading ID".into()],
+            vec!["font warning".into()],
+        );
+        assert_eq!(
+            merged,
+            vec![
+                "duplicate heading ID".to_string(),
+                "font warning".to_string()
+            ]
+        );
+
+        // Either side may be empty.
+        assert_eq!(
+            super::merged_warnings(Vec::new(), vec!["engine".into()]),
+            vec!["engine".to_string()]
+        );
+        assert_eq!(
+            super::merged_warnings(vec!["converter".into()], Vec::new()),
+            vec!["converter".to_string()]
+        );
     }
 
     /// Pins the IPC contract: `PreviewOutcome` serializes back to the

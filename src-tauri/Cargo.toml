@@ -30,7 +30,8 @@ url = "2"
 # default-features = false: comrak's defaults pull the CLI and the
 # syntect/onig syntax-highlighting stack, which this project does not use
 # (Typst highlights code itself). Keep only the parser.
-comrak = { version = "0.54", default-features = false }
+# `attributes` enables `{#custom-id}` heading syntax.
+comrak = { version = "0.54", default-features = false, features = ["bon", "attributes"] }
 
 # Typst 0.15 engine line — these four crates are released in lockstep and
 # must share the same minor version. typst-as-lib 0.16 is the first line

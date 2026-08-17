@@ -14,6 +14,7 @@
 //   code-block(lang, source)         // lang/source are strings
 //   markdown-table(header, rows)     // header: array of content, rows: array of arrays
 //   ordered-list(start, ..items)     // native Typst enum, markdown-style markers
+//   internal-link(fragment)[body]    // guarded link to a heading label
 //   title-block(title, author)       // called by the default article
 //   article(…)                       // the invocation the Rust side appends
 
@@ -85,6 +86,23 @@
 
 // --- Ordered lists: native enum with markdown-style "1." markers -------------
 #let ordered-list(start, ..items) = enum(start: start, numbering: "1.", ..items)
+
+// --- Internal links: `[text](#fragment)` → a link to the heading label -------
+// The converter emits `internal-link(fragment)` for `#fragment` URLs. The
+// guard keeps a broken TOC entry from failing the render: `query` needs a
+// known context, and a missing label degrades to plain text — the lossy
+// philosophy the converter applies to HTML and dangling footnotes (§6.2).
+// In typst 0.15 the SVG preview cannot resolve Location links to `href`s
+// (the paged introspector has no anchors), so preview links are inert;
+// PDF links work. When typst grows paged anchors, this helper needs no
+// change — the resolution happens in the renderer.
+#let internal-link(fragment, body) = context {
+  if query(label(fragment)).len() > 0 {
+    link(label(fragment), body)
+  } else {
+    body
+  }
+}
 
 // --- Title/author block from YAML front matter (§6.2) -------------------------
 #let title-block(title, author) = {
