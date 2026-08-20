@@ -22,9 +22,13 @@ use typst::model::{Destination, LateLinkResolver, ResolvedLink};
 use typst_as_lib::{TypstEngine, TypstTemplateMainFile};
 use typst_layout::PagedDocument;
 
-/// Embedded default fonts (DejaVu Sans, permissive license — §6.3).
+/// Embedded default fonts (DejaVu, permissive license — §6.3). The mono
+/// face is required by `raw()`: the default template's font book loads no
+/// system fonts, so without an embedded monospace face code blocks would
+/// silently fall back to the proportional body font.
 pub const FONT_BYTES: &[u8] = include_bytes!("../../fonts/DejaVuSans.ttf");
 pub const FONT_BOLD_BYTES: &[u8] = include_bytes!("../../fonts/DejaVuSans-Bold.ttf");
+pub const FONT_MONO_BYTES: &[u8] = include_bytes!("../../fonts/DejaVuSansMono.ttf");
 
 /// Per-page SVG strings plus any compile warnings (never fatal).
 #[derive(Debug)]
@@ -135,7 +139,11 @@ pub fn build_engine(
     source: &str,
     fonts: &FontOptions,
 ) -> Result<TypstEngine<TypstTemplateMainFile>, EngineError> {
-    let mut all_fonts: Vec<Vec<u8>> = vec![FONT_BYTES.to_vec(), FONT_BOLD_BYTES.to_vec()];
+    let mut all_fonts: Vec<Vec<u8>> = vec![
+        FONT_BYTES.to_vec(),
+        FONT_BOLD_BYTES.to_vec(),
+        FONT_MONO_BYTES.to_vec(),
+    ];
     let mut search_system = false;
     if !fonts.families.is_empty() {
         // Fast path: only the referenced families + embedded + extra dirs.
@@ -1110,5 +1118,35 @@ mod tests {
         let engine = build_engine(&static_source, &FontOptions::default()).expect("engine");
         let err = compile_preview_with_inputs(&engine, &inputs).unwrap_err();
         assert!(err.to_string().contains("line"), "{err}");
+    }
+
+    /// Code blocks render in a MONOSPACE font: a line of narrow glyphs
+    /// (`iiii`) spans the same width as a line of wide glyphs (`mmmm`).
+    /// Regression: with system fonts excluded from the default template's
+    /// font book, `raw()`'s DejaVu Sans Mono default found no face and
+    /// silently fell back to the proportional body font — code indentation
+    /// and word spacing broke (commit 177c8c8 introduced the exclusion).
+    #[test]
+    fn code_blocks_render_in_a_monospace_font() {
+        /// Rightmost glyph placement on the page — the width of the only
+        /// text line (each document is a single code block).
+        fn max_glyph_x(svg: &str) -> f64 {
+            svg.split("<use")
+                .skip(1)
+                .filter_map(|frag| {
+                    let start = frag.find("x=\"")? + 3;
+                    let rest = &frag[start..];
+                    rest[..rest.find('"')?].parse::<f64>().ok()
+                })
+                .fold(0.0f64, f64::max)
+        }
+
+        let narrow = compile_markdown("```\niiii\n```", &gfm_options());
+        let wide = compile_markdown("```\nmmmm\n```", &gfm_options());
+        let (narrow_x, wide_x) = (max_glyph_x(&narrow.pages[0]), max_glyph_x(&wide.pages[0]));
+        assert!(
+            (narrow_x - wide_x).abs() < 0.01,
+            "monospace advances must match: iiii ends at {narrow_x}, mmmm at {wide_x}"
+        );
     }
 }

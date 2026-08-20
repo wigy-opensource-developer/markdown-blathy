@@ -24,6 +24,12 @@
 // default, while templates that set no font keep DejaVu Sans (M6).
 #set text(font: "DejaVu Sans", size: 11pt)
 
+// Code (`raw`) is pinned to the embedded monospace face: the default
+// template's font book loads no system fonts, so `raw()`'s DejaVu Sans Mono
+// default must be embedded and named here, or it silently falls back to the
+// proportional body font — breaking code indentation and word spacing.
+#show raw: set text(font: "DejaVu Sans Mono")
+
 // --- Task lists --------------------------------------------------------------
 // Each item function returns a (checkbox cell, content cell) pair; the grid
 // needs those as flat alternating cells, so `task-list` concatenates the

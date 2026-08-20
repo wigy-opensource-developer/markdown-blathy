@@ -106,7 +106,7 @@ See **IMPLEMENTATION.md** for acceptance criteria and test plans per milestone.
 
 - Raw HTML in Markdown is stripped to text.
 - No syntax highlighting inside code blocks in the PDF.
-- Only one embedded font by default (DejaVu Sans, regular + bold); no CJK coverage out of the box. Custom templates can reference system fonts and ship font files next to the `.typ` file.
+- Only the embedded DejaVu family by default (Sans regular + bold, Sans Mono for code); no CJK coverage out of the box. Custom templates can reference system fonts and ship font files next to the `.typ` file.
 - **System-font naming is typst's, not fontconfig's** — typst strips styling suffixes from family names, so a font whose *name* carries the styling may be unreachable. Use the trimmed family name or a font without a styling suffix.
 - Remote images unsupported; images must be local files reachable through the world's file resolver.
 - No LaTeX math macros.
