@@ -42,7 +42,7 @@ pub fn md_to_typst(markdown: &str, flavor: Flavor, heading_ids: &HeadingIds) -> 
         _ => None,
     });
 
-    let mut renderer = Renderer::new(*heading_ids);
+    let mut renderer = Renderer::new(*heading_ids, flavor == Flavor::Custom);
     renderer.apply_front_matter_override(front_matter.as_ref());
     // Footnote definitions are rendered inline at their references —
     // `#footnote[...]` attaches the superscript marker where it is called,
@@ -86,6 +86,18 @@ fn join_blocks(blocks: Vec<String>) -> String {
     }
 }
 
+/// True when an HTML block is exactly the pandoc-convention page-break
+/// marker `<!-- pagebreak -->` — whitespace inside the comment is
+/// tolerated, the marker text itself is case-sensitive. Anything else
+/// (other comments, extra content) stays lossy text.
+fn is_page_break_marker(literal: &str) -> bool {
+    literal
+        .trim()
+        .strip_prefix("<!--")
+        .and_then(|rest| rest.strip_suffix("-->"))
+        .is_some_and(|inner| inner.trim() == "pagebreak")
+}
+
 /// Per-document render state for one `md_to_typst` pass.
 ///
 /// Collects everything the block/inline renderers share — the footnote
@@ -105,15 +117,19 @@ struct Renderer {
     seen_ids: HashSet<String>,
     /// Non-fatal warnings (e.g. duplicate heading IDs).
     warnings: Vec<String>,
+    /// Custom-flavor extension (§4): honor the pandoc-convention
+    /// `<!-- pagebreak -->` HTML block as a page break.
+    page_breaks: bool,
 }
 
 impl Renderer {
-    fn new(heading_ids: HeadingIds) -> Self {
+    fn new(heading_ids: HeadingIds, page_breaks: bool) -> Self {
         Self {
             footnotes: HashMap::new(),
             heading_ids,
             seen_ids: HashSet::new(),
             warnings: Vec::new(),
+            page_breaks,
         }
     }
 
@@ -196,8 +212,16 @@ impl Renderer {
             // The prelude's `thematic-break` owns the spacing/stroke constants.
             NodeValue::ThematicBreak => "#thematic-break()".to_string(),
             // Lossy HTML: keep the literal as plain text, escaped. Never pass
-            // HTML through to Typst (§6.2).
-            NodeValue::HtmlBlock(html) => escape_text(&html.literal),
+            // HTML through to Typst (§6.2) — except the pandoc-convention
+            // `<!-- pagebreak -->` marker, a whole-block page break in
+            // Custom flavor (§4).
+            NodeValue::HtmlBlock(html) => {
+                if self.page_breaks && is_page_break_marker(&html.literal) {
+                    "#pagebreak()".to_string()
+                } else {
+                    escape_text(&html.literal)
+                }
+            }
             // Footnote definitions are emitted inline at their references (the
             // `#footnote[...]` marker must sit at the call site), so the
             // definition block itself contributes nothing (§6.2).
@@ -1112,6 +1136,63 @@ mod tests {
         // Inline HTML tags pass through; the surrounding markdown is parsed.
         let inline = md_to_typst("a <span>*x*</span> b", Flavor::Gfm, &default_heading_ids());
         assert_eq!(inline.body, "a <span>_x_</span> b");
+    }
+
+    /// The pandoc-convention `<!-- pagebreak -->` comment forces a page
+    /// break when it is a whole block (Custom flavor, §4). Whitespace
+    /// inside the comment is tolerated; the marker itself is case-sensitive.
+    #[test]
+    fn page_break_marker_becomes_pagebreak_in_custom_flavor() {
+        let doc = md_to_typst(
+            "before\n\n<!-- pagebreak -->\n\nafter",
+            Flavor::Custom,
+            &default_heading_ids(),
+        );
+        assert_eq!(doc.body, "before\n\n#pagebreak()\n\nafter");
+
+        let tight = md_to_typst("<!--pagebreak-->", Flavor::Custom, &default_heading_ids());
+        assert_eq!(tight.body, "#pagebreak()");
+
+        let indented = md_to_typst(
+            "  <!-- pagebreak -->",
+            Flavor::Custom,
+            &default_heading_ids(),
+        );
+        assert_eq!(indented.body, "#pagebreak()");
+    }
+
+    /// Page breaks are a Custom-flavor extension (§4): in CommonMark/GFM
+    /// the marker stays lossy text like any other HTML.
+    #[test]
+    fn page_break_marker_is_custom_flavor_only() {
+        for flavor in [Flavor::Commonmark, Flavor::Gfm] {
+            let doc = md_to_typst(
+                "a\n\n<!-- pagebreak -->\n\nb",
+                flavor,
+                &default_heading_ids(),
+            );
+            assert!(!doc.body.contains("#pagebreak()"), "flavor: {flavor:?}");
+            assert!(doc.body.contains("pagebreak"), "flavor: {flavor:?}");
+        }
+    }
+
+    /// Only a whole-block marker is a page break: other comments stay lossy
+    /// text, and an inline marker inside a paragraph is not block-level.
+    #[test]
+    fn page_break_marker_requires_a_whole_block() {
+        let other = md_to_typst(
+            "<!-- not a break -->",
+            Flavor::Custom,
+            &default_heading_ids(),
+        );
+        assert!(!other.body.contains("#pagebreak()"));
+
+        let inline = md_to_typst(
+            "text <!-- pagebreak --> more",
+            Flavor::Custom,
+            &default_heading_ids(),
+        );
+        assert!(!inline.body.contains("#pagebreak()"));
     }
 
     #[test]

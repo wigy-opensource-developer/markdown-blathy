@@ -98,6 +98,7 @@ pub struct PreviewOutcome { pub pages: Vec<String>, pub warnings: Vec<String>, p
 | `Math` | passthrough: inline `$…$`, block `$ … $` |
 | `FrontMatter` | parsed → `title`/`author` in `ConvertedDocument` + `headingIdsMaxLevel` override; nothing in body |
 | `HtmlInline` / `HtmlBlock` | **lossy**: raw literal as plain text, escaped |
+| `HtmlBlock` that is exactly `<!-- pagebreak -->` (Custom) | `#pagebreak()` — pandoc's page-break convention |
 | `DescriptionList` | `#definition-list((term, [def]), …)` |
 
 ### Escaping rules

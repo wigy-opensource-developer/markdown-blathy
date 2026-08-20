@@ -84,6 +84,7 @@ User-visible behaviour:
 | subscript (`~text~`) | — | — | ✅ |
 | superscript (`^text^`) | — | — | ✅ |
 | description lists | — | — | ✅ |
+| page breaks (`<!-- pagebreak -->`) | — | — | ✅ |
 
 **Explicit bare links** (`<https://example.com>`) are supported in **all flavors** — this is standard CommonMark, not an extension. The GFM/Custom `autolink` extension (automatic bare-URL linking) is **not enabled**.
 
@@ -98,13 +99,13 @@ User-visible behaviour:
 | **M4 — Files & export** | Open/Save/Export commands wired to toolbar | ✅ Done |
 | **M5 — Settings & polish** | localStorage settings, template override + validation | ✅ Done |
 | **M6 — Engine cache & fonts** | Reusable engine + system/template-side fonts | ✅ Done |
-| **M7 — Logging & extended syntax** | `tracing` + SVG internal links + heading IDs + new constructs | Planned |
+| **M7 — Logging & extended syntax** | `tracing` + SVG internal links + heading IDs + new constructs | 🚧 In progress — tracing, links and heading IDs done; new constructs remain |
 
 See **IMPLEMENTATION.md** for acceptance criteria and test plans per milestone.
 
 ## 6. Limitations
 
-- Raw HTML in Markdown is stripped to text.
+- Raw HTML in Markdown is stripped to text, except the `<!-- pagebreak -->` marker (Custom flavor), which becomes a page break.
 - No syntax highlighting inside code blocks in the PDF.
 - Only the embedded DejaVu family by default (Sans regular + bold, Sans Mono for code); no CJK coverage out of the box. Custom templates can reference system fonts and ship font files next to the `.typ` file.
 - **System-font naming is typst's, not fontconfig's** — typst strips styling suffixes from family names, so a font whose *name* carries the styling may be unreachable. Use the trimmed family name or a font without a styling suffix.

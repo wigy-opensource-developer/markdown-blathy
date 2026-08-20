@@ -11,7 +11,7 @@ See **README.md** for a quick overview and **CONTRIBUTING.md** for build/check c
 
 - `SPEC.md` — full implementation spec
 - `src-tauri/` — Rust backend (Tauri commands, comrak → Typst pipeline)
-- `src/` — React frontend (Mantine UI, future: CodeMirror editor + Typst SVG preview)
+- `src/` — React frontend (Mantine UI, CodeMirror editor, Typst SVG preview)
 
 ## Before committing
 

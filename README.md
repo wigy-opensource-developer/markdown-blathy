@@ -7,7 +7,7 @@ A desktop Markdown editor with live preview and on-demand PDF export. The previe
 - **Split-screen editing** — Markdown on the left, live preview on the right.
 - **Pixel-identical preview** — the preview is rendered by the same Typst compiler that produces the PDF, so what you see is what you get.
 - **Export to PDF** — one click, system save dialog, opens in your default PDF viewer.
-- **Multiple Markdown flavors** — CommonMark, GFM (GitHub Flavored Markdown), or Custom (footnotes, math, task lists, definition lists, highlight, subscript, superscript).
+- **Multiple Markdown flavors** — CommonMark, GFM (GitHub Flavored Markdown), or Custom (footnotes, math, task lists).
 - **Custom templates** — supply your own `.typ` template to restyle everything (colors, fonts, layout) while keeping the editing experience.
 - **Heading IDs** — every heading gets an automatic anchor link; override with `{#custom-id}` syntax.
 - **Footnotes** — inline references with note blocks at the bottom; clickable markers in the preview.
