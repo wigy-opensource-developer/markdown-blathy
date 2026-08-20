@@ -118,6 +118,7 @@ See **IMPLEMENTATION.md** for acceptance criteria and test plans per milestone.
 - **Automatic URL linking** is not enabled — users write explicit bare links (`<https://example.com>`) when they want a link.
 - **Table of contents**: manual TOCs work via heading IDs (a list of `[Title](#slug)` links). An auto-marker `[[_TOC_]]` (GitLab convention) triggers auto-TOC in Custom flavor.
 - **Internal links in the SVG preview are inert on typst 0.15** — the paged introspector has no anchors, so footnote/heading/TOC links carry no `href` in the preview; they work in the exported PDF. The resolution machinery is in place and activates once typst grows paged anchors.
+- **Pathologically nested Markdown can crash the preview** — comrak caps list nesting (`MAX_LIST_DEPTH`) but not blockquote nesting, so AST depth is unbounded. The converter's footnote collection walks iteratively, but the block renderer recurses with the AST depth, so a contrived document (tens of KB of `> ` markers) can overflow the render thread's stack. The proper fix is a general AST depth limit upstream in comrak, alongside the existing list cap.
 
 ## 7. References
 

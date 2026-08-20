@@ -3,13 +3,16 @@
 //! Walks the comrak AST and emits escaped Typst markup, plus any YAML
 //! front-matter `title`/`author` for the template (§6.3).
 
-use std::borrow::Borrow;
 use std::collections::{HashMap, HashSet};
 
+use comrak::arena_tree::NodeEdge;
 use comrak::nodes::{Node, NodeValue};
 use comrak::{parse_document, Arena};
 
-use crate::markdown::{comrak_options, escape::escape_text, escape::escape_typst_string};
+use crate::markdown::{
+    comrak_options, escape::escape_text, escape::escape_text_into, escape::escape_typst_string,
+    escape::escape_typst_string_into,
+};
 use crate::options::{Flavor, HeadingIds};
 
 /// Typst body plus front-matter metadata (empty doc → body `[]`).
@@ -38,215 +41,586 @@ pub fn md_to_typst(markdown: &str, flavor: Flavor, heading_ids: &HeadingIds) -> 
         NodeValue::FrontMatter(yaml) => Some(parse_front_matter(yaml)),
         _ => None,
     });
-    let mut warnings: Vec<String> = Vec::new();
-    let heading_ids = &effective_heading_ids(heading_ids, front_matter.as_ref(), &mut warnings);
+
+    let mut renderer = Renderer::new(*heading_ids);
+    renderer.apply_front_matter_override(front_matter.as_ref());
+    // Footnote definitions are rendered inline at their references —
+    // `#footnote[...]` attaches the superscript marker where it is called,
+    // so the definition block itself must not emit anything (§6.2). Collect
+    // them up front so references resolve anywhere in the document.
+    renderer.collect_footnotes(root);
 
     let mut blocks: Vec<String> = Vec::new();
-    // Footnote definitions are rendered inline at their references —
-    // `#footnote[...]` attaches the superscript marker where it is called, so
-    // the definition block itself must not emit anything (§6.2).
-    let mut footnote_defs: HashMap<String, String> = HashMap::new();
-
-    // Heading ID tracking (manual and auto share one namespace): the first
-    // occurrence wins, later duplicates are dropped with a warning.
-    let mut seen_ids: HashSet<String> = HashSet::new();
-
-    collect_footnotes(
-        root,
-        &mut footnote_defs,
-        heading_ids,
-        &mut seen_ids,
-        &mut warnings,
-    );
-
     for child in root.children() {
         // The front matter was parsed above (before rendering); it
         // contributes nothing to the body.
         if !matches!(&child.data().value, NodeValue::FrontMatter(_)) {
-            blocks.push(render_block_at(
-                child,
-                0,
-                &footnote_defs,
-                heading_ids,
-                &mut seen_ids,
-                &mut warnings,
-            ))
+            blocks.push(renderer.render_block_at(child, 0));
         }
     }
 
-    // Empty document → an empty content block so compile always succeeds.
-    // Footnote definitions render inline at their references and contribute
-    // an empty block here, so drop empties before joining.
-    let body = if blocks.is_empty() {
+    // The parsed front matter is consumed here — move the fields out rather
+    // than cloning from a reference.
+    let (title, author) = front_matter
+        .map(|fm| (fm.title, fm.author))
+        .unwrap_or_default();
+
+    ConvertedDocument {
+        body: join_blocks(blocks),
+        title,
+        author,
+        warnings: renderer.warnings,
+    }
+}
+
+/// Join rendered blocks with blank lines, dropping empties (footnote
+/// definitions render inline at their references and contribute an empty
+/// block). An empty document becomes an empty content block so compile
+/// always succeeds.
+fn join_blocks(blocks: Vec<String>) -> String {
+    let non_empty: Vec<String> = blocks.into_iter().filter(|b| !b.is_empty()).collect();
+    if non_empty.is_empty() {
         "[]".to_string()
     } else {
-        let non_empty: Vec<String> = blocks.into_iter().filter(|b| !b.is_empty()).collect();
-        if non_empty.is_empty() {
-            "[]".to_string()
-        } else {
-            non_empty.join("\n\n")
-        }
-    };
-    ConvertedDocument {
-        body,
-        title: front_matter.as_ref().and_then(|fm| fm.title.clone()),
-        author: front_matter.as_ref().and_then(|fm| fm.author.clone()),
-        warnings,
+        non_empty.join("\n\n")
     }
 }
 
-/// Generate a kebab-case slug from a string.
+/// Per-document render state for one `md_to_typst` pass.
 ///
-/// Lowercase, replace non-alphanumeric runs with a single hyphen, collapse
-/// consecutive hyphens, trim ends.
-fn slugify(text: &str) -> String {
-    text.to_lowercase()
-        .chars()
-        .fold(String::new(), |mut acc, c| {
-            if c.is_alphanumeric() {
-                acc.push(c);
-            } else if let Some(last) = acc.chars().last() {
-                if last != '-' {
-                    acc.push('-');
-                }
-            } else {
-                // Leading non-alphanumeric — skip (don't add a leading hyphen).
-            }
-            acc
-        })
-        .trim_matches('-')
-        .to_string()
+/// Collects everything the block/inline renderers share — the footnote
+/// definitions, the effective heading-ID settings, the emitted-ID set, and
+/// the warning list — so each render method takes only the AST node it
+/// renders instead of threading four parameters through every call.
+struct Renderer {
+    /// Footnote definitions (`name` → rendered content), collected up front
+    /// so references can pull their definition's content at the call site.
+    footnotes: HashMap<String, String>,
+    /// Effective heading-ID settings: the document's front-matter
+    /// `headingIdsMaxLevel` overrides the toolbar option (§6.2).
+    heading_ids: HeadingIds,
+    /// Heading IDs already emitted (manual and auto share one namespace):
+    /// the first occurrence wins, later duplicates are dropped with a
+    /// warning.
+    seen_ids: HashSet<String>,
+    /// Non-fatal warnings (e.g. duplicate heading IDs).
+    warnings: Vec<String>,
 }
 
-/// Resolve the heading ID for a heading node.
-///
-/// A manual `{#id}` (from comrak's `attrs.id`) is the author's explicit
-/// intent: it is always honored, at every level. `heading_ids.max_level`
-/// limits AUTO-slug generation only (0 = no auto-slugs at all). Returns
-/// `Some(id)` when the heading should carry an ID, `None` otherwise.
-fn resolve_heading_id(
-    node: Node,
-    heading_ids: &HeadingIds,
-    seen_ids: &mut HashSet<String>,
-    warnings: &mut Vec<String>,
-) -> Option<String> {
-    let NodeValue::Heading(heading) = &node.data().value else {
-        return None;
-    };
-
-    // Manual `{#custom-id}` wins over the auto slug and bypasses the cap.
-    let manual_id = node
-        .data()
-        .borrow()
-        .attrs
-        .as_ref()
-        .and_then(|a| a.id.clone());
-
-    let (id, is_manual) = match manual_id {
-        Some(manual) => (manual, true),
-        None => {
-            // Auto-slugs only for levels within the cap (0 = disabled).
-            if heading_ids.max_level == 0 || heading.level > heading_ids.max_level {
-                return None;
-            }
-            let slug = heading_auto_slug(node);
-            if slug.is_empty() {
-                return None;
-            }
-            (slug, false)
+impl Renderer {
+    fn new(heading_ids: HeadingIds) -> Self {
+        Self {
+            footnotes: HashMap::new(),
+            heading_ids,
+            seen_ids: HashSet::new(),
+            warnings: Vec::new(),
         }
-    };
+    }
 
-    // All IDs (manual and auto) share one uniqueness namespace: Typst
-    // tolerates duplicate labels at compile time, but any reference to a
-    // duplicate label fails — so the first occurrence wins.
-    if seen_ids.contains(&id) {
-        let warning = if is_manual {
-            format!(
-                "duplicate heading ID \"{}\" — already used by an earlier heading; the later {{#{}}} is ignored",
-                id, id
-            )
-        } else {
-            format!(
-                "duplicate heading ID \"{}\" — use a manual ID like `# Heading {{#custom-id}}` or set headingIds.maxLevel to limit auto-generation",
-                id
-            )
+    /// Apply the front-matter `headingIdsMaxLevel` override (§6.2): the
+    /// document setting beats the toolbar option. An invalid value warns and
+    /// keeps the toolbar setting.
+    fn apply_front_matter_override(&mut self, front_matter: Option<&FrontMatter>) {
+        let Some(raw) = front_matter.and_then(|fm| fm.heading_ids_max_level.as_deref()) else {
+            return;
         };
-        warnings.push(warning);
-        return None; // Don't add the ID for duplicates.
+        match raw.trim().parse::<u8>() {
+            Ok(level) => self.heading_ids = HeadingIds { max_level: level },
+            Err(_) => self.warnings.push(format!(
+                "invalid front-matter headingIdsMaxLevel \"{raw}\" — keeping the toolbar setting"
+            )),
+        }
     }
-    seen_ids.insert(id.clone());
-    Some(id)
-}
 
-/// Extract plain text from a heading node's inline children.
-fn heading_auto_slug(node: Node) -> String {
-    let mut text = String::new();
-    for child in node.children() {
-        collect_heading_text(child, &mut text);
-    }
-    slugify(&text)
-}
-
-/// Recursively collect inline text from a heading node, excluding heading
-/// attribute syntax like `{#id}`.
-fn collect_heading_text(node: Node, out: &mut String) {
-    match &node.data().value {
-        NodeValue::Text(t) => {
-            // Strip heading attribute syntax like `{#id}` from text.
-            let text = t.as_ref();
-            // Remove any `{#...}` patterns.
-            let mut rest = text;
-            while let Some(start) = rest.find("{#") {
-                // Push text before the attribute.
-                out.push_str(&rest[..start]);
-                // Skip past the attribute: `end` is the offset of `}` within
-                // `rest[start..]`, so the text resumes at `start + end + 1`.
-                if let Some(end) = rest[start..].find('}') {
-                    rest = &rest[start + end + 1..];
-                } else {
-                    // No closing brace — treat as literal text.
-                    out.push_str(&rest[start..]);
-                    break;
+    /// Walk the tree collecting footnote definitions (`name` → rendered
+    /// content) so references can pull their definition's content at the
+    /// call site.
+    ///
+    /// Iterative on purpose: comrak caps list nesting but not blockquote
+    /// nesting, so the AST depth is unbounded and a recursive walk
+    /// overflows the stack on a contrived document (~10 KB of `> `
+    /// markers). `descendants()` is comrak's own iterative pre-order
+    /// traversal — the same visit order as the recursive walk, so the
+    /// first definition of a duplicate name still wins, and heading IDs
+    /// inside definitions register in the same sequence.
+    fn collect_footnotes(&mut self, root: Node) {
+        for node in root.descendants() {
+            if let NodeValue::FootnoteDefinition(def) = &node.data().value {
+                if !self.footnotes.contains_key(def.name.as_str()) {
+                    let content = self.render_block_children(node);
+                    self.footnotes.insert(def.name.clone(), content);
                 }
             }
-            // Push remaining text after the last attribute.
-            out.push_str(rest);
         }
-        NodeValue::Code(code) => {
-            out.push_str(&code.literal);
+    }
+
+    /// Render a node's block children joined with blank lines (used by
+    /// `#blockquote[…]` and `#footnote[…]` containers).
+    fn render_block_children(&mut self, node: Node) -> String {
+        node.children()
+            .map(|child| self.render_block_at(child, 0))
+            .collect::<Vec<_>>()
+            .join("\n\n")
+    }
+
+    fn render_block_at(&mut self, node: Node, indent: usize) -> String {
+        match &node.data().value {
+            NodeValue::Paragraph => self.render_inlines(node),
+            NodeValue::CodeBlock(block) => {
+                // The prelude's `code-block` owns the fenced/block styling and
+                // the language fallback; Rust passes the language (or "") and the
+                // source as string arguments — no backtick-fence math needed.
+                let lang = block
+                    .info
+                    .split_whitespace()
+                    .next()
+                    .filter(|word| !word.is_empty())
+                    .unwrap_or("");
+                let content = block.literal.strip_suffix('\n').unwrap_or(&block.literal);
+                format!(
+                    "#code-block(\"{}\", \"{}\")",
+                    escape_typst_string(lang),
+                    escape_typst_string(content)
+                )
+            }
+            NodeValue::Heading(heading) => {
+                let prefix = "=".repeat(heading.level as usize);
+                let text = self.render_inlines(node);
+                let suffix = self.heading_label_suffix(node);
+                format!("{prefix} {text}{suffix}")
+            }
+            NodeValue::List(list) => self.render_list(node, list, indent),
+            NodeValue::BlockQuote => {
+                format!("#blockquote[{}]", self.render_block_children(node))
+            }
+            // The prelude's `thematic-break` owns the spacing/stroke constants.
+            NodeValue::ThematicBreak => "#thematic-break()".to_string(),
+            // Lossy HTML: keep the literal as plain text, escaped. Never pass
+            // HTML through to Typst (§6.2).
+            NodeValue::HtmlBlock(html) => escape_text(&html.literal),
+            // Footnote definitions are emitted inline at their references (the
+            // `#footnote[...]` marker must sit at the call site), so the
+            // definition block itself contributes nothing (§6.2).
+            NodeValue::FootnoteDefinition(_) => String::new(),
+            // The prelude's `markdown-table` owns column sizing and the header
+            // styling; Rust passes the column count plus the header cells and
+            // body rows as data.
+            NodeValue::Table(table) => {
+                let columns = table.num_columns.max(1);
+                let mut header: Vec<String> = Vec::new();
+                let mut rows: Vec<String> = Vec::new();
+                for row in node.children() {
+                    let is_header = matches!(&row.data().value, NodeValue::TableRow(true));
+                    let cells: Vec<String> = row
+                        .children()
+                        .map(|cell| format!("[{}]", self.render_inlines(cell)))
+                        .collect();
+                    if is_header {
+                        header = cells;
+                    } else {
+                        rows.push(array_literal(&cells));
+                    }
+                }
+                format!(
+                    "#markdown-table(columns: {columns}, header: {}, rows: {})",
+                    array_literal(&header),
+                    array_literal(&rows),
+                )
+            }
+            _ => String::new(),
         }
-        NodeValue::HtmlInline(html) => {
-            out.push_str(html);
+    }
+
+    fn render_list(&mut self, node: Node, list: &comrak::nodes::NodeList, indent: usize) -> String {
+        // Task lists become a grid via the prelude helpers (checkbox glyph +
+        // content) so checked and unchecked items can mix at one level — a native
+        // Typst list has a single marker for all items (§6.2).
+        let has_task_items = node
+            .children()
+            .any(|item| matches!(item.data().value, NodeValue::TaskItem(_)));
+        if has_task_items {
+            return self.render_task_list(node, list);
         }
-        NodeValue::Strikethrough | NodeValue::Math(_) => {
-            // Skip content inside strikethrough / math for slug generation.
+
+        if list.list_type == comrak::nodes::ListType::Ordered {
+            self.render_ordered_list(node, list)
+        } else {
+            self.render_bullet_list(node, list, indent)
         }
-        _ => {
-            for child in node.children() {
-                collect_heading_text(child, out);
+    }
+
+    /// Ordered lists use the prelude's `ordered-list` helper (a native Typst
+    /// enum) so the numbering is themeable — a literal "1. " prefix would be
+    /// plain text that no template could style.
+    fn render_ordered_list(&mut self, node: Node, list: &comrak::nodes::NodeList) -> String {
+        let sep = if list.tight { "\n" } else { "\n\n" };
+        let items: Vec<String> = node
+            .children()
+            .map(|item| format!("[{}]", self.render_item_content(item, sep)))
+            .collect();
+        format!("#ordered-list({}, {})", list.start, items.join(", "))
+    }
+
+    /// Bullet lists stay native Typst `- ` lists so the marker is themeable via
+    /// `#show list`. Nested lists keep their own indentation; other blocks are
+    /// indented two spaces per level.
+    fn render_bullet_list(
+        &mut self,
+        node: Node,
+        list: &comrak::nodes::NodeList,
+        indent: usize,
+    ) -> String {
+        let pad = "  ".repeat(indent);
+        let pad_next = "  ".repeat(indent + 1);
+        // Tight lists put every block on the next line; loose lists separate
+        // blocks with a blank line (GFM semantics, mirrored in Typst).
+        let sep = if list.tight { "\n" } else { "\n\n" };
+
+        let mut lines = Vec::new();
+        for item in node.children() {
+            let blocks: Vec<(bool, String)> = item
+                .children()
+                .map(|block| {
+                    let is_list = matches!(block.data().value, NodeValue::List(_));
+                    let rendered = self.render_block_at(block, indent + 1);
+                    (is_list, rendered)
+                })
+                .collect();
+
+            let mut item_text = format!("{pad}- ");
+            for (i, (is_list, rendered)) in blocks.iter().enumerate() {
+                if i == 0 {
+                    item_text.push_str(rendered);
+                } else {
+                    item_text.push_str(sep);
+                    if *is_list {
+                        // Nested lists already carry their own indentation.
+                        item_text.push_str(rendered);
+                    } else {
+                        item_text.push_str(&indent_lines(rendered, &pad_next));
+                    }
+                }
+            }
+            lines.push(item_text);
+        }
+        lines.join("\n")
+    }
+
+    /// Render a task list as `#task-list(task-done([…]), task-todo([…]), …)`:
+    /// each item becomes a call to the matching prelude helper, which owns the
+    /// checkbox glyph and the content cell (§6.2).
+    fn render_task_list(&mut self, node: Node, list: &comrak::nodes::NodeList) -> String {
+        let sep = if list.tight { "\n" } else { "\n\n" };
+        let items: Vec<String> = node
+            .children()
+            .map(|item| {
+                let helper = match &item.data().value {
+                    // `sym.ballot` is ☐, `sym.ballot.check` is ☑ (U+2610/U+2611);
+                    // the glyph itself lives in the prelude helper.
+                    NodeValue::TaskItem(task) if task.symbol.is_some() => "task-done",
+                    NodeValue::TaskItem(_) => "task-todo",
+                    // A plain bullet item mixed into a task list keeps its bullet.
+                    _ => "task-plain",
+                };
+                format!("{helper}([{}])", self.render_item_content(item, sep))
+            })
+            .collect();
+        format!("#task-list({})", items.join(", "))
+    }
+
+    /// The blocks of a task-list item, joined for one grid cell. Nested lists
+    /// carry their own indentation; text is escaped by the block renderer (§6.2).
+    fn render_item_content(&mut self, item: Node, sep: &str) -> String {
+        item.children()
+            .map(|block| self.render_block_at(block, 0))
+            .collect::<Vec<_>>()
+            .join(sep)
+    }
+
+    /// The heading's rendered Typst label suffix (` #label("…")`), or an
+    /// empty string when the heading carries no ID.
+    ///
+    /// A manual `{#id}` (from comrak's `attrs.id`) is the author's explicit
+    /// intent: it is always honored, at every level. `heading_ids.max_level`
+    /// limits AUTO-slug generation only (0 = no auto-slugs at all).
+    ///
+    /// All IDs (manual and auto) share one uniqueness namespace: Typst
+    /// tolerates duplicate labels at compile time, but any reference to a
+    /// duplicate label fails — so the first occurrence wins and later
+    /// duplicates are dropped with a warning.
+    fn heading_label_suffix(&mut self, node: Node) -> String {
+        let NodeValue::Heading(heading) = &node.data().value else {
+            return String::new();
+        };
+
+        // Manual `{#custom-id}` wins over the auto slug and bypasses the cap.
+        let manual_id = node.data().attrs.as_ref().and_then(|a| a.id.clone());
+
+        let (id, is_manual) = match manual_id {
+            Some(manual) => (manual, true),
+            None => {
+                // Auto-slugs only for levels within the cap (0 = disabled).
+                if self.heading_ids.max_level == 0 || heading.level > self.heading_ids.max_level {
+                    return String::new();
+                }
+                let slug = heading_auto_slug(node);
+                if slug.is_empty() {
+                    return String::new();
+                }
+                (slug, false)
+            }
+        };
+
+        if self.seen_ids.contains(&id) {
+            let warning = if is_manual {
+                format!(
+                    "duplicate heading ID \"{}\" — already used by an earlier heading; the later {{#{}}} is ignored",
+                    id, id
+                )
+            } else {
+                format!(
+                    "duplicate heading ID \"{}\" — use a manual ID like `# Heading {{#custom-id}}` or set headingIds.maxLevel to limit auto-generation",
+                    id
+                )
+            };
+            self.warnings.push(warning);
+            return String::new(); // Don't add the ID for duplicates.
+        }
+
+        // The ID attaches to the heading as a Typst label. The `label()`
+        // function (not the `<id>` literal) takes a string argument, so
+        // manual IDs with spaces/quotes/unicode stay valid once escaped; the
+        // call renders nothing. Format from the borrow, then move the ID
+        // into the seen set — no clone.
+        let suffix = format!(" #label(\"{}\")", escape_typst_string(&id));
+        self.seen_ids.insert(id);
+        suffix
+    }
+
+    /// Render a node's inline children into escaped Typst markup.
+    fn render_inlines(&self, node: Node) -> String {
+        let mut writer = Writer::new();
+        self.render_inlines_into(node, &mut writer);
+        writer.finish()
+    }
+
+    /// Accumulator form of `render_inlines`: appends to `writer` instead of
+    /// returning a string, so container nodes wrap their children without
+    /// per-node intermediate strings.
+    fn render_inlines_into(&self, node: Node, writer: &mut Writer) {
+        for child in node.children() {
+            self.render_inline_into(child, writer);
+        }
+    }
+
+    /// Append one inline node's subtree to `writer`.
+    ///
+    /// Iterative: comrak caps list nesting but nothing bounds INLINE nesting
+    /// (it grows with line length — `***…***` on one line), so a recursive
+    /// walk could overflow the stack. `traverse()` yields Start/End events
+    /// in tree order, which map 1:1 onto the accumulator's prefix/suffix
+    /// writes. `depth`/`skip_below` preserve the recursive version's
+    /// drop-unknown-subtree behavior: a node matched by no arm removes its
+    /// whole subtree from the output.
+    fn render_inline_into(&self, node: Node, writer: &mut Writer) {
+        let mut depth = 0usize;
+        let mut skip_below: Option<usize> = None;
+        for edge in node.traverse() {
+            match edge {
+                NodeEdge::Start(n) => {
+                    if skip_below.is_some() {
+                        depth += 1;
+                        continue;
+                    }
+                    match &n.data().value {
+                        NodeValue::Text(text) => escape_text_into(text, &mut writer.buf),
+                        NodeValue::SoftBreak => writer.push_str(" "),
+                        // `\ ` (backslash + space) is a hard line break in Typst markup.
+                        NodeValue::LineBreak => writer.push_str("\\ "),
+                        NodeValue::Code(code) => {
+                            // The prelude's `inline-code` owns the styling; the string
+                            // argument avoids the backtick-fence branch entirely (§6.2).
+                            writer.push_str("#inline-code(\"");
+                            escape_typst_string_into(&code.literal, &mut writer.buf);
+                            writer.push_str("\")");
+                        }
+                        NodeValue::Strong => writer.push_str("*"),
+                        NodeValue::Emph => writer.push_str("_"),
+                        NodeValue::Strikethrough => writer.push_str("#strike["),
+                        NodeValue::Link(link) => {
+                            // A `#fragment` URL targets a heading label (§6.2). The prelude's
+                            // `internal-link` owns the guard: a missing label degrades to
+                            // plain text instead of failing the compile. An empty fragment
+                            // stays a URL link.
+                            if let Some(fragment) =
+                                link.url.strip_prefix('#').filter(|f| !f.is_empty())
+                            {
+                                writer.push_str("#internal-link(\"");
+                                escape_typst_string_into(fragment, &mut writer.buf);
+                            } else {
+                                writer.push_str("#link(\"");
+                                escape_typst_string_into(&link.url, &mut writer.buf);
+                            }
+                            writer.push_str("\")[");
+                        }
+                        NodeValue::Image(link) => {
+                            // The prelude's `figure-image` owns the default width and caption
+                            // placement; Rust passes the URL (data) and the alt text (content).
+                            writer.push_str("#figure-image(\"");
+                            escape_typst_string_into(&link.url, &mut writer.buf);
+                            writer.push_str("\", [");
+                        }
+                        NodeValue::HtmlInline(html) => escape_text_into(html, &mut writer.buf),
+                        // Passthrough: LaTeX macros are not converted in v1 (§6.2).
+                        NodeValue::Math(math) => {
+                            if math.display_math {
+                                writer.push_str("$ ");
+                                writer.push_str(&math.literal);
+                                writer.push_str(" $");
+                            } else {
+                                writer.push_str("$");
+                                writer.push_str(&math.literal);
+                                writer.push_str("$");
+                            }
+                        }
+                        // A footnote reference is inlined at the call site — `#footnote[...]`
+                        // attaches the superscript marker where it is called (§6.2).
+                        NodeValue::FootnoteReference(reference) => {
+                            if let Some(content) = self.footnotes.get(&reference.name) {
+                                writer.push_str("#footnote[");
+                                writer.push_str(content);
+                                writer.push_str("]");
+                            }
+                            // Dangling reference: drop rather than emit a broken marker.
+                        }
+                        // Unknown node: drop the whole subtree.
+                        _ => skip_below = Some(depth),
+                    }
+                    depth += 1;
+                }
+                NodeEdge::End(n) => {
+                    depth -= 1;
+                    if let Some(skip) = skip_below {
+                        if depth == skip {
+                            skip_below = None;
+                        }
+                        continue;
+                    }
+                    match &n.data().value {
+                        NodeValue::Strong => writer.push_str("*"),
+                        NodeValue::Emph => writer.push_str("_"),
+                        NodeValue::Strikethrough | NodeValue::Link(_) => writer.push_str("]"),
+                        NodeValue::Image(_) => writer.push_str("])"),
+                        _ => {}
+                    }
+                }
             }
         }
     }
 }
 
-/// Walk the tree collecting footnote definitions (`name` → rendered content)
-/// so references can pull their definition's content at the call site.
-fn collect_footnotes(
-    node: Node,
-    defs: &mut HashMap<String, String>,
-    heading_ids: &HeadingIds,
-    seen_ids: &mut HashSet<String>,
-    warnings: &mut Vec<String>,
-) {
-    for child in node.children() {
-        if let NodeValue::FootnoteDefinition(def) = &child.data().value {
-            if !defs.contains_key(def.name.as_str()) {
-                let content = render_block_children(child, defs, heading_ids, seen_ids, warnings);
-                defs.insert(def.name.clone(), content);
+/// Append-only markup accumulator: renderers write fragments in emission
+/// order instead of returning per-node strings bottom-up, which avoids an
+/// intermediate allocation (and re-copy) at every nesting level. Block
+/// renderers still return strings and get one `Writer` per inline span.
+struct Writer {
+    buf: String,
+}
+
+impl Writer {
+    fn new() -> Self {
+        Self { buf: String::new() }
+    }
+
+    fn push_str(&mut self, fragment: &str) {
+        self.buf.push_str(fragment);
+    }
+
+    fn finish(self) -> String {
+        self.buf
+    }
+}
+
+/// The heading's auto-slug: the kebab-case of its inline plain text —
+/// lowercased, non-alphanumeric runs collapsed to a single hyphen, ends
+/// trimmed. The slug is folded directly from the AST text, one chunk at a
+/// time, with no intermediate text buffer.
+///
+/// Iterative like `render_inline_into`: inline nesting depth grows with
+/// line length, so a recursive walk could overflow the stack.
+fn heading_auto_slug(node: Node) -> String {
+    let mut slug = String::new();
+    let mut depth = 0usize;
+    let mut skip_below: Option<usize> = None;
+    for edge in node.traverse() {
+        match edge {
+            NodeEdge::Start(n) => {
+                if skip_below.is_some() {
+                    depth += 1;
+                    continue;
+                }
+                match &n.data().value {
+                    NodeValue::Text(t) => {
+                        // Strip heading attribute syntax like `{#id}`; fold
+                        // the remaining pieces as literal text.
+                        let mut rest = t.as_ref();
+                        while let Some(start) = rest.find("{#") {
+                            fold_slug(&mut slug, &rest[..start]);
+                            // Skip past the attribute: `end` is the offset of
+                            // `}` within `rest[start..]`, so the text resumes
+                            // at `start + end + 1`.
+                            let Some(end) = rest[start..].find('}') else {
+                                // No closing brace — literal text to the end.
+                                fold_slug(&mut slug, &rest[start..]);
+                                rest = "";
+                                break;
+                            };
+                            rest = &rest[start + end + 1..];
+                        }
+                        fold_slug(&mut slug, rest);
+                    }
+                    NodeValue::Code(code) => fold_slug(&mut slug, &code.literal),
+                    NodeValue::HtmlInline(html) => fold_slug(&mut slug, html),
+                    // Setext headings span multiple lines: breaks render as
+                    // whitespace in the heading body, so they separate words
+                    // in the slug too.
+                    NodeValue::SoftBreak | NodeValue::LineBreak => fold_slug(&mut slug, " "),
+                    // Strikethrough content is excluded from slugs; math is a
+                    // leaf and contributes nothing.
+                    NodeValue::Strikethrough => skip_below = Some(depth),
+                    _ => {}
+                }
+                depth += 1;
+            }
+            NodeEdge::End(_) => {
+                depth -= 1;
+                if let Some(skip) = skip_below {
+                    if depth == skip {
+                        skip_below = None;
+                    }
+                }
             }
         }
-        collect_footnotes(child, defs, heading_ids, seen_ids, warnings);
+    }
+    // Hyphens collapse as they are pushed, so at most one trailing hyphen
+    // can exist — drop it (leading ones are never pushed).
+    if slug.ends_with('-') {
+        slug.pop();
+    }
+    slug
+}
+
+/// Fold one chunk of heading text into the growing slug: lowercase, keep
+/// alphanumerics, collapse every non-alphanumeric run to a single hyphen.
+/// Leading non-alphanumerics are dropped (the slug never starts with a
+/// hyphen); chunk boundaries are irrelevant to the fold.
+fn fold_slug(slug: &mut String, chunk: &str) {
+    for c in chunk.to_lowercase().chars() {
+        if c.is_alphanumeric() {
+            slug.push(c);
+        } else if !slug.is_empty() && !slug.ends_with('-') {
+            slug.push('-');
+        }
     }
 }
 
@@ -287,28 +661,6 @@ fn parse_front_matter(yaml: &str) -> FrontMatter {
     }
 }
 
-/// The effective heading-ID setting: the document's front-matter
-/// `headingIdsMaxLevel` overrides the toolbar option (§6.2). An invalid
-/// value warns and keeps the toolbar setting.
-fn effective_heading_ids(
-    option: &HeadingIds,
-    front_matter: Option<&FrontMatter>,
-    warnings: &mut Vec<String>,
-) -> HeadingIds {
-    let Some(raw) = front_matter.and_then(|fm| fm.heading_ids_max_level.as_deref()) else {
-        return *option;
-    };
-    match raw.trim().parse::<u8>() {
-        Ok(level) => HeadingIds { max_level: level },
-        Err(_) => {
-            warnings.push(format!(
-                "invalid front-matter headingIdsMaxLevel \"{raw}\" — keeping the toolbar setting"
-            ));
-            *option
-        }
-    }
-}
-
 /// Read one `key: value` field from a YAML line, if present.
 fn yaml_field(line: &str, key: &str) -> Option<String> {
     line.split_once(": ")
@@ -327,273 +679,6 @@ fn clean_yaml_value(value: &str) -> String {
         .to_string()
 }
 
-/// Render a node's block children joined with blank lines (used by
-/// `#blockquote[…]` and `#footnote[…]` containers).
-fn render_block_children(
-    node: Node,
-    footnotes: &HashMap<String, String>,
-    heading_ids: &HeadingIds,
-    seen_ids: &mut HashSet<String>,
-    warnings: &mut Vec<String>,
-) -> String {
-    node.children()
-        .map(|child| render_block_at(child, 0, footnotes, heading_ids, seen_ids, warnings))
-        .collect::<Vec<_>>()
-        .join("\n\n")
-}
-
-fn render_block_at(
-    node: Node,
-    indent: usize,
-    footnotes: &HashMap<String, String>,
-    heading_ids: &HeadingIds,
-    seen_ids: &mut HashSet<String>,
-    warnings: &mut Vec<String>,
-) -> String {
-    match &node.data().value {
-        NodeValue::Paragraph => render_inlines(node, footnotes),
-        NodeValue::CodeBlock(block) => {
-            // The prelude's `code-block` owns the fenced/block styling and
-            // the language fallback; Rust passes the language (or "") and the
-            // source as string arguments — no backtick-fence math needed.
-            let lang = block
-                .info
-                .split_whitespace()
-                .next()
-                .filter(|word| !word.is_empty())
-                .unwrap_or("");
-            let content = block.literal.strip_suffix('\n').unwrap_or(&block.literal);
-            format!(
-                "#code-block(\"{}\", \"{}\")",
-                escape_typst_string(lang),
-                escape_typst_string(content)
-            )
-        }
-        NodeValue::Heading(heading) => {
-            let prefix = "=".repeat(heading.level as usize);
-            let text = render_inlines(node, footnotes);
-            let id = resolve_heading_id(node, heading_ids, seen_ids, warnings);
-            match id {
-                // The ID attaches to the heading as a Typst label. The
-                // `label()` function (not the `<id>` literal) takes a string
-                // argument, so manual IDs with spaces/quotes/unicode stay
-                // valid once escaped; the call renders nothing.
-                Some(id) => format!("{prefix} {text} #label(\"{}\")", escape_typst_string(&id)),
-                None => format!("{prefix} {text}"),
-            }
-        }
-        NodeValue::List(list) => render_list(
-            node,
-            list,
-            indent,
-            footnotes,
-            heading_ids,
-            seen_ids,
-            warnings,
-        ),
-        NodeValue::BlockQuote => format!(
-            "#blockquote[{}]",
-            render_block_children(node, footnotes, heading_ids, seen_ids, warnings)
-        ),
-        // The prelude's `thematic-break` owns the spacing/stroke constants.
-        NodeValue::ThematicBreak => "#thematic-break()".to_string(),
-        // Lossy HTML: keep the literal as plain text, escaped. Never pass
-        // HTML through to Typst (§6.2).
-        NodeValue::HtmlBlock(html) => escape_text(&html.literal),
-        // Footnote definitions are emitted inline at their references (the
-        // `#footnote[...]` marker must sit at the call site), so the
-        // definition block itself contributes nothing (§6.2).
-        NodeValue::FootnoteDefinition(_) => String::new(),
-        // The prelude's `markdown-table` owns column sizing and the header
-        // styling; Rust passes the column count plus the header cells and
-        // body rows as data.
-        NodeValue::Table(table) => {
-            let columns = table.num_columns.max(1);
-            let mut header: Vec<String> = Vec::new();
-            let mut rows: Vec<String> = Vec::new();
-            for row in node.children() {
-                let is_header = matches!(&row.data().value, NodeValue::TableRow(true));
-                let cells: Vec<String> = row
-                    .children()
-                    .map(|cell| format!("[{}]", render_inlines(cell, footnotes)))
-                    .collect();
-                if is_header {
-                    header = cells;
-                } else {
-                    rows.push(array_literal(&cells));
-                }
-            }
-            format!(
-                "#markdown-table(columns: {columns}, header: {}, rows: {})",
-                array_literal(&header),
-                array_literal(&rows),
-            )
-        }
-        _ => String::new(),
-    }
-}
-
-fn render_list(
-    node: Node,
-    list: &comrak::nodes::NodeList,
-    indent: usize,
-    footnotes: &HashMap<String, String>,
-    heading_ids: &HeadingIds,
-    seen_ids: &mut HashSet<String>,
-    warnings: &mut Vec<String>,
-) -> String {
-    // Task lists become a grid via the prelude helpers (checkbox glyph +
-    // content) so checked and unchecked items can mix at one level — a native
-    // Typst list has a single marker for all items (§6.2).
-    let has_task_items = node
-        .children()
-        .any(|item| matches!(item.data().value, NodeValue::TaskItem(_)));
-    if has_task_items {
-        return render_task_list(node, list, footnotes, heading_ids, seen_ids, warnings);
-    }
-
-    if list.list_type == comrak::nodes::ListType::Ordered {
-        render_ordered_list(node, list, footnotes, heading_ids, seen_ids, warnings)
-    } else {
-        render_bullet_list(
-            node,
-            list,
-            indent,
-            footnotes,
-            heading_ids,
-            seen_ids,
-            warnings,
-        )
-    }
-}
-
-/// Ordered lists use the prelude's `ordered-list` helper (a native Typst
-/// enum) so the numbering is themeable — a literal "1. " prefix would be
-/// plain text that no template could style.
-fn render_ordered_list(
-    node: Node,
-    list: &comrak::nodes::NodeList,
-    footnotes: &HashMap<String, String>,
-    heading_ids: &HeadingIds,
-    seen_ids: &mut HashSet<String>,
-    warnings: &mut Vec<String>,
-) -> String {
-    let sep = if list.tight { "\n" } else { "\n\n" };
-    let items: Vec<String> = node
-        .children()
-        .map(|item| {
-            format!(
-                "[{}]",
-                render_item_content(item, sep, footnotes, heading_ids, seen_ids, warnings)
-            )
-        })
-        .collect();
-    format!("#ordered-list({}, {})", list.start, items.join(", "))
-}
-
-/// Bullet lists stay native Typst `- ` lists so the marker is themeable via
-/// `#show list`. Nested lists keep their own indentation; other blocks are
-/// indented two spaces per level.
-fn render_bullet_list(
-    node: Node,
-    list: &comrak::nodes::NodeList,
-    indent: usize,
-    footnotes: &HashMap<String, String>,
-    heading_ids: &HeadingIds,
-    seen_ids: &mut HashSet<String>,
-    warnings: &mut Vec<String>,
-) -> String {
-    let pad = "  ".repeat(indent);
-    let pad_next = "  ".repeat(indent + 1);
-    // Tight lists put every block on the next line; loose lists separate
-    // blocks with a blank line (GFM semantics, mirrored in Typst).
-    let sep = if list.tight { "\n" } else { "\n\n" };
-
-    let mut lines = Vec::new();
-    for item in node.children() {
-        let blocks: Vec<(bool, String)> = item
-            .children()
-            .map(|block| {
-                let is_list = matches!(block.data().value, NodeValue::List(_));
-                let rendered = render_block_at(
-                    block,
-                    indent + 1,
-                    footnotes,
-                    heading_ids,
-                    seen_ids,
-                    warnings,
-                );
-                (is_list, rendered)
-            })
-            .collect();
-
-        let mut item_text = format!("{pad}- ");
-        for (i, (is_list, rendered)) in blocks.iter().enumerate() {
-            if i == 0 {
-                item_text.push_str(rendered);
-            } else {
-                item_text.push_str(sep);
-                if *is_list {
-                    // Nested lists already carry their own indentation.
-                    item_text.push_str(rendered);
-                } else {
-                    item_text.push_str(&indent_lines(rendered, &pad_next));
-                }
-            }
-        }
-        lines.push(item_text);
-    }
-    lines.join("\n")
-}
-
-/// Render a task list as `#task-list(task-done([…]), task-todo([…]), …)`:
-/// each item becomes a call to the matching prelude helper, which owns the
-/// checkbox glyph and the content cell (§6.2).
-fn render_task_list(
-    node: Node,
-    list: &comrak::nodes::NodeList,
-    footnotes: &HashMap<String, String>,
-    heading_ids: &HeadingIds,
-    seen_ids: &mut HashSet<String>,
-    warnings: &mut Vec<String>,
-) -> String {
-    let sep = if list.tight { "\n" } else { "\n\n" };
-    let items: Vec<String> = node
-        .children()
-        .map(|item| {
-            let helper = match &item.data().value {
-                // `sym.ballot` is ☐, `sym.ballot.check` is ☑ (U+2610/U+2611);
-                // the glyph itself lives in the prelude helper.
-                NodeValue::TaskItem(task) if task.symbol.is_some() => "task-done",
-                NodeValue::TaskItem(_) => "task-todo",
-                // A plain bullet item mixed into a task list keeps its bullet.
-                _ => "task-plain",
-            };
-            format!(
-                "{helper}([{}])",
-                render_item_content(item, sep, footnotes, heading_ids, seen_ids, warnings)
-            )
-        })
-        .collect();
-    format!("#task-list({})", items.join(", "))
-}
-
-/// The blocks of a task-list item, joined for one grid cell. Nested lists
-/// carry their own indentation; text is escaped by the block renderer (§6.2).
-fn render_item_content(
-    item: Node,
-    sep: &str,
-    footnotes: &HashMap<String, String>,
-    heading_ids: &HeadingIds,
-    seen_ids: &mut HashSet<String>,
-    warnings: &mut Vec<String>,
-) -> String {
-    item.children()
-        .map(|block| render_block_at(block, 0, footnotes, heading_ids, seen_ids, warnings))
-        .collect::<Vec<_>>()
-        .join(sep)
-}
-
 /// Prefix every line of `text` with `pad`.
 fn indent_lines(text: &str, pad: &str) -> String {
     text.lines()
@@ -609,77 +694,6 @@ fn array_literal(cells: &[String]) -> String {
         format!("({},)", cells[0])
     } else {
         format!("({})", cells.join(", "))
-    }
-}
-
-/// Render a node's inline children into escaped Typst markup.
-fn render_inlines(node: Node, footnotes: &HashMap<String, String>) -> String {
-    let mut out = String::new();
-    for child in node.children() {
-        out.push_str(&render_inline(child, footnotes));
-    }
-    out
-}
-
-/// Render a single inline node.
-fn render_inline(node: Node, footnotes: &HashMap<String, String>) -> String {
-    match &node.data().value {
-        NodeValue::Text(text) => escape_text(text),
-        NodeValue::SoftBreak => " ".to_string(),
-        // `\ ` (backslash + space) is a hard line break in Typst markup.
-        NodeValue::LineBreak => "\\ ".to_string(),
-        NodeValue::Code(code) => {
-            // The prelude's `inline-code` owns the styling; the string
-            // argument avoids the backtick-fence branch entirely (§6.2).
-            format!("#inline-code(\"{}\")", escape_typst_string(&code.literal))
-        }
-        NodeValue::Strong => format!("*{}*", render_inlines(node, footnotes)),
-        NodeValue::Emph => format!("_{}_", render_inlines(node, footnotes)),
-        NodeValue::Strikethrough => format!("#strike[{}]", render_inlines(node, footnotes)),
-        NodeValue::Link(link) => {
-            // A `#fragment` URL targets a heading label (§6.2). The prelude's
-            // `internal-link` owns the guard: a missing label degrades to
-            // plain text instead of failing the compile. An empty fragment
-            // stays a URL link.
-            if let Some(fragment) = link.url.strip_prefix('#').filter(|f| !f.is_empty()) {
-                return format!(
-                    "#internal-link(\"{}\")[{}]",
-                    escape_typst_string(fragment),
-                    render_inlines(node, footnotes)
-                );
-            }
-            format!(
-                "#link(\"{}\")[{}]",
-                escape_typst_string(&link.url),
-                render_inlines(node, footnotes)
-            )
-        }
-        NodeValue::Image(link) => {
-            // The prelude's `figure-image` owns the default width and caption
-            // placement; Rust passes the URL (data) and the alt text (content).
-            format!(
-                "#figure-image(\"{}\", [{}])",
-                escape_typst_string(&link.url),
-                render_inlines(node, footnotes)
-            )
-        }
-        NodeValue::HtmlInline(html) => escape_text(html),
-        // Passthrough: LaTeX macros are not converted in v1 (§6.2).
-        NodeValue::Math(math) => {
-            if math.display_math {
-                format!("$ {} $", math.literal)
-            } else {
-                format!("${}$", math.literal)
-            }
-        }
-        // A footnote reference is inlined at the call site — `#footnote[...]`
-        // attaches the superscript marker where it is called (§6.2).
-        NodeValue::FootnoteReference(reference) => match footnotes.get(&reference.name) {
-            Some(content) => format!("#footnote[{content}]"),
-            // Dangling reference: drop rather than emit a broken marker.
-            None => String::new(),
-        },
-        _ => String::new(),
     }
 }
 
@@ -843,13 +857,48 @@ mod tests {
         assert!(auto_late.warnings.iter().any(|w| w.contains("duplicate")));
     }
 
-    /// `{#…}` that comrak leaves as text (attribute syntax only parses at
+    /// `{#…` that comrak leaves as text (attribute syntax only parses at
     /// end of line) is stripped from the slug WITHOUT eating the characters
     /// after it — the text still renders literally in the heading.
     #[test]
     fn mid_heading_attribute_syntax_keeps_following_slug_text() {
         let doc = md_to_typst("# a {#x} b", Flavor::Gfm, &default_heading_ids());
         assert_eq!(doc.body, "= a {\\#x} b #label(\"a-b\")");
+    }
+
+    /// An unclosed `{#…` is literal text: it contributes its characters to
+    /// the slug exactly once (the old walk emitted the tail twice).
+    #[test]
+    fn unclosed_heading_attribute_syntax_is_literal_slug_text() {
+        let doc = md_to_typst("# a {#x", Flavor::Gfm, &default_heading_ids());
+        assert_eq!(doc.body, "= a {\\#x #label(\"a-x\")");
+
+        let doc = md_to_typst("# a {#x b", Flavor::Gfm, &default_heading_ids());
+        assert_eq!(doc.body, "= a {\\#x b #label(\"a-x-b\")");
+    }
+
+    /// Setext headings span multiple lines, so their inline content can
+    /// contain soft breaks (and hard breaks via trailing spaces). Both
+    /// render as whitespace in the heading body, so they must separate
+    /// words in the slug rather than gluing them together.
+    #[test]
+    fn setext_heading_breaks_separate_slug_words() {
+        let soft = md_to_typst(
+            "First line\nsecond line\n===========",
+            Flavor::Gfm,
+            &default_heading_ids(),
+        );
+        assert_eq!(
+            soft.body,
+            "= First line second line #label(\"first-line-second-line\")"
+        );
+
+        let hard = md_to_typst(
+            "First  \nsecond\n======",
+            Flavor::Gfm,
+            &default_heading_ids(),
+        );
+        assert_eq!(hard.body, "= First\\ second #label(\"first-second\")");
     }
 
     #[test]
@@ -860,6 +909,21 @@ mod tests {
             &default_heading_ids(),
         );
         assert_eq!(doc.body, "*bold* and _em_ and #strike[strike]");
+    }
+
+    /// Nested inline containers interleave their wrappers in tree order —
+    /// the safety net for the Start/End event traversal (depth ≥ 2).
+    #[test]
+    fn nested_inline_containers_interleave_wrappers() {
+        let doc = md_to_typst(
+            "**bold *em* and [link](https://x) end** plus [*inner*](https://y) tail",
+            Flavor::Gfm,
+            &default_heading_ids(),
+        );
+        assert_eq!(
+            doc.body,
+            "*bold _em_ and #link(\"https://x\")[link] end* plus #link(\"https://y\")[_inner_] tail"
+        );
     }
 
     #[test]

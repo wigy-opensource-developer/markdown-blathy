@@ -10,6 +10,13 @@
 /// special there. Used by `#raw("…")`, `#link("…")` and front-matter values.
 pub(crate) fn escape_typst_string(text: &str) -> String {
     let mut out = String::with_capacity(text.len());
+    escape_typst_string_into(text, &mut out);
+    out
+}
+
+/// Accumulator form of `escape_typst_string`: appends to an existing buffer
+/// so callers building larger markup avoid an intermediate string.
+pub(crate) fn escape_typst_string_into(text: &str, out: &mut String) {
     for c in text.chars() {
         match c {
             '\\' => out.push_str("\\\\"),
@@ -17,12 +24,18 @@ pub(crate) fn escape_typst_string(text: &str) -> String {
             c => out.push(c),
         }
     }
-    out
 }
 
 /// Escape a plain-text node for use inside a Typst content block.
 pub fn escape_text(text: &str) -> String {
     let mut out = String::with_capacity(text.len());
+    escape_text_into(text, &mut out);
+    out
+}
+
+/// Accumulator form of `escape_text`: appends to an existing buffer so
+/// callers building larger markup avoid an intermediate string.
+pub fn escape_text_into(text: &str, out: &mut String) {
     let mut at_line_start = true;
     for c in text.chars() {
         match c {
@@ -48,7 +61,6 @@ pub fn escape_text(text: &str) -> String {
         }
         at_line_start = false;
     }
-    out
 }
 
 #[cfg(test)]
