@@ -33,6 +33,11 @@ url = "2"
 # `attributes` enables `{#custom-id}` heading syntax.
 comrak = { version = "0.54", default-features = false, features = ["bon", "attributes"] }
 
+# String similarity for "did you mean …?" front-matter key suggestions.
+# Small, zero-dependency. Already in the tree as a build-time dep (via
+# darling); declared here because the converter uses it at runtime. MIT.
+strsim = "0.11"
+
 # Typst 0.15 engine line — these four crates are released in lockstep and
 # must share the same minor version. typst-as-lib 0.16 is the first line
 # compatible with Typst 0.15 (0.15.x pins Typst 0.14).

@@ -9,7 +9,7 @@ const STORAGE_KEY = "tauri-md-editor.settings";
 /** The settings shape (§8.6): toolbar options plus the editor font size. */
 export const DEFAULT_SETTINGS = {
   options: {
-    flavor: "gfm",
+    flavor: "github",
     paper: "a4",
     marginPreset: "normal",
     margins: { topMm: 25, bottomMm: 25, leftMm: 20, rightMm: 20 },

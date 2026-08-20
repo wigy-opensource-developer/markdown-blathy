@@ -8,7 +8,7 @@
 //! source only changes when the template or the render options change, while
 //! the markdown body is passed per render via `render_inputs`.
 
-use crate::markdown::convert::md_to_typst;
+use crate::markdown::convert::{md_to_typst, DocMeta};
 use crate::options::RenderOptions;
 use crate::typst_engine::engine::FontOptions;
 use typst::foundations::{Dict, IntoValue};
@@ -111,21 +111,30 @@ pub fn build_static_source(
     ))
 }
 
-/// The per-render `sys.inputs` dictionary plus converter warnings:
-/// `title`/`author` from the YAML front matter (as `none` or a string) and
-/// `body` (the converted + escaped Typst markup). Built on every render; the
-/// engine is untouched by it (M6). The command layer merges the warnings
-/// with the engine's (§3).
+/// The per-render `sys.inputs` dictionary, the effective document settings,
+/// and converter warnings. `inputs` carries `title`/`author` (as `none` or a
+/// string) and `body` (the converted + escaped Typst markup) for the
+/// template; the `DocMeta` is surfaced to the frontend (§6.2). Built on every
+/// render; the engine is untouched by it (M6). The command layer merges the
+/// warnings with the engine's (§3).
 pub fn render_inputs(
     markdown: &str,
     options: &RenderOptions,
-) -> Result<(Dict, Vec<String>), String> {
+) -> Result<(Dict, DocMeta, Vec<String>), String> {
     let converted = md_to_typst(markdown, options.flavor, &options.heading_ids);
+    let meta = DocMeta {
+        title: converted.title.clone(),
+        author: converted.author.clone(),
+        flavor: converted.flavor,
+        features: converted.features,
+        auto_heading_level: converted.auto_heading_level,
+    };
+    let warnings = converted.warnings;
     let mut inputs = Dict::new();
     inputs.insert("title".into(), converted.title.into_value());
     inputs.insert("author".into(), converted.author.into_value());
     inputs.insert("body".into(), converted.body.into_value());
-    Ok((inputs, converted.warnings))
+    Ok((inputs, meta, warnings))
 }
 
 /// The font families a template references via `#set text(font: ...)` (§6.3).
@@ -177,13 +186,15 @@ pub fn resolve_template(options: &RenderOptions) -> Result<(String, FontOptions)
 /// the static source (selects the cached engine — rebuilt only when the
 /// template/options change), the per-render `sys.inputs` (the markdown
 /// body travels here, so typing never rebuilds the engine), the font
-/// options used when the engine is (re)built and the converter warnings
-/// (merged with the engine's by the command layer, §3).
+/// options used when the engine is (re)built, the converter warnings
+/// (merged with the engine's by the command layer, §3) and the effective
+/// document settings (surfaced to the frontend, §6.2).
 pub struct PreparedRender {
     pub static_source: String,
     pub inputs: Dict,
     pub fonts: FontOptions,
     pub warnings: Vec<String>,
+    pub doc: DocMeta,
 }
 
 /// Prepare a render: resolve the template (one file read), bake the toolbar
@@ -193,12 +204,13 @@ pub struct PreparedRender {
 /// layer calls it instead of repeating the resolve/build/convert/fonts dance.
 pub fn prepare_render(markdown: &str, options: &RenderOptions) -> Result<PreparedRender, String> {
     let (template_source, fonts) = resolve_template(options)?;
-    let (inputs, warnings) = render_inputs(markdown, options)?;
+    let (inputs, doc, warnings) = render_inputs(markdown, options)?;
     Ok(PreparedRender {
         static_source: build_static_source(&template_source, options)?,
         inputs,
         fonts,
         warnings,
+        doc,
     })
 }
 
@@ -357,9 +369,11 @@ mod tests {
             flavor: Flavor::Custom,
             ..default_options()
         };
-        let (inputs, warnings) =
+        let (inputs, meta, warnings) =
             render_inputs("---\ntitle: \"My Doc\"\nauthor: Ada\n---\n# Hi", &options).unwrap();
         assert!(warnings.is_empty(), "no warnings for this document");
+        assert_eq!(meta.title.as_deref(), Some("My Doc"));
+        assert_eq!(meta.author.as_deref(), Some("Ada"));
         match inputs.get("title").unwrap() {
             Value::Str(s) => assert_eq!(s.as_str(), "My Doc"),
             other => panic!("title must be a string, got {other:?}"),
@@ -383,10 +397,10 @@ mod tests {
     #[test]
     fn render_inputs_returns_converter_warnings() {
         let options = RenderOptions {
-            flavor: Flavor::Gfm,
+            flavor: Flavor::Github,
             ..default_options()
         };
-        let (inputs, warnings) = render_inputs("# Section\n\n## Section", &options).unwrap();
+        let (inputs, _meta, warnings) = render_inputs("# Section\n\n## Section", &options).unwrap();
         assert!(inputs.get("body").is_ok());
         assert!(
             warnings.iter().any(|w| w.contains("duplicate")),
@@ -397,7 +411,7 @@ mod tests {
     #[test]
     fn render_inputs_emits_none_without_front_matter() {
         let options = default_options();
-        let (inputs, _warnings) = render_inputs("plain text", &options).unwrap();
+        let (inputs, _meta, _warnings) = render_inputs("plain text", &options).unwrap();
         assert!(matches!(inputs.get("title").ok(), Some(Value::None)));
         assert!(matches!(inputs.get("author").ok(), Some(Value::None)));
         assert!(inputs.get("body").is_ok());
@@ -491,7 +505,7 @@ mod tests {
     #[test]
     fn prepare_render_bundles_static_source_inputs_and_fonts() {
         let options = RenderOptions {
-            flavor: Flavor::Gfm,
+            flavor: Flavor::Github,
             ..default_options()
         };
         let prepared = prepare_render("# Hi", &options).expect("must prepare");

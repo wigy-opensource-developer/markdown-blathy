@@ -28,7 +28,7 @@ import {
 import { renderOptionsPayload } from "./presets.js";
 
 const OPTIONS = {
-  flavor: "gfm",
+  flavor: "github",
   paper: "a4",
   marginPreset: "normal",
   margins: { topMm: 25, bottomMm: 25, leftMm: 20, rightMm: 20 },

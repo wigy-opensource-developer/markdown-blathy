@@ -8,46 +8,91 @@ use std::collections::{HashMap, HashSet};
 use comrak::arena_tree::NodeEdge;
 use comrak::nodes::{Node, NodeValue};
 use comrak::{parse_document, Arena};
+use serde::Serialize;
 
 use crate::markdown::{
     comrak_options, escape::escape_text, escape::escape_text_into, escape::escape_typst_string,
-    escape::escape_typst_string_into,
+    escape::escape_typst_string_into, frontmatter,
 };
-use crate::options::{Flavor, HeadingIds};
+use crate::options::{FeatureFlags, Flavor, HeadingIds};
 
-/// Typst body plus front-matter metadata (empty doc → body `[]`).
+/// Typst body plus front-matter metadata (empty doc → body `[]`) and the
+/// effective document settings, so the frontend can display/edit them
+/// without parsing YAML itself (§6.2).
 pub struct ConvertedDocument {
     pub body: String,
     pub title: Option<String>,
     pub author: Option<String>,
-    /// Non-fatal warnings (e.g. duplicate heading IDs).
+    /// Non-fatal warnings (front matter first, then rendering).
     pub warnings: Vec<String>,
+    /// The effective flavor (front matter overrides the toolbar).
+    pub flavor: Flavor,
+    /// The effective extension flags (flavor preset + `ext_*` overrides).
+    pub features: FeatureFlags,
+    /// The effective auto heading level (0 = disabled).
+    pub auto_heading_level: u8,
 }
 
-/// Convert Markdown to Typst markup for the given flavor.
+/// The effective document settings, serialized to the frontend so it can
+/// display (and later edit) them without parsing YAML itself (§6.2). A
+/// deliberately small view of `ConvertedDocument` — no body, no warnings —
+/// so it is cheap to clone into the IPC response.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DocMeta {
+    pub title: Option<String>,
+    pub author: Option<String>,
+    pub flavor: Flavor,
+    pub features: FeatureFlags,
+    pub auto_heading_level: u8,
+}
+
+/// Convert Markdown to Typst markup.
 ///
-/// Infallible: comrak's `parse_document` cannot fail, and the v1 front-matter
-/// scan (plain line parse) cannot either. `SPEC.md` originally specified a
-/// `Result`; it was dropped because there is nothing to fail with.
-pub fn md_to_typst(markdown: &str, flavor: Flavor, heading_ids: &HeadingIds) -> ConvertedDocument {
+/// The document's front matter (parsed in every flavor) overrides the
+/// toolbar `base_flavor` / `base_heading_ids`. Infallible: comrak's
+/// `parse_document` cannot fail and the front-matter line scan cannot either.
+pub fn md_to_typst(
+    markdown: &str,
+    base_flavor: Flavor,
+    base_heading_ids: &HeadingIds,
+) -> ConvertedDocument {
+    // Front matter is always the first block; scan it before rendering so the
+    // document's settings take effect for every heading, including ones
+    // inside footnote definitions (§6.2). The scan may hand back a patched
+    // source (a stray leading `---` stripped) — the original is untouched.
+    let scan = frontmatter::scan(markdown);
+
+    // Move the parsed fields out of the settings (no clones).
+    let (title, author, fm_flavor, fm_auto_level, ext_overrides, fm_warnings) = match scan.settings
+    {
+        Some(s) => (
+            s.title,
+            s.author,
+            s.flavor,
+            s.auto_heading_level,
+            s.ext_overrides,
+            s.warnings,
+        ),
+        None => (None, None, None, None, Vec::new(), Vec::new()),
+    };
+
+    // Effective settings: front matter beats the toolbar.
+    let flavor = fm_flavor.unwrap_or(base_flavor);
+    let features = FeatureFlags::from_preset(flavor, &ext_overrides);
+    let heading_ids = fm_auto_level
+        .map(|max_level| HeadingIds { max_level })
+        .unwrap_or(*base_heading_ids);
+
     let arena = Arena::new();
-    let opts = comrak_options(flavor);
-    let root = parse_document(&arena, markdown, &opts);
+    let opts = comrak_options(&features);
+    let root = parse_document(&arena, &scan.source, &opts);
 
-    // Front matter (if any) is always the first block; parse it before any
-    // rendering so a document-level `headingIdsMaxLevel` takes effect for
-    // every heading, including ones inside footnote definitions (§6.2).
-    let front_matter = root.children().find_map(|child| match &child.data().value {
-        NodeValue::FrontMatter(yaml) => Some(parse_front_matter(yaml)),
-        _ => None,
-    });
-
-    let mut renderer = Renderer::new(*heading_ids, flavor == Flavor::Custom);
-    renderer.apply_front_matter_override(front_matter.as_ref());
+    let mut renderer = Renderer::new(heading_ids, features.page_break);
     // Footnote definitions are rendered inline at their references —
-    // `#footnote[...]` attaches the superscript marker where it is called,
-    // so the definition block itself must not emit anything (§6.2). Collect
-    // them up front so references resolve anywhere in the document.
+    // `#footnote[...]` attaches the superscript marker where it is called, so
+    // the definition block itself must not emit anything (§6.2). Collect them
+    // up front so references resolve anywhere in the document.
     renderer.collect_footnotes(root);
 
     let mut blocks: Vec<String> = Vec::new();
@@ -59,17 +104,19 @@ pub fn md_to_typst(markdown: &str, flavor: Flavor, heading_ids: &HeadingIds) -> 
         }
     }
 
-    // The parsed front matter is consumed here — move the fields out rather
-    // than cloning from a reference.
-    let (title, author) = front_matter
-        .map(|fm| (fm.title, fm.author))
-        .unwrap_or_default();
+    // Front-matter warnings first, then rendering warnings (§3 order).
+    let mut warnings = scan.warnings;
+    warnings.extend(fm_warnings);
+    warnings.extend(renderer.warnings);
 
     ConvertedDocument {
         body: join_blocks(blocks),
         title,
         author,
-        warnings: renderer.warnings,
+        warnings,
+        flavor,
+        features,
+        auto_heading_level: heading_ids.max_level,
     }
 }
 
@@ -109,7 +156,7 @@ struct Renderer {
     /// so references can pull their definition's content at the call site.
     footnotes: HashMap<String, String>,
     /// Effective heading-ID settings: the document's front-matter
-    /// `headingIdsMaxLevel` overrides the toolbar option (§6.2).
+    /// `autoHeadingLevel` overrides the toolbar option (§6.2).
     heading_ids: HeadingIds,
     /// Heading IDs already emitted (manual and auto share one namespace):
     /// the first occurrence wins, later duplicates are dropped with a
@@ -117,8 +164,8 @@ struct Renderer {
     seen_ids: HashSet<String>,
     /// Non-fatal warnings (e.g. duplicate heading IDs).
     warnings: Vec<String>,
-    /// Custom-flavor extension (§4): honor the pandoc-convention
-    /// `<!-- pagebreak -->` HTML block as a page break.
+    /// Extension (§4): honor the pandoc-convention `<!-- pagebreak -->` HTML
+    /// block as a page break.
     page_breaks: bool,
 }
 
@@ -130,21 +177,6 @@ impl Renderer {
             seen_ids: HashSet::new(),
             warnings: Vec::new(),
             page_breaks,
-        }
-    }
-
-    /// Apply the front-matter `headingIdsMaxLevel` override (§6.2): the
-    /// document setting beats the toolbar option. An invalid value warns and
-    /// keeps the toolbar setting.
-    fn apply_front_matter_override(&mut self, front_matter: Option<&FrontMatter>) {
-        let Some(raw) = front_matter.and_then(|fm| fm.heading_ids_max_level.as_deref()) else {
-            return;
-        };
-        match raw.trim().parse::<u8>() {
-            Ok(level) => self.heading_ids = HeadingIds { max_level: level },
-            Err(_) => self.warnings.push(format!(
-                "invalid front-matter headingIdsMaxLevel \"{raw}\" — keeping the toolbar setting"
-            )),
         }
     }
 
@@ -648,61 +680,6 @@ fn fold_slug(slug: &mut String, chunk: &str) {
     }
 }
 
-/// The parsed YAML front-matter fields (v1 — plain line scan, no YAML crate).
-struct FrontMatter {
-    title: Option<String>,
-    author: Option<String>,
-    /// Raw `headingIdsMaxLevel` value; parsed where it is applied so an
-    /// invalid value can produce a warning.
-    heading_ids_max_level: Option<String>,
-}
-
-/// Plain line-scan for `title:` / `author:` / `headingIdsMaxLevel:`
-/// (v1 — no YAML crate). Splits on the first `: ` and trims surrounding
-/// quotes. Ignores everything else.
-fn parse_front_matter(yaml: &str) -> FrontMatter {
-    let mut title = None;
-    let mut author = None;
-    let mut heading_ids_max_level = None;
-    for line in yaml.lines() {
-        if title.is_none() {
-            title = yaml_field(line, "title");
-        }
-        if author.is_none() {
-            author = yaml_field(line, "author");
-        }
-        if heading_ids_max_level.is_none() {
-            heading_ids_max_level = yaml_field(line, "headingIdsMaxLevel");
-        }
-        if title.is_some() && author.is_some() && heading_ids_max_level.is_some() {
-            break;
-        }
-    }
-    FrontMatter {
-        title,
-        author,
-        heading_ids_max_level,
-    }
-}
-
-/// Read one `key: value` field from a YAML line, if present.
-fn yaml_field(line: &str, key: &str) -> Option<String> {
-    line.split_once(": ")
-        .filter(|(k, _)| k.trim() == key)
-        .map(|(_, value)| clean_yaml_value(value))
-}
-
-/// Trim whitespace and strip a pair of surrounding double quotes.
-fn clean_yaml_value(value: &str) -> String {
-    let trimmed = value.trim();
-    trimmed
-        .strip_prefix('"')
-        .and_then(|rest| rest.strip_suffix('"'))
-        .unwrap_or(trimmed)
-        .trim()
-        .to_string()
-}
-
 /// Prefix every line of `text` with `pad`.
 fn indent_lines(text: &str, pad: &str) -> String {
     text.lines()
@@ -734,7 +711,7 @@ mod tests {
     #[test]
     fn empty_input_returns_empty_body() {
         for input in ["", "   ", "\n\n"] {
-            let doc = md_to_typst(input, Flavor::Gfm, &default_heading_ids());
+            let doc = md_to_typst(input, Flavor::Github, &default_heading_ids());
             assert_eq!(doc.body, "[]", "input: {input:?}");
             assert_eq!(doc.title, None);
             assert_eq!(doc.author, None);
@@ -745,7 +722,7 @@ mod tests {
     fn maps_headings_to_typst_levels() {
         let doc = md_to_typst(
             "# Title\n\n## Sub\n\n### Third",
-            Flavor::Gfm,
+            Flavor::Github,
             &default_heading_ids(),
         );
         // IDs attach as Typst labels via the `label()` function — the
@@ -762,7 +739,7 @@ mod tests {
     fn auto_slug_heading_id_kebab_case() {
         let doc = md_to_typst(
             "# Hello World\n\n## Foo Bar Baz",
-            Flavor::Gfm,
+            Flavor::Github,
             &default_heading_ids(),
         );
         assert_eq!(
@@ -774,7 +751,7 @@ mod tests {
     /// Auto-slug: special characters become hyphens, consecutive runs collapse.
     #[test]
     fn auto_slug_heading_id_special_chars() {
-        let doc = md_to_typst("# C++ & Rust!", Flavor::Gfm, &default_heading_ids());
+        let doc = md_to_typst("# C++ & Rust!", Flavor::Github, &default_heading_ids());
         assert_eq!(doc.body, "= C++ & Rust! #label(\"c-rust\")");
     }
 
@@ -783,7 +760,7 @@ mod tests {
     fn manual_heading_id_overrides_auto_slug() {
         let doc = md_to_typst(
             "# My Title {#my-title}",
-            Flavor::Gfm,
+            Flavor::Github,
             &default_heading_ids(),
         );
         assert_eq!(doc.body, "= My Title #label(\"my-title\")");
@@ -794,7 +771,7 @@ mod tests {
     fn duplicate_heading_ids_emit_warning() {
         let doc = md_to_typst(
             "# Section\n\n## Section",
-            Flavor::Gfm,
+            Flavor::Github,
             &default_heading_ids(),
         );
         // First heading gets the ID, second one (duplicate) doesn't.
@@ -813,7 +790,7 @@ mod tests {
     fn manual_heading_ids_survive_max_level_zero() {
         let doc = md_to_typst(
             "# Title {#t}\n\n## Sub {#s}\n\n### Deep",
-            Flavor::Gfm,
+            Flavor::Github,
             &HeadingIds { max_level: 0 },
         );
         assert_eq!(
@@ -830,7 +807,7 @@ mod tests {
     fn heading_level_cap_limits_auto_slugs_only() {
         let doc = md_to_typst(
             "# H1\n\n## H2\n\n### H3 {#h3}\n\n### H4",
-            Flavor::Gfm,
+            Flavor::Github,
             &HeadingIds { max_level: 2 },
         );
         assert_eq!(
@@ -845,7 +822,11 @@ mod tests {
     /// the first occurrence wins and the duplicate is dropped with a warning.
     #[test]
     fn duplicate_manual_heading_ids_emit_warning() {
-        let doc = md_to_typst("# A {#x}\n\n## B {#x}", Flavor::Gfm, &default_heading_ids());
+        let doc = md_to_typst(
+            "# A {#x}\n\n## B {#x}",
+            Flavor::Github,
+            &default_heading_ids(),
+        );
         assert_eq!(doc.body, "= A #label(\"x\")\n\n== B");
         assert!(
             doc.warnings.iter().any(|w| w.contains("duplicate")),
@@ -862,7 +843,7 @@ mod tests {
         // A manual ID colliding with an earlier auto-slug.
         let manual_late = md_to_typst(
             "# Section\n\n## Other {#section}",
-            Flavor::Gfm,
+            Flavor::Github,
             &default_heading_ids(),
         );
         assert_eq!(
@@ -874,7 +855,7 @@ mod tests {
         // An auto-slug colliding with an earlier manual ID.
         let auto_late = md_to_typst(
             "# Other {#section}\n\n## Section",
-            Flavor::Gfm,
+            Flavor::Github,
             &default_heading_ids(),
         );
         assert_eq!(auto_late.body, "= Other #label(\"section\")\n\n== Section");
@@ -886,7 +867,7 @@ mod tests {
     /// after it — the text still renders literally in the heading.
     #[test]
     fn mid_heading_attribute_syntax_keeps_following_slug_text() {
-        let doc = md_to_typst("# a {#x} b", Flavor::Gfm, &default_heading_ids());
+        let doc = md_to_typst("# a {#x} b", Flavor::Github, &default_heading_ids());
         assert_eq!(doc.body, "= a {\\#x} b #label(\"a-b\")");
     }
 
@@ -894,10 +875,10 @@ mod tests {
     /// the slug exactly once (the old walk emitted the tail twice).
     #[test]
     fn unclosed_heading_attribute_syntax_is_literal_slug_text() {
-        let doc = md_to_typst("# a {#x", Flavor::Gfm, &default_heading_ids());
+        let doc = md_to_typst("# a {#x", Flavor::Github, &default_heading_ids());
         assert_eq!(doc.body, "= a {\\#x #label(\"a-x\")");
 
-        let doc = md_to_typst("# a {#x b", Flavor::Gfm, &default_heading_ids());
+        let doc = md_to_typst("# a {#x b", Flavor::Github, &default_heading_ids());
         assert_eq!(doc.body, "= a {\\#x b #label(\"a-x-b\")");
     }
 
@@ -909,7 +890,7 @@ mod tests {
     fn setext_heading_breaks_separate_slug_words() {
         let soft = md_to_typst(
             "First line\nsecond line\n===========",
-            Flavor::Gfm,
+            Flavor::Github,
             &default_heading_ids(),
         );
         assert_eq!(
@@ -919,7 +900,7 @@ mod tests {
 
         let hard = md_to_typst(
             "First  \nsecond\n======",
-            Flavor::Gfm,
+            Flavor::Github,
             &default_heading_ids(),
         );
         assert_eq!(hard.body, "= First\\ second #label(\"first-second\")");
@@ -929,7 +910,7 @@ mod tests {
     fn maps_emphasis_strong_and_strikethrough() {
         let doc = md_to_typst(
             "**bold** and *em* and ~~strike~~",
-            Flavor::Gfm,
+            Flavor::Github,
             &default_heading_ids(),
         );
         assert_eq!(doc.body, "*bold* and _em_ and #strike[strike]");
@@ -941,7 +922,7 @@ mod tests {
     fn nested_inline_containers_interleave_wrappers() {
         let doc = md_to_typst(
             "**bold *em* and [link](https://x) end** plus [*inner*](https://y) tail",
-            Flavor::Gfm,
+            Flavor::Github,
             &default_heading_ids(),
         );
         assert_eq!(
@@ -952,25 +933,29 @@ mod tests {
 
     #[test]
     fn soft_breaks_become_spaces_hard_breaks_escaped() {
-        let soft = md_to_typst("line one\nline two", Flavor::Gfm, &default_heading_ids());
+        let soft = md_to_typst("line one\nline two", Flavor::Github, &default_heading_ids());
         assert_eq!(soft.body, "line one line two");
 
-        let hard = md_to_typst("line one\\\nline two", Flavor::Gfm, &default_heading_ids());
+        let hard = md_to_typst(
+            "line one\\\nline two",
+            Flavor::Github,
+            &default_heading_ids(),
+        );
         assert_eq!(hard.body, "line one\\ line two");
     }
 
     #[test]
     fn maps_inline_code_and_backtick_containing_code() {
-        let plain = md_to_typst("use `code` here", Flavor::Gfm, &default_heading_ids());
+        let plain = md_to_typst("use `code` here", Flavor::Github, &default_heading_ids());
         assert_eq!(plain.body, "use #inline-code(\"code\") here");
 
         // ``a `b``  →  a code span containing a backtick; the string argument
         // needs no fence-length math.
-        let backtick = md_to_typst("``a `b``", Flavor::Gfm, &default_heading_ids());
+        let backtick = md_to_typst("``a `b``", Flavor::Github, &default_heading_ids());
         assert_eq!(backtick.body, "#inline-code(\"a `b\")");
 
         // A literal with a backtick *and* quotes/backslashes → escaped string.
-        let quoted = md_to_typst("```a `b \"c\\```", Flavor::Gfm, &default_heading_ids());
+        let quoted = md_to_typst("```a `b \"c\\```", Flavor::Github, &default_heading_ids());
         assert_eq!(quoted.body, "#inline-code(\"a `b \\\"c\\\\\")");
     }
 
@@ -978,17 +963,17 @@ mod tests {
     fn maps_code_blocks() {
         let rust = md_to_typst(
             "```rust\nfn main() {}\n```",
-            Flavor::Gfm,
+            Flavor::Github,
             &default_heading_ids(),
         );
         assert_eq!(rust.body, "#code-block(\"rust\", \"fn main() {}\")");
 
         // No language → the empty string; the prelude owns the fallback.
-        let no_lang = md_to_typst("```\nplain\n```", Flavor::Gfm, &default_heading_ids());
+        let no_lang = md_to_typst("```\nplain\n```", Flavor::Github, &default_heading_ids());
         assert_eq!(no_lang.body, "#code-block(\"\", \"plain\")");
 
         // A literal containing a backtick run needs no longer fence.
-        let backticks = md_to_typst("```\na ``` b\n```", Flavor::Gfm, &default_heading_ids());
+        let backticks = md_to_typst("```\na ``` b\n```", Flavor::Github, &default_heading_ids());
         assert_eq!(backticks.body, "#code-block(\"\", \"a ``` b\")");
     }
 
@@ -996,7 +981,7 @@ mod tests {
     fn maps_links_and_images() {
         let doc = md_to_typst(
             "[label](https://example.com) and ![alt](img.png)",
-            Flavor::Gfm,
+            Flavor::Github,
             &default_heading_ids(),
         );
         assert_eq!(
@@ -1007,7 +992,7 @@ mod tests {
         // A quote in the URL is escaped inside the Typst string literal.
         let quoted = md_to_typst(
             "[x](<https://a.com/\"q\">)",
-            Flavor::Gfm,
+            Flavor::Github,
             &default_heading_ids(),
         );
         assert_eq!(quoted.body, "#link(\"https://a.com/\\\"q\\\"\")[x]");
@@ -1022,40 +1007,40 @@ mod tests {
     fn maps_internal_links_to_label_links() {
         let internal = md_to_typst(
             "[Section](#section-id)",
-            Flavor::Gfm,
+            Flavor::Github,
             &default_heading_ids(),
         );
         assert_eq!(internal.body, "#internal-link(\"section-id\")[Section]");
 
         let external = md_to_typst(
             "[home](https://example.com)",
-            Flavor::Gfm,
+            Flavor::Github,
             &default_heading_ids(),
         );
         assert_eq!(external.body, "#link(\"https://example.com\")[home]");
 
-        let empty = md_to_typst("[top](#)", Flavor::Gfm, &default_heading_ids());
+        let empty = md_to_typst("[top](#)", Flavor::Github, &default_heading_ids());
         assert_eq!(empty.body, "#link(\"#\")[top]");
     }
 
     #[test]
     fn maps_bullet_and_ordered_lists() {
         // Bullet lists stay native Typst `- ` lists (themeable via #show list).
-        let bullet = md_to_typst("- a\n- b", Flavor::Gfm, &default_heading_ids());
+        let bullet = md_to_typst("- a\n- b", Flavor::Github, &default_heading_ids());
         assert_eq!(bullet.body, "- a\n- b");
 
         // Ordered lists use the prelude helper (a native enum) so the
         // numbering is themeable; the markdown start value is preserved.
-        let ordered = md_to_typst("1. a\n2. b", Flavor::Gfm, &default_heading_ids());
+        let ordered = md_to_typst("1. a\n2. b", Flavor::Github, &default_heading_ids());
         assert_eq!(ordered.body, "#ordered-list(1, [a], [b])");
 
-        let starts_at_three = md_to_typst("3. a\n4. b", Flavor::Gfm, &default_heading_ids());
+        let starts_at_three = md_to_typst("3. a\n4. b", Flavor::Github, &default_heading_ids());
         assert_eq!(starts_at_three.body, "#ordered-list(3, [a], [b])");
     }
 
     #[test]
     fn maps_nested_lists_with_indentation() {
-        let nested = md_to_typst("- a\n  - b", Flavor::Gfm, &default_heading_ids());
+        let nested = md_to_typst("- a\n  - b", Flavor::Github, &default_heading_ids());
         assert_eq!(nested.body, "- a\n  - b");
     }
 
@@ -1065,7 +1050,7 @@ mod tests {
         // checkbox glyph and content cell (§6.2).
         let doc = md_to_typst(
             "- [x] done\n- [ ] todo",
-            Flavor::Gfm,
+            Flavor::Github,
             &default_heading_ids(),
         );
         assert_eq!(doc.body, "#task-list(task-done([done]), task-todo([todo]))");
@@ -1077,7 +1062,7 @@ mod tests {
         // `task-plain` helper (default bullet glyph in the checkbox column).
         let doc = md_to_typst(
             "- [x] done\n- plain item",
-            Flavor::Gfm,
+            Flavor::Github,
             &default_heading_ids(),
         );
         assert_eq!(
@@ -1088,7 +1073,7 @@ mod tests {
 
     #[test]
     fn loose_list_items_keep_paragraph_breaks() {
-        let doc = md_to_typst("- a\n\n  continued", Flavor::Gfm, &default_heading_ids());
+        let doc = md_to_typst("- a\n\n  continued", Flavor::Github, &default_heading_ids());
         assert_eq!(doc.body, "- a\n\n  continued");
     }
 
@@ -1096,7 +1081,7 @@ mod tests {
     fn maps_gfm_tables_only_in_gfm_and_custom_flavors() {
         let gfm = md_to_typst(
             "| a | b |\n|---|---|\n| 1 | 2 |",
-            Flavor::Gfm,
+            Flavor::Github,
             &default_heading_ids(),
         );
         assert_eq!(
@@ -1115,10 +1100,10 @@ mod tests {
 
     #[test]
     fn maps_blockquotes_and_thematic_breaks() {
-        let quote = md_to_typst("> quoted text", Flavor::Gfm, &default_heading_ids());
+        let quote = md_to_typst("> quoted text", Flavor::Github, &default_heading_ids());
         assert_eq!(quote.body, "#blockquote[quoted text]");
 
-        let hr = md_to_typst("a\n\n---\n\nb", Flavor::Gfm, &default_heading_ids());
+        let hr = md_to_typst("a\n\n---\n\nb", Flavor::Github, &default_heading_ids());
         assert_eq!(hr.body, "a\n\n#thematic-break()\n\nb");
     }
 
@@ -1128,13 +1113,17 @@ mod tests {
         // whole literal is emitted as escaped plain text.
         let block = md_to_typst(
             "<div>\n<p>*hi*</p>\n</div>",
-            Flavor::Gfm,
+            Flavor::Github,
             &default_heading_ids(),
         );
         assert_eq!(block.body, "<div>\n<p>\\*hi\\*</p>\n</div>");
 
         // Inline HTML tags pass through; the surrounding markdown is parsed.
-        let inline = md_to_typst("a <span>*x*</span> b", Flavor::Gfm, &default_heading_ids());
+        let inline = md_to_typst(
+            "a <span>*x*</span> b",
+            Flavor::Github,
+            &default_heading_ids(),
+        );
         assert_eq!(inline.body, "a <span>_x_</span> b");
     }
 
@@ -1165,7 +1154,7 @@ mod tests {
     /// the marker stays lossy text like any other HTML.
     #[test]
     fn page_break_marker_is_custom_flavor_only() {
-        for flavor in [Flavor::Commonmark, Flavor::Gfm] {
+        for flavor in [Flavor::Commonmark, Flavor::Github] {
             let doc = md_to_typst(
                 "a\n\n<!-- pagebreak -->\n\nb",
                 flavor,
@@ -1215,7 +1204,7 @@ mod tests {
         assert_eq!(math.body, "Inline $x^2$ and display $ y $.");
 
         // Without the extension the syntax is ordinary (escaped) text.
-        let gfm = md_to_typst("text[^1] and $x^2$", Flavor::Gfm, &default_heading_ids());
+        let gfm = md_to_typst("text[^1] and $x^2$", Flavor::Github, &default_heading_ids());
         assert_eq!(gfm.body, "text\\[^1\\] and \\$x^2\\$");
     }
 
@@ -1268,10 +1257,10 @@ mod tests {
 
     #[test]
     fn maps_indented_code_blocks() {
-        let doc = md_to_typst("    let x = 1;\n", Flavor::Gfm, &default_heading_ids());
+        let doc = md_to_typst("    let x = 1;\n", Flavor::Github, &default_heading_ids());
         assert_eq!(doc.body, "#code-block(\"\", \"let x = 1;\")");
 
-        let blank = md_to_typst("    a\n\n    b\n", Flavor::Gfm, &default_heading_ids());
+        let blank = md_to_typst("    a\n\n    b\n", Flavor::Github, &default_heading_ids());
         assert_eq!(blank.body, "#code-block(\"\", \"a\n\nb\")");
     }
 
@@ -1280,7 +1269,7 @@ mod tests {
         // GFM autolink: the URL is also the link text.
         let doc = md_to_typst(
             "see <https://example.com> now",
-            Flavor::Gfm,
+            Flavor::Github,
             &default_heading_ids(),
         );
         assert_eq!(
@@ -1289,13 +1278,13 @@ mod tests {
         );
     }
 
-    /// Document-level override: the front-matter `headingIdsMaxLevel` caps
+    /// Document-level override: the front-matter `autoHeadingLevel` caps
     /// AUTO-slug generation for this document, beating the toolbar setting
     /// (here: all 6 levels). Manual IDs are unaffected (§6.2).
     #[test]
-    fn front_matter_heading_ids_max_level_overrides_option() {
+    fn front_matter_auto_heading_level_overrides_option() {
         let doc = md_to_typst(
-            "---\nheadingIdsMaxLevel: 1\n---\n\n# One\n\n## Two\n\n### Three {#tres}",
+            "---\nautoHeadingLevel: 1\n---\n\n# One\n\n## Two\n\n### Three {#tres}",
             Flavor::Custom,
             &default_heading_ids(),
         );
@@ -1306,44 +1295,50 @@ mod tests {
             "= One #label(\"one\")\n\n== Two\n\n=== Three #label(\"tres\")"
         );
         assert!(doc.warnings.is_empty());
+        assert_eq!(doc.auto_heading_level, 1);
     }
 
-    /// An invalid `headingIdsMaxLevel` warns and keeps the toolbar setting
+    /// An invalid `autoHeadingLevel` warns and keeps the toolbar setting
     /// rather than failing the render (§6.2).
     #[test]
-    fn front_matter_invalid_heading_ids_max_level_warns_and_keeps_option() {
+    fn front_matter_invalid_auto_heading_level_warns_and_keeps_option() {
         let doc = md_to_typst(
-            "---\nheadingIdsMaxLevel: abc\n---\n\n# One\n\n## Two",
+            "---\nautoHeadingLevel: abc\n---\n\n# One\n\n## Two",
             Flavor::Custom,
             &default_heading_ids(),
         );
         // Toolbar default (all levels) still applies.
         assert_eq!(doc.body, "= One #label(\"one\")\n\n== Two #label(\"two\")");
+        assert_eq!(doc.auto_heading_level, 6);
         assert!(
             doc.warnings
                 .iter()
-                .any(|w| w.contains("headingIdsMaxLevel") && w.contains("abc")),
+                .any(|w| w.contains("autoHeadingLevel") && w.contains("abc")),
             "expected an invalid-value warning: {:?}",
             doc.warnings
         );
     }
 
-    /// `headingIdsMaxLevel: 0` in front matter disables auto-slugs for the
+    /// `autoHeadingLevel: 0` in front matter disables auto-slugs for the
     /// document while manual IDs stay honored — same semantics as the
     /// toolbar setting (§6.2).
     #[test]
-    fn front_matter_heading_ids_max_level_zero_keeps_manual_ids() {
+    fn front_matter_auto_heading_level_zero_keeps_manual_ids() {
         let doc = md_to_typst(
-            "---\nheadingIdsMaxLevel: 0\n---\n\n# One {#uno}\n\n## Two",
+            "---\nautoHeadingLevel: 0\n---\n\n# One {#uno}\n\n## Two",
             Flavor::Custom,
             &default_heading_ids(),
         );
         assert_eq!(doc.body, "= One #label(\"uno\")\n\n== Two");
         assert!(doc.warnings.is_empty());
+        assert_eq!(doc.auto_heading_level, 0);
     }
 
+    /// Unknown front-matter keys are tolerated (title/author still parse)
+    /// but produce a warning — with a suggestion when the key is a likely
+    /// typo (§6.2).
     #[test]
-    fn front_matter_ignores_other_keys() {
+    fn front_matter_unknown_keys_warn_but_still_parse() {
         let doc = md_to_typst(
             "---\ntitle: \"T\"\ndate: \"2026-01-01\"\ntags: [a]\nauthor: \"A\"\n---\n\nBody",
             Flavor::Custom,
@@ -1351,5 +1346,27 @@ mod tests {
         );
         assert_eq!(doc.title.as_deref(), Some("T"));
         assert_eq!(doc.author.as_deref(), Some("A"));
+        assert_eq!(doc.warnings.len(), 2, "{:?}", doc.warnings);
+        assert!(doc.warnings.iter().any(|w| w.contains("date")));
+        assert!(doc.warnings.iter().any(|w| w.contains("tags")));
+    }
+
+    /// Front matter is parsed in every flavor, not just Custom (§6.2).
+    #[test]
+    fn front_matter_works_in_every_flavor() {
+        for flavor in [Flavor::Commonmark, Flavor::Github, Flavor::Custom] {
+            let doc = md_to_typst("---\ntitle: T\n---\n\nBody", flavor, &default_heading_ids());
+            assert_eq!(doc.title.as_deref(), Some("T"), "flavor: {flavor:?}");
+        }
+    }
+
+    /// A document-declared flavor overrides the toolbar flavor (§6.2): this
+    /// document forces CommonMark, so the GFM table stays literal text.
+    #[test]
+    fn front_matter_flavor_overrides_toolbar() {
+        let md = "---\nflavor: commonmark\n---\n\n| a | b |\n|---|---|\n| 1 | 2 |";
+        let doc = md_to_typst(md, Flavor::Github, &default_heading_ids());
+        assert_eq!(doc.flavor, Flavor::Commonmark);
+        assert!(doc.body.contains("| a | b |"), "{}", doc.body);
     }
 }

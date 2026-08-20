@@ -28,7 +28,7 @@ User-visible behaviour:
 
 1. Split-screen window: **Markdown editor** (left) and **live preview** (right).
 2. The preview updates automatically while typing (debounced), rendering pages with print margins, exactly as they will appear in the PDF.
-3. A toolbar offers: New / Open / Save Markdown files, flavor selection (CommonMark / GitHub Flavored Markdown / Custom), paper size, margins, text alignment, and **Export PDF** (system save dialog).
+3. A toolbar offers: New / Open / Save Markdown files, flavor selection (CommonMark / GitHub / Custom), paper size, margins, text alignment, and **Export PDF** (system save dialog).
 4. The default document style is provided by an embedded Typst template; users may supply their own `.typ` template.
 5. Compile warnings (e.g. unknown fonts) are surfaced in the UI, not swallowed.
 
@@ -71,7 +71,11 @@ User-visible behaviour:
 
 ## 4. Flavor support
 
-| Feature | CommonMark | GFM | Custom |
+A *flavor* is a named preset of extension flags. The effective behavior is a
+set of feature flags; a document can override its flavor and flip individual
+extensions via front matter (see below).
+
+| Feature | CommonMark | GitHub | Custom |
 |---|---|---|---|
 | strikethrough | — | ✅ | ✅ |
 | tables | — | ✅ | ✅ |
@@ -79,14 +83,26 @@ User-visible behaviour:
 | task lists | — | ✅ | ✅ |
 | footnotes | — | — | ✅ |
 | math (`$...$`) | — | — | ✅ |
-| YAML front matter | — | — | ✅ |
 | highlight (`==text==`) | — | — | ✅ |
 | subscript (`~text~`) | — | — | ✅ |
 | superscript (`^text^`) | — | — | ✅ |
 | description lists | — | — | ✅ |
 | page breaks (`<!-- pagebreak -->`) | — | — | ✅ |
 
-**Explicit bare links** (`<https://example.com>`) are supported in **all flavors** — this is standard CommonMark, not an extension. The GFM/Custom `autolink` extension (automatic bare-URL linking) is **not enabled**.
+**Front matter is parsed in every flavor.** A leading `---` block of
+`key: value` lines carries the document settings — `title`, `author`,
+`autoHeadingLevel`, `flavor`, and `ext_*` extension overrides — which
+override the toolbar options. Only `key: value` syntax is supported (no YAML
+crate); unknown keys warn with a "did you mean …?" suggestion. When the
+block is not valid front matter (e.g. a thematic break mistaken for one), the
+leading `---` is ignored with a warning and the content still renders.
+
+**Extension overrides.** On top of the `flavor:` preset, each extension can be
+toggled with an `ext_<name>: true|false` key (e.g. `ext_footnotes: true`).
+When the app writes front matter it uses the XOR-minimal encoding: the preset
+with the fewest flips, plus only the differing flags.
+
+**Explicit bare links** (`<https://example.com>`) are supported in **all flavors** — this is standard CommonMark, not an extension. The `autolink` extension (automatic bare-URL linking) is **off in every flavor**.
 
 ## 5. Milestones
 

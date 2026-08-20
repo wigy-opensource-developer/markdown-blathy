@@ -5,27 +5,35 @@
 
 pub mod convert;
 pub mod escape;
+pub mod frontmatter;
+pub mod suggest;
 
 use comrak::Options;
 
-use crate::options::Flavor;
+use crate::options::FeatureFlags;
 
-/// comrak parser options per flavor (§6.1).
-pub fn comrak_options(flavor: Flavor) -> Options<'static> {
-    let gfm = matches!(flavor, Flavor::Gfm | Flavor::Custom);
+/// comrak parser options for an effective extension set (§6.1).
+///
+/// Two things are always on regardless of flavor: the front-matter
+/// delimiter (front matter is parsed in every flavor so `title`/`author`
+/// and the document settings work everywhere) and `header_attributes`
+/// (heading IDs are core app behavior — anchor links, TOC — not a flavor
+/// extension; labels are invisible metadata). Autolink is always OFF: the
+/// app prefers explicit bare links (`<https://…>`, SPEC §4).
+pub fn comrak_options(flags: &FeatureFlags) -> Options<'static> {
     Options {
         extension: comrak::options::Extension {
-            strikethrough: gfm,
-            table: gfm,
-            autolink: gfm,
-            tasklist: gfm,
-            footnotes: flavor == Flavor::Custom,
-            math_dollars: flavor == Flavor::Custom,
-            front_matter_delimiter: (flavor == Flavor::Custom).then(|| "---".to_owned()),
-            // Heading IDs (auto slug + {#custom-id} override) are core app
-            // behavior (anchor links, TOC), not a flavor extension. Labels are
-            // invisible metadata — they don't affect rendering. Enabling
-            // header_attributes in all flavors keeps the feature consistent.
+            strikethrough: flags.strikethrough,
+            table: flags.table,
+            autolink: false,
+            tasklist: flags.task_list,
+            footnotes: flags.footnotes,
+            math_dollars: flags.math,
+            highlight: flags.highlight,
+            superscript: flags.superscript,
+            subscript: flags.subscript,
+            description_lists: flags.definition_list,
+            front_matter_delimiter: Some("---".to_owned()),
             header_attributes: true,
             ..Default::default()
         },
@@ -40,33 +48,39 @@ mod tests {
 
     #[test]
     fn extension_matrix_matches_flavor_table() {
-        let commonmark = comrak_options(Flavor::Commonmark).extension;
+        let commonmark = comrak_options(&Flavor::Commonmark.preset()).extension;
         assert!(!commonmark.strikethrough);
         assert!(!commonmark.table);
         assert!(!commonmark.autolink);
         assert!(!commonmark.tasklist);
         assert!(!commonmark.footnotes);
         assert!(!commonmark.math_dollars);
-        assert_eq!(commonmark.front_matter_delimiter, None);
+        assert!(!commonmark.highlight);
+        assert_eq!(commonmark.front_matter_delimiter.as_deref(), Some("---"));
         assert!(commonmark.header_attributes, "header_attributes always on");
 
-        let gfm = comrak_options(Flavor::Gfm).extension;
-        assert!(gfm.strikethrough);
-        assert!(gfm.table);
-        assert!(gfm.autolink);
-        assert!(gfm.tasklist);
-        assert!(!gfm.footnotes);
-        assert!(!gfm.math_dollars);
-        assert_eq!(gfm.front_matter_delimiter, None);
-        assert!(gfm.header_attributes, "header_attributes always on");
+        let github = comrak_options(&Flavor::Github.preset()).extension;
+        assert!(github.strikethrough);
+        assert!(github.table);
+        assert!(!github.autolink, "autolink stays off in every flavor");
+        assert!(github.tasklist);
+        assert!(!github.footnotes);
+        assert!(!github.math_dollars);
+        assert!(!github.highlight);
+        assert_eq!(github.front_matter_delimiter.as_deref(), Some("---"));
+        assert!(github.header_attributes, "header_attributes always on");
 
-        let custom = comrak_options(Flavor::Custom).extension;
+        let custom = comrak_options(&Flavor::Custom.preset()).extension;
         assert!(custom.strikethrough);
         assert!(custom.table);
-        assert!(custom.autolink);
+        assert!(!custom.autolink, "autolink stays off in every flavor");
         assert!(custom.tasklist);
         assert!(custom.footnotes);
         assert!(custom.math_dollars);
+        assert!(custom.highlight);
+        assert!(custom.superscript);
+        assert!(custom.subscript);
+        assert!(custom.description_lists);
         assert_eq!(custom.front_matter_delimiter.as_deref(), Some("---"));
         assert!(custom.header_attributes, "header_attributes always on");
     }
@@ -74,8 +88,9 @@ mod tests {
     #[test]
     fn smart_quotes_never_enabled() {
         // §6.1: parse.smart would re-type the `"` the converter leaves alone.
-        for flavor in [Flavor::Commonmark, Flavor::Gfm, Flavor::Custom] {
-            assert!(!comrak_options(flavor).parse.smart, "flavor: {flavor:?}");
+        for flavor in [Flavor::Commonmark, Flavor::Github, Flavor::Custom] {
+            let flags = flavor.preset();
+            assert!(!comrak_options(&flags).parse.smart, "flavor: {flavor:?}");
         }
     }
 }

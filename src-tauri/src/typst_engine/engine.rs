@@ -316,7 +316,7 @@ mod tests {
 
     fn gfm_options() -> RenderOptions {
         RenderOptions {
-            flavor: Flavor::Gfm,
+            flavor: Flavor::Github,
             paper: Paper::A4,
             margins: Margins {
                 top_mm: 25.0,
@@ -396,7 +396,7 @@ mod tests {
     /// Full pipeline: markdown → converter → static source + inputs → compile.
     fn compile_markdown(markdown: &str, options: &RenderOptions) -> PreviewOutcome {
         let static_source = build_static_source(DEFAULT_TEMPLATE, options).unwrap();
-        let (inputs, _warnings) = render_inputs(markdown, options).unwrap();
+        let (inputs, ..) = render_inputs(markdown, options).unwrap();
         let engine = build_engine(&static_source, &FontOptions::default()).expect("engine");
         compile_preview_with_inputs(&engine, &inputs).expect("must compile")
     }
@@ -405,7 +405,7 @@ mod tests {
     /// file) with the Custom flavor — the M6 flow used by the theme tests.
     fn compile_custom_theme(template: &str, markdown: &str) -> PreviewOutcome {
         let static_source = build_static_source(template, &custom_options()).unwrap();
-        let (inputs, _warnings) = render_inputs(markdown, &custom_options()).unwrap();
+        let (inputs, ..) = render_inputs(markdown, &custom_options()).unwrap();
         let engine = build_engine(&static_source, &FontOptions::default()).expect("engine");
         compile_preview_with_inputs(&engine, &inputs).expect("must compile")
     }
@@ -770,7 +770,7 @@ mod tests {
         };
         let render = |template: &str| {
             let source = build_static_source(template, &gfm_options()).unwrap();
-            let (inputs, _warnings) = render_inputs("Hello world.", &gfm_options()).unwrap();
+            let (inputs, ..) = render_inputs("Hello world.", &gfm_options()).unwrap();
             let engine = build_engine(&source, &fonts).expect("engine");
             compile_preview_with_inputs(&engine, &inputs)
                 .expect("must compile")
@@ -856,7 +856,7 @@ mod tests {
         };
         let render = |template: &str| {
             let static_source = build_static_source(template, &gfm_options()).unwrap();
-            let (inputs, _warnings) = render_inputs("- [ ]", &gfm_options()).unwrap();
+            let (inputs, ..) = render_inputs("- [ ]", &gfm_options()).unwrap();
             let engine = build_engine(&static_source, &fonts).expect("engine");
             compile_preview_with_inputs(&engine, &inputs)
                 .expect("must compile")
@@ -1069,7 +1069,7 @@ mod tests {
         // Real link target: referencing the converted body's label compiles
         // cleanly — with the old `{\#id}` emission this failed with
         // "label `title` does not exist in the document".
-        let (inputs, _warnings) = render_inputs("# Title", &gfm_options()).unwrap();
+        let (inputs, ..) = render_inputs("# Title", &gfm_options()).unwrap();
         let body = match inputs.get("body").unwrap() {
             Value::Str(s) => s.as_str().to_string(),
             other => panic!("body must be a string, got {other:?}"),
@@ -1114,7 +1114,7 @@ mod tests {
         let broken = "#let task-list(..items) = boom(1)";
         let template = format!("{DEFAULT_TEMPLATE}\n\n{broken}");
         let static_source = build_static_source(&template, &gfm_options()).unwrap();
-        let (inputs, _warnings) = render_inputs("- [x] done", &gfm_options()).unwrap();
+        let (inputs, ..) = render_inputs("- [x] done", &gfm_options()).unwrap();
         let engine = build_engine(&static_source, &FontOptions::default()).expect("engine");
         let err = compile_preview_with_inputs(&engine, &inputs).unwrap_err();
         assert!(err.to_string().contains("line"), "{err}");

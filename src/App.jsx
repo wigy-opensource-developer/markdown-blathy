@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useDebouncedCallback } from "@mantine/hooks";
 import { open } from "@tauri-apps/plugin-dialog";
 import * as api from "./lib/api.js";
@@ -34,12 +34,20 @@ export default function App() {
   // dropped (§7.5).
   const seq = useRef(0);
 
-  // The document title: frontmatter `title` wins, then the file stem, then
-  // "Sample" for the (still untitled) sample document (§8.4). It is *state*,
-  // refreshed on the same 200 ms debounce as the preview, so fast typing in
-  // the frontmatter never parses the document per keystroke and the
-  // window-title IPC update lands at most once per debounce period.
-  const [title, setTitle] = useState(() => docTitle(SAMPLE_DOC, null, "Sample"));
+  // The effective document settings from the last render (§6.2): Rust parses
+  // the front matter and returns it, so the frontend never parses YAML
+  // itself. Null until the first render lands.
+  const [docMeta, setDocMeta] = useState(null);
+
+  // The document title: the Rust-parsed frontmatter `title` wins, then the
+  // file stem, then "Sample" for the (still untitled) sample document
+  // (§8.4). Derived from `docMeta` + `filePath`, so it refreshes whenever a
+  // render lands or the file changes — naturally on the same 200 ms debounce
+  // as the preview, with no client-side frontmatter parsing.
+  const title = useMemo(
+    () => docTitle(docMeta?.title ?? null, filePath, "Sample"),
+    [docMeta, filePath]
+  );
 
   // Debounced preview refresh: pauses 200ms after the last keystroke, well
   // within the ≤300ms acceptance for M3. `useDebouncedCallback` keeps the
@@ -53,16 +61,11 @@ export default function App() {
       if (isStaleResponse(result.seq, seq.current)) return; // stale — drop
       setPages(result.pages);
       setWarnings(result.warnings);
+      setDocMeta(result.doc);
       setError(null);
     } catch (err) {
       setError(String(err)); // keep the last good preview
     }
-  }, 200);
-
-  // Title derivation (frontmatter parsing) rides the same debounce as the
-  // preview (§8.4): the parsed title only lands 200 ms after typing pauses.
-  const refreshTitle = useDebouncedCallback(() => {
-    setTitle(docTitle(markdown, filePath, "Sample"));
   }, 200);
 
   // Initial render of the starting document.
@@ -70,9 +73,6 @@ export default function App() {
     refreshPreview();
     return () => refreshPreview.cancel();
   }, [refreshPreview]);
-
-  // Cancel a pending title refresh on unmount (no setState after unmount).
-  useEffect(() => () => refreshTitle.cancel(), [refreshTitle]);
 
   // Load the startup working directory ($XDG_DATA_HOME / $HOME) for the
   // dialogs; until it resolves the dialogs fall back to the OS default.
@@ -95,9 +95,8 @@ export default function App() {
     (value) => {
       setMarkdown(value);
       refreshPreview();
-      refreshTitle();
     },
-    [refreshPreview, refreshTitle]
+    [refreshPreview]
   );
 
   // Apply a partial options patch; switching the margin preset maps it to
@@ -141,8 +140,7 @@ export default function App() {
     setFilePath(null);
     setMarkdown(SAMPLE_DOC);
     refreshPreview();
-    refreshTitle();
-  }, [refreshPreview, refreshTitle]);
+  }, [refreshPreview]);
 
   const handleOpen = useCallback(
     () =>
@@ -153,9 +151,8 @@ export default function App() {
         setMarkdown(res.content);
         setDirectory(parentDirectory(res.path));
         refreshPreview();
-        refreshTitle();
       }),
-    [runFileAction, directory, refreshPreview, refreshTitle]
+    [runFileAction, directory, refreshPreview]
   );
 
   // Always a "Save As…" dialog: the filename defaults to `<title>.md` in the
@@ -167,9 +164,8 @@ export default function App() {
         const res = await api.saveMarkdown(markdown, safeFileName(title), directory);
         if (api.isCanceled(res)) return;
         setFilePath(res.path);
-        refreshTitle();
       }),
-    [runFileAction, markdown, title, directory, refreshTitle]
+    [runFileAction, markdown, title, directory]
   );
 
   // Template picker (M5, §8.4): choose a `.typ` file via the system dialog,

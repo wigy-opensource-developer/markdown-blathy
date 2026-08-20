@@ -1,69 +1,34 @@
 // Title/directory derivation tests (§8.4 of SPEC.md).
 //
-// The frontmatter field parser mirrors `markdown/convert.rs`'s
-// `parse_front_matter`/`yaml_field` rules (split on first ": ", trim, strip
-// one pair of surrounding double quotes) so the Save/Export default file
-// names stay consistent with the title the Typst template renders.
+// Front matter is parsed by Rust (`markdown/frontmatter.rs`) and returned
+// with the render result; `docTitle` only combines that parsed title with
+// the file name and a fallback.
 import { describe, expect, it } from "vitest";
 import {
   docTitle,
   filenameStem,
-  frontmatterTitle,
   parentDirectory,
   safeFileName,
   windowTitle,
 } from "./title.js";
 
-describe("frontmatterTitle", () => {
-  it("reads a quoted title", () => {
-    expect(frontmatterTitle('---\ntitle: "My Doc"\nauthor: "Ada"\n---\n\nBody')).toBe(
-      "My Doc"
+describe("docTitle", () => {
+  it("prefers the parsed frontmatter title over the filename", () => {
+    expect(docTitle("Front Matter Title", "/a/b/file.md", "Sample")).toBe(
+      "Front Matter Title"
     );
   });
 
-  it("reads an unquoted title", () => {
-    expect(frontmatterTitle("---\ntitle: Plain Doc\n---\n\nBody")).toBe("Plain Doc");
+  it("falls back to the filename stem without a frontmatter title", () => {
+    expect(docTitle(null, "/a/b/notes.md", "Sample")).toBe("notes");
   });
 
-  it("ignores other frontmatter keys", () => {
-    expect(
-      frontmatterTitle('---\ndate: "2026-01-01"\ntags: [a]\ntitle: "T"\n---\n\nBody')
-    ).toBe("T");
+  it("falls back to the default when there is no title and no file", () => {
+    expect(docTitle(null, null, "Sample")).toBe("Sample");
   });
 
-  it("returns null when there is no title field", () => {
-    expect(frontmatterTitle("---\nauthor: Ada\n---\n\nBody")).toBeNull();
-  });
-
-  it("returns null when the document has no frontmatter block", () => {
-    expect(frontmatterTitle("# No frontmatter here")).toBeNull();
-  });
-
-  it("returns null when the opening delimiter is not on the first line", () => {
-    expect(frontmatterTitle("# Title\n\n---\ntitle: Late\n---\n")).toBeNull();
-  });
-
-  it("returns null when the block is unterminated", () => {
-    expect(frontmatterTitle("---\ntitle: Never closed\n\nBody")).toBeNull();
-  });
-});
-
-describe("docTitle", () => {
-  it("prefers the frontmatter title over the filename", () => {
-    const md = "---\ntitle: Front Matter Title\n---\n\nBody";
-    expect(docTitle(md, "/a/b/file.md", "Sample")).toBe("Front Matter Title");
-  });
-
-  it("falls back to the filename stem without frontmatter", () => {
-    expect(docTitle("# Body", "/a/b/notes.md", "Sample")).toBe("notes");
-  });
-
-  it("falls back to the default when there is no frontmatter and no file", () => {
-    expect(docTitle("# Body", null, "Sample")).toBe("Sample");
-  });
-
-  it("treats an empty frontmatter title as absent", () => {
-    expect(docTitle('---\ntitle: ""\n---\n\nBody', "/a/b/notes.md", "Sample")).toBe("notes");
+  it("treats an empty parsed title as absent", () => {
+    expect(docTitle("", "/a/b/notes.md", "Sample")).toBe("notes");
   });
 });
 

@@ -16,6 +16,7 @@ use typst_as_lib::{TypstEngine, TypstTemplateMainFile};
 
 use crate::engine_cache::TemplateEngineCache;
 use crate::files;
+use crate::markdown::convert::DocMeta;
 use crate::options::RenderOptions;
 use crate::typst_engine::engine;
 use crate::typst_engine::template;
@@ -30,12 +31,16 @@ pub struct RenderPayload {
     pub seq: u64,
 }
 
-/// Per-page SVG strings plus warnings, echoed back with the request's `seq`.
+/// Per-page SVG strings plus warnings and the effective document settings,
+/// echoed back with the request's `seq`. The `doc` settings let the frontend
+/// show the parsed front-matter title/author/flavor/extensions without
+/// parsing YAML itself (§6.2).
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PreviewOutcome {
     pub pages: Vec<String>,
     pub warnings: Vec<String>,
+    pub doc: DocMeta,
     pub seq: u64,
 }
 
@@ -165,6 +170,7 @@ pub async fn render_preview(
     Ok(PreviewOutcome {
         pages: outcome.pages,
         warnings: merged_warnings(prepared.warnings.clone(), outcome.warnings),
+        doc: prepared.doc.clone(),
         seq: payload.seq,
     })
 }
@@ -408,8 +414,8 @@ fn open_in_viewer(path: &Path) {
 
 #[cfg(test)]
 mod tests {
-    use super::{FileOutcome, PreviewOutcome, RenderPayload};
-    use crate::options::{Flavor, Margins, Paper, TextAlign};
+    use super::{DocMeta, FileOutcome, PreviewOutcome, RenderPayload};
+    use crate::options::{FeatureFlags, Flavor, Margins, Paper, TextAlign};
 
     /// Pins the IPC contract: the exact JSON the frontend `lib/api.js` sends
     /// (§8.4) must deserialize into `RenderPayload`.
@@ -418,7 +424,7 @@ mod tests {
         let json = r##"{
             "markdown": "# Hi",
             "options": {
-                "flavor": "gfm",
+                "flavor": "github",
                 "paper": "a4",
                 "margins": { "topMm": 25, "bottomMm": 25, "leftMm": 20, "rightMm": 20 },
                 "textAlign": "left",
@@ -429,7 +435,7 @@ mod tests {
         let payload: RenderPayload = serde_json::from_str(json).unwrap();
         assert_eq!(payload.markdown, "# Hi");
         assert_eq!(payload.seq, 7);
-        assert_eq!(payload.options.flavor, Flavor::Gfm);
+        assert_eq!(payload.options.flavor, Flavor::Github);
         assert_eq!(payload.options.paper, Paper::A4);
         assert_eq!(
             payload.options.margins,
@@ -472,18 +478,30 @@ mod tests {
     }
 
     /// Pins the IPC contract: `PreviewOutcome` serializes back to the
-    /// camelCase shape the frontend reads (§7.4).
+    /// camelCase shape the frontend reads (§7.4), including the effective
+    /// document settings (§6.2).
     #[test]
     fn preview_outcome_serializes_with_camel_case_and_seq() {
         let outcome = PreviewOutcome {
             pages: vec!["<svg>".into()],
             warnings: vec!["font warning".into()],
+            doc: DocMeta {
+                title: Some("My Doc".into()),
+                author: None,
+                flavor: Flavor::Github,
+                features: FeatureFlags::default(),
+                auto_heading_level: 6,
+            },
             seq: 3,
         };
         let json = serde_json::to_string(&outcome).unwrap();
         assert!(json.contains("\"pages\":[\"<svg>\"]"), "{json}");
         assert!(json.contains("\"warnings\":[\"font warning\"]"), "{json}");
         assert!(json.contains("\"seq\":3"), "{json}");
+        assert!(json.contains("\"doc\":{"), "{json}");
+        assert!(json.contains("\"title\":\"My Doc\""), "{json}");
+        assert!(json.contains("\"flavor\":\"github\""), "{json}");
+        assert!(json.contains("\"autoHeadingLevel\":6"), "{json}");
     }
 
     /// Success outcome must not carry a `canceled` flag — the frontend reads

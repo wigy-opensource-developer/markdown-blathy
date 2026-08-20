@@ -10,7 +10,7 @@ import {
 
 describe("FLAVORS", () => {
   it("uses the snake_case values the Rust Flavor enum expects (§6.1)", () => {
-    expect(FLAVORS.map((f) => f.value)).toEqual(["commonmark", "gfm", "custom"]);
+    expect(FLAVORS.map((f) => f.value)).toEqual(["commonmark", "github", "custom"]);
   });
 });
 
@@ -58,7 +58,7 @@ describe("marginsForPreset", () => {
 
 describe("renderOptionsPayload", () => {
   const options = {
-    flavor: "gfm",
+    flavor: "github",
     paper: "a4",
     marginPreset: "normal",
     margins: { topMm: 25, bottomMm: 25, leftMm: 20, rightMm: 20 },

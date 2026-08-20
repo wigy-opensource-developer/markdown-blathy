@@ -2,11 +2,11 @@
 //
 // `value` fields are the wire values the Rust side deserializes — the serde
 // enums in `src-tauri/src/options.rs` use `rename_all = "snake_case"`, so the
-// select values must be exactly `commonmark`/`gfm`/`custom`, etc.
+// select values must be exactly `commonmark`/`github`/`custom`, etc.
 
 export const FLAVORS = [
   { value: "commonmark", label: "CommonMark" },
-  { value: "gfm", label: "GFM" },
+  { value: "github", label: "GitHub" },
   { value: "custom", label: "Custom" },
 ];
 

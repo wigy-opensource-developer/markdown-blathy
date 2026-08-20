@@ -96,7 +96,7 @@ pub struct PreviewOutcome { pub pages: Vec<String>, pub warnings: Vec<String>, p
 | `FootnoteReference` | inlined at call site as `#footnote[<definition>]` |
 | `FootnoteDefinition` | dropped (collected for matching) |
 | `Math` | passthrough: inline `$…$`, block `$ … $` |
-| `FrontMatter` | parsed → `title`/`author` in `ConvertedDocument` + `headingIdsMaxLevel` override; nothing in body |
+| `FrontMatter` | parsed (every flavor) → document settings (`title`/`author`/`autoHeadingLevel`/`flavor`/`ext_*`) in `ConvertedDocument`; nothing in body |
 | `HtmlInline` / `HtmlBlock` | **lossy**: raw literal as plain text, escaped |
 | `HtmlBlock` that is exactly `<!-- pagebreak -->` (Custom) | `#pagebreak()` — pandoc's page-break convention |
 | `DescriptionList` | `#definition-list((term, [def]), …)` |
@@ -136,10 +136,10 @@ unicode stay valid once escaped, and the call renders nothing.
    manual↔manual, or mixed) are dropped with a warning to
    `ConvertedDocument.warnings` — Typst accepts duplicate labels at compile
    time but any reference to them fails.
-4. **`maxLevel` sources**: the toolbar `RenderOptions.heading_ids`,
-   overridable per document by the YAML front-matter key
-   `headingIdsMaxLevel: N` (Custom flavor only, like all front matter). An
-   invalid value warns and keeps the toolbar setting.
+ 4. **`maxLevel` sources**: the toolbar `RenderOptions.heading_ids`,
+    overridable per document by the front-matter key `autoHeadingLevel: N`
+    (front matter is parsed in every flavor). An invalid value warns and
+    keeps the toolbar setting.
 
 ### Internal links
 
@@ -152,23 +152,30 @@ Location links there (see below).
 
 ### comrak options
 
+`comrak_options` takes the effective `FeatureFlags` (a flavor preset with any
+`ext_*` overrides applied). Front matter and heading IDs are always on;
+autolink is always off (SPEC §4).
+
 ```rust
-pub fn comrak_options(flavor: Flavor) -> comrak::Options<'static> {
-    let mut ext = comrak::Extension::default();
-    ext.strikethrough = matches!(flavor, Flavor::Gfm | Flavor::Custom);
-    ext.table = matches!(flavor, Flavor::Gfm | Flavor::Custom);
-    ext.header_attributes = true;        // heading IDs: all flavors
-    ext.tasklist = matches!(flavor, Flavor::Gfm | Flavor::Custom);
-    ext.footnotes = flavor == Flavor::Custom;
-    ext.math_dollars = flavor == Flavor::Custom;
-    ext.front_matter_delimiter = (flavor == Flavor::Custom).then(|| "---".to_owned());
-    if flavor == Flavor::Custom {
-        ext.superscript = true;
-        ext.subscript = true;
-        ext.highlight = true;
-        ext.description_lists = true;
+pub fn comrak_options(flags: &FeatureFlags) -> comrak::Options<'static> {
+    Options {
+        extension: comrak::options::Extension {
+            strikethrough: flags.strikethrough,
+            table: flags.table,
+            autolink: false,                       // always off (SPEC §4)
+            tasklist: flags.task_list,
+            footnotes: flags.footnotes,
+            math_dollars: flags.math,
+            highlight: flags.highlight,
+            superscript: flags.superscript,
+            subscript: flags.subscript,
+            description_lists: flags.definition_list,
+            front_matter_delimiter: Some("---".to_owned()), // always on
+            header_attributes: true,               // heading IDs: all flavors
+            ..Default::default()
+        },
+        ..Options::default()
     }
-    comrak::Options { extension: ext, ..comrak::Options::default() }
 }
 ```
 
