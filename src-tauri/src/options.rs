@@ -72,8 +72,10 @@ impl Feature {
 
 /// The effective set of enabled extensions. Built from a `Flavor` preset,
 /// then individual `ext_*` overrides applied on top (§6.1). Serialized to the
-/// frontend so the settings UI can show the effective state.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize)]
+/// frontend so the settings UI can show the effective state, and deserialized
+/// back from the settings popover's patch. Field names stay snake_case to
+/// match the `ext_*` front-matter keys.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct FeatureFlags {
     pub strikethrough: bool,
     pub table: bool,
@@ -111,6 +113,26 @@ impl Flavor {
                 definition_list: true,
                 page_break: true,
             },
+        }
+    }
+
+    /// The front-matter name of the flavor (`commonmark`/`github`/`custom`),
+    /// matching the serde snake_case form.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Flavor::Commonmark => "commonmark",
+            Flavor::Github => "github",
+            Flavor::Custom => "custom",
+        }
+    }
+
+    /// Parse a front-matter `flavor:` value (case-insensitive).
+    pub fn from_str_loose(value: &str) -> Option<Flavor> {
+        match value.to_ascii_lowercase().as_str() {
+            "commonmark" => Some(Flavor::Commonmark),
+            "github" => Some(Flavor::Github),
+            "custom" => Some(Flavor::Custom),
+            _ => None,
         }
     }
 

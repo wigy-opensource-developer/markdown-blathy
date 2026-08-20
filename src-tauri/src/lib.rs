@@ -40,6 +40,7 @@ pub fn run() {
             commands::export_pdf,
             commands::get_initial_directory,
             commands::open_external,
+            commands::update_front_matter,
             commands::validate_template,
         ])
         .run(tauri::generate_context!())

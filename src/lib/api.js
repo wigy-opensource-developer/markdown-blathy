@@ -47,10 +47,18 @@ export const getInitialDirectory = () => invoke("get_initial_directory");
  *  caller composes the full string, e.g. via `windowTitle()` (§8.4). */
 export const setWindowTitle = (title) => getCurrentWindow().setTitle(title);
 
-/** Open an http(s) URL in the system default browser. Non-http(s) URLs are
- *  rejected by the backend with an error — the webview never navigates to
- *  them (§7.4 / §9). */
+/** Open an http(s) URL in the system default browser. Non-http(s) URLs
+ *  are rejected by the backend with an error — the webview never navigates
+ *  (§7.4 / §9). */
 export const openExternal = (url) => invoke("open_external", { url });
+
+/** Update the document's front matter with a settings patch and resolve with
+ *  the full new Markdown (§6.2). Rust owns the YAML editing: managed keys are
+ *  rewritten canonically, unknown keys preserved. The patch uses `null` (or an
+ *  omitted key) to leave a value untouched; `title`/`author` accept `""` to
+ *  clear. */
+export const updateFrontMatter = (markdown, patch) =>
+  invoke("update_front_matter", { markdown, patch });
 
 /** Validate a custom `.typ` template by probe-compiling it (§7.4, M5/M6).
  *  The current options are sent along so validation builds the exact engine

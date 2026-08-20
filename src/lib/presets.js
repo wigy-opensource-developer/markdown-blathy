@@ -29,6 +29,33 @@ export const ALIGNS = [
   { value: "justified", label: "Justified" },
 ];
 
+// Toggleable Markdown extensions (§6.1). `key` matches the `FeatureFlags`
+// field names (snake_case, same as the `ext_*` front-matter keys) that Rust
+// serializes into the render result's `doc.features`.
+export const FEATURES = [
+  { key: "strikethrough", label: "Strikethrough ~~text~~" },
+  { key: "table", label: "Tables" },
+  { key: "task_list", label: "Task lists" },
+  { key: "footnotes", label: "Footnotes" },
+  { key: "math", label: "Math $…$" },
+  { key: "highlight", label: "Highlight ==text==" },
+  { key: "superscript", label: "Superscript ^text^" },
+  { key: "subscript", label: "Subscript ~text~" },
+  { key: "definition_list", label: "Definition lists" },
+  { key: "page_break", label: "Page breaks" },
+];
+
+const ALL_OFF = Object.fromEntries(FEATURES.map((f) => [f.key, false]));
+const ALL_ON = Object.fromEntries(FEATURES.map((f) => [f.key, true]));
+
+// Extension presets matching the Rust `Flavor::preset` table (§6.1):
+// CommonMark enables nothing, GitHub the GFM set, Custom everything.
+export const FEATURE_PRESETS = {
+  commonmark: { ...ALL_OFF },
+  github: { ...ALL_OFF, strikethrough: true, table: true, task_list: true },
+  custom: { ...ALL_ON },
+};
+
 // Preset → page margins in millimetres. The template's `x`/`y` shorthand uses
 // the smaller of left/right and top/bottom respectively (§7.4), so the preset
 // values here keep `x < y` to match the labels.

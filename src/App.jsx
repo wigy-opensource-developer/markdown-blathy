@@ -194,6 +194,18 @@ export default function App() {
     changeOption({ templatePath: null });
   }, [changeOption]);
 
+  // Document settings popover (§6.2): apply a front-matter patch through the
+  // Rust editor, which preserves unmanaged keys, then re-render the result.
+  const handleApplySettings = useCallback(
+    (patch) =>
+      runFileAction(async () => {
+        const updated = await api.updateFrontMatter(markdown, patch);
+        setMarkdown(updated);
+        refreshPreview();
+      }),
+    [runFileAction, markdown, refreshPreview]
+  );
+
   const handleExport = useCallback(
     () =>
       runFileAction(async () => {
@@ -225,6 +237,8 @@ export default function App() {
         onPickTemplate={handlePickTemplate}
         onClearTemplate={handleClearTemplate}
         onExport={handleExport}
+        docMeta={docMeta}
+        onApplySettings={handleApplySettings}
       />
       <main id="panes">
         <section id="editor-pane">

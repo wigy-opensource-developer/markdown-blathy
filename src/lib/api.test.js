@@ -23,6 +23,7 @@ import {
   renderPreview,
   saveMarkdown,
   setWindowTitle,
+  updateFrontMatter,
   validateTemplate,
 } from "./api.js";
 import { renderOptionsPayload } from "./presets.js";
@@ -102,6 +103,17 @@ describe("openExternal", () => {
     openExternal("https://example.com");
     expect(invoke).toHaveBeenCalledWith("open_external", {
       url: "https://example.com",
+    });
+  });
+});
+
+describe("updateFrontMatter", () => {
+  it("invokes update_front_matter with the markdown and the patch", () => {
+    const patch = { title: "My Doc", autoHeadingLevel: 2 };
+    updateFrontMatter("# Body", patch);
+    expect(invoke).toHaveBeenCalledWith("update_front_matter", {
+      markdown: "# Body",
+      patch,
     });
   });
 });

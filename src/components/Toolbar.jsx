@@ -1,5 +1,5 @@
-// Toolbar: file buttons, flavor/paper/margins/align selects, template picker
-// and export (§8.4 of SPEC.md). File/template/export handlers arrive in M4/M5.
+// Toolbar: file buttons, flavor/paper/margins/align selects, document
+// settings, template picker and export (§8.4 of SPEC.md).
 import { memo } from "react";
 import { Badge, Button, Divider, Group, Select, Tooltip } from "@mantine/core";
 import {
@@ -11,6 +11,7 @@ import {
   IconTemplateOff,
 } from "@tabler/icons-react";
 import { ALIGNS, FLAVORS, MARGIN_PRESETS, PAPERS } from "../lib/presets.js";
+import DocumentSettings from "./DocumentSettings.jsx";
 
 // The four toolbar option selects differ only in label, option table, width
 // and which options field they write; a config row + one component removes
@@ -45,6 +46,8 @@ function Toolbar({
   onPickTemplate,
   onClearTemplate,
   onExport,
+  docMeta,
+  onApplySettings,
 }) {
   const customTemplate = options.templatePath;
   return (
@@ -65,6 +68,9 @@ function Toolbar({
             Save
           </Button>
         </Tooltip>
+        {/* Not wrapped in a Tooltip on purpose: Mantine cannot wrap another
+            floating component (the settings Popover) in a Tooltip. */}
+        <DocumentSettings docMeta={docMeta} onApplySettings={onApplySettings} />
       </Group>
 
       <Divider orientation="vertical" />

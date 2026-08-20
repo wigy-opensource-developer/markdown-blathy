@@ -14,8 +14,10 @@
 
 use std::borrow::Cow;
 
+use serde::Deserialize;
+
 use crate::markdown::suggest;
-use crate::options::{Feature, Flavor};
+use crate::options::{Feature, FeatureFlags, Flavor};
 
 /// The document settings parsed from front matter, plus any warnings raised
 /// while parsing (unknown keys, invalid values).
@@ -87,6 +89,189 @@ fn known_keys() -> Vec<&'static str> {
         .collect()
 }
 
+/// A settings patch from the UI (§6.2). `None` leaves the existing value
+/// untouched; `Some` sets it — for `title`/`author` an empty string clears
+/// the key. `features` is the *effective* extension set; it is written back
+/// in the XOR-minimal encoding (`flavor:` + only the differing `ext_*`).
+#[derive(Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct Patch {
+    pub title: Option<String>,
+    pub author: Option<String>,
+    pub auto_heading_level: Option<u8>,
+    pub features: Option<FeatureFlags>,
+}
+
+/// Rewrite the document's front matter with `patch` applied, preserving any
+/// keys this app does not manage (and the body) verbatim. Managed keys are
+/// canonicalized to the top of the block. Returns the full new document.
+pub fn apply_patch(markdown: &str, patch: &Patch) -> String {
+    let bom = if markdown.starts_with('\u{feff}') {
+        "\u{feff}"
+    } else {
+        ""
+    };
+    let src = strip_bom(markdown);
+
+    let (existing_block, body) = match split_front_matter(src) {
+        Some((block, body)) => (Some(block), body),
+        None => (None, src),
+    };
+    let existing = existing_block
+        .map(parse_block_for_patch)
+        .unwrap_or_default();
+
+    // Merge the patch onto the existing values (None = keep existing).
+    let title = patch.title.clone().or(existing.title);
+    let author = patch.author.clone().or(existing.author);
+    let auto = patch.auto_heading_level.or(existing.auto_heading_level);
+
+    let mut lines: Vec<String> = Vec::new();
+    if let Some(t) = title.as_deref().filter(|t| !t.is_empty()) {
+        lines.push(format!("title: {}", yaml_value(t)));
+    }
+    if let Some(a) = author.as_deref().filter(|a| !a.is_empty()) {
+        lines.push(format!("author: {}", yaml_value(a)));
+    }
+    if let Some(n) = auto {
+        lines.push(format!("autoHeadingLevel: {n}"));
+    }
+    match patch.features {
+        Some(flags) => {
+            let (flavor, overrides) = flags.encode();
+            lines.push(format!("flavor: {}", flavor.as_str()));
+            for (feature, on) in overrides {
+                lines.push(format!("{}: {}", feature.ext_key(), on));
+            }
+        }
+        None => {
+            // Keep the existing flavor / overrides representation as-is.
+            if let Some(flavor) = existing.flavor {
+                lines.push(format!("flavor: {}", flavor.as_str()));
+            }
+            for (feature, on) in &existing.ext_overrides {
+                lines.push(format!("{}: {}", feature.ext_key(), on));
+            }
+        }
+    }
+    // Preserved (unmanaged) lines keep their original relative order.
+    lines.extend(existing.preserved.iter().cloned());
+
+    if lines.is_empty() {
+        // Nothing managed and nothing preserved — drop the block entirely.
+        return format!("{bom}{body}");
+    }
+    format!("{bom}---\n{}---\n{body}", lines.join("\n") + "\n")
+}
+
+/// The existing front matter split into managed settings and the raw lines
+/// this app does not manage (unknown keys, comments) that must be preserved.
+#[derive(Default)]
+struct ExistingBlock {
+    title: Option<String>,
+    author: Option<String>,
+    auto_heading_level: Option<u8>,
+    flavor: Option<Flavor>,
+    ext_overrides: Vec<(Feature, bool)>,
+    preserved: Vec<String>,
+}
+
+/// Parse an existing block for `apply_patch`: extract the managed settings
+/// (first occurrence wins) and collect every non-managed line verbatim.
+fn parse_block_for_patch(block: &str) -> ExistingBlock {
+    let mut ex = ExistingBlock::default();
+    for line in block.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue; // blank lines are not fields; the block is re-emitted
+        }
+        let Some((key, raw_value)) = split_key_value(trimmed) else {
+            ex.preserved.push(trimmed.to_string());
+            continue;
+        };
+        let value = clean_value(raw_value);
+        match key {
+            "title" => {
+                if ex.title.is_none() {
+                    ex.title = Some(value);
+                }
+            }
+            "author" => {
+                if ex.author.is_none() {
+                    ex.author = Some(value);
+                }
+            }
+            "autoHeadingLevel" => {
+                if ex.auto_heading_level.is_none() {
+                    ex.auto_heading_level = value.parse().ok();
+                }
+            }
+            "flavor" => {
+                if ex.flavor.is_none() {
+                    ex.flavor = Flavor::from_str_loose(&value);
+                }
+            }
+            key if key.starts_with("ext_") => match Feature::from_ext_key(key) {
+                Some(feature) => {
+                    let already = ex.ext_overrides.iter().any(|(f, _)| *f == feature);
+                    if !already {
+                        if let Some(on) = parse_bool(&value) {
+                            ex.ext_overrides.push((feature, on));
+                        }
+                    }
+                }
+                // An unknown ext_* key is an extra field — preserve it.
+                None => ex.preserved.push(trimmed.to_string()),
+            },
+            // Unknown key — preserve it untouched.
+            _ => ex.preserved.push(trimmed.to_string()),
+        }
+    }
+    ex
+}
+
+/// Format a value for writing: quote it when an unquoted value would break
+/// the `key: value` parse (contains `": "` or edge whitespace). Values that
+/// themselves contain a quote are left unquoted (the parser does not unescape
+/// inner quotes, so quoting those would not round-trip).
+fn yaml_value(value: &str) -> String {
+    let needs_quotes = value.contains(": ") || value.starts_with(' ') || value.ends_with(' ');
+    if needs_quotes && !value.contains('"') {
+        format!("\"{}\"", value)
+    } else {
+        value.to_string()
+    }
+}
+
+fn parse_bool(value: &str) -> Option<bool> {
+    match value.to_ascii_lowercase().as_str() {
+        "true" => Some(true),
+        "false" => Some(false),
+        _ => None,
+    }
+}
+
+/// Split the document into (front-matter block content, body) when it begins
+/// with a `---`-delimited block; `None` when there is no such block (the
+/// whole document is body). Matches comrak's capture rule.
+fn split_front_matter(markdown: &str) -> Option<(&str, &str)> {
+    let mut lines = markdown.split_inclusive('\n');
+    let first = lines.next()?;
+    if trim_line_ending(first) != "---" {
+        return None;
+    }
+    let mut offset = first.len();
+    for line in lines {
+        if trim_line_ending(line) == "---" {
+            let block = &markdown[first.len()..offset];
+            let body = &markdown[offset + line.len()..];
+            return Some((block, body));
+        }
+        offset += line.len();
+    }
+    None
+}
+
 /// Parse a validated front-matter block into `Settings`.
 fn parse_block(block: &str) -> Settings {
     let mut settings = Settings::default();
@@ -142,13 +327,7 @@ fn parse_flavor(value: &str, settings: &mut Settings) {
     if settings.flavor.is_some() {
         return; // first occurrence wins
     }
-    let flavor = match value.to_ascii_lowercase().as_str() {
-        "commonmark" => Some(Flavor::Commonmark),
-        "github" => Some(Flavor::Github),
-        "custom" => Some(Flavor::Custom),
-        _ => None,
-    };
-    match flavor {
+    match Flavor::from_str_loose(value) {
         Some(f) => settings.flavor = Some(f),
         None => settings.warnings.push(format!(
             "invalid front-matter flavor \"{value}\" — expected commonmark, github or custom; \
@@ -354,5 +533,127 @@ mod tests {
         assert_eq!(s.title.as_deref(), Some("Quoted"));
         assert_eq!(s.author.as_deref(), Some("Plain"));
         assert!(s.warnings.is_empty(), "{:?}", s.warnings);
+    }
+
+    // --- apply_patch --------------------------------------------------------
+
+    fn patch_title(title: &str) -> Patch {
+        Patch {
+            title: Some(title.to_string()),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn patch_adds_front_matter_to_a_bare_document() {
+        let out = apply_patch("# Body", &patch_title("My Doc"));
+        assert_eq!(out, "---\ntitle: My Doc\n---\n# Body");
+    }
+
+    #[test]
+    fn patch_updates_existing_title_and_preserves_body() {
+        let out = apply_patch("---\ntitle: Old\n---\n\n# Body", &patch_title("New"));
+        assert_eq!(out, "---\ntitle: New\n---\n\n# Body");
+    }
+
+    #[test]
+    fn patch_preserves_unknown_keys_and_comments() {
+        let md = "---\ntitle: T\nbibliography: refs.bib\n# a comment\nauthor: A\n---\nBody";
+        let out = apply_patch(md, &patch_title("T2"));
+        // Managed keys canonicalize to the top; unknown key + comment kept.
+        assert_eq!(
+            out,
+            "---\ntitle: T2\nauthor: A\nbibliography: refs.bib\n# a comment\n---\nBody"
+        );
+    }
+
+    #[test]
+    fn patch_empty_title_clears_the_key() {
+        let out = apply_patch("---\ntitle: Old\nauthor: A\n---\nBody", &patch_title(""));
+        assert_eq!(out, "---\nauthor: A\n---\nBody");
+    }
+
+    #[test]
+    fn patch_none_fields_keep_existing_values() {
+        let md = "---\ntitle: T\nautoHeadingLevel: 3\n---\nBody";
+        let out = apply_patch(md, &Patch::default());
+        assert_eq!(out, "---\ntitle: T\nautoHeadingLevel: 3\n---\nBody");
+    }
+
+    #[test]
+    fn patch_features_writes_xor_minimal_encoding() {
+        // Custom minus definition lists → flavor: custom + one override.
+        let mut flags = Flavor::Custom.preset();
+        flags.set(Feature::DefinitionList, false);
+        let patch = Patch {
+            features: Some(flags),
+            ..Default::default()
+        };
+        let out = apply_patch("# Body", &patch);
+        assert_eq!(
+            out,
+            "---\nflavor: custom\next_definition_list: false\n---\n# Body"
+        );
+    }
+
+    #[test]
+    fn patch_features_exact_preset_has_no_overrides() {
+        let patch = Patch {
+            features: Some(Flavor::Github.preset()),
+            ..Default::default()
+        };
+        let out = apply_patch("Body", &patch);
+        assert_eq!(out, "---\nflavor: github\n---\nBody");
+    }
+
+    #[test]
+    fn patch_none_features_keeps_existing_flavor_and_overrides() {
+        let md = "---\nflavor: github\next_footnotes: true\n---\nBody";
+        let out = apply_patch(md, &patch_title("T"));
+        assert_eq!(
+            out,
+            "---\ntitle: T\nflavor: github\next_footnotes: true\n---\nBody"
+        );
+    }
+
+    #[test]
+    fn patch_preserves_unknown_ext_keys() {
+        let md = "---\next_future_thing: true\n---\nBody";
+        let out = apply_patch(md, &patch_title("T"));
+        assert_eq!(out, "---\ntitle: T\next_future_thing: true\n---\nBody");
+    }
+
+    #[test]
+    fn patch_round_trips_through_scan() {
+        let mut flags = Flavor::Github.preset();
+        flags.set(Feature::Math, true);
+        let patch = Patch {
+            title: Some("RT".into()),
+            auto_heading_level: Some(2),
+            features: Some(flags),
+            ..Default::default()
+        };
+        let out = apply_patch("Body", &patch);
+        let s = scan(&out).settings.expect("front matter");
+        assert_eq!(s.title.as_deref(), Some("RT"));
+        assert_eq!(s.auto_heading_level, Some(2));
+        assert_eq!(s.flavor, Some(Flavor::Github));
+        assert_eq!(s.ext_overrides, vec![(Feature::Math, true)]);
+        assert!(s.warnings.is_empty(), "{:?}", s.warnings);
+    }
+
+    #[test]
+    fn patch_quotes_values_that_contain_colon_space() {
+        let out = apply_patch("Body", &patch_title("Note: important"));
+        assert_eq!(out, "---\ntitle: \"Note: important\"\n---\nBody");
+        // …and it round-trips.
+        let s = scan(&out).settings.expect("front matter");
+        assert_eq!(s.title.as_deref(), Some("Note: important"));
+    }
+
+    #[test]
+    fn patch_everything_cleared_removes_the_block() {
+        let out = apply_patch("---\ntitle: Old\n---\nBody", &patch_title(""));
+        assert_eq!(out, "Body");
     }
 }

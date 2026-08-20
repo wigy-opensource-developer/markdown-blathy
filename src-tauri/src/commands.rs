@@ -341,6 +341,17 @@ pub fn open_external(url: String) -> Result<(), String> {
     open::that(&url).map_err(|e| format!("Failed to open browser: {e}"))
 }
 
+/// Update the document's front matter with a settings patch (§6.2) and
+/// return the full new Markdown. Rust owns the YAML editing: managed keys
+/// (`title`/`author`/`autoHeadingLevel`/`flavor`/`ext_*`) are rewritten in
+/// canonical form and any keys this app does not manage are preserved
+/// verbatim. Synchronous and CPU-trivial, so no `spawn_blocking`.
+#[tauri::command]
+#[instrument(skip(markdown))]
+pub fn update_front_matter(markdown: String, patch: crate::markdown::frontmatter::Patch) -> String {
+    crate::markdown::frontmatter::apply_patch(&markdown, &patch)
+}
+
 /// Validate a custom `.typ` template by compiling a probe document (§7.4, M5).
 ///
 /// A template is accepted only when the probe compiles — a file that cannot be

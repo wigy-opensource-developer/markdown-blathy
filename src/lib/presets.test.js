@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
   ALIGNS,
+  FEATURES,
+  FEATURE_PRESETS,
   FLAVORS,
   MARGIN_PRESETS,
   PAPERS,
@@ -11,6 +13,42 @@ import {
 describe("FLAVORS", () => {
   it("uses the snake_case values the Rust Flavor enum expects (§6.1)", () => {
     expect(FLAVORS.map((f) => f.value)).toEqual(["commonmark", "github", "custom"]);
+  });
+});
+
+describe("FEATURES / FEATURE_PRESETS", () => {
+  it("lists every toggleable extension with a FeatureFlags key", () => {
+    expect(FEATURES.map((f) => f.key)).toEqual([
+      "strikethrough",
+      "table",
+      "task_list",
+      "footnotes",
+      "math",
+      "highlight",
+      "superscript",
+      "subscript",
+      "definition_list",
+      "page_break",
+    ]);
+  });
+
+  it("presets cover exactly the feature keys", () => {
+    const keys = FEATURES.map((f) => f.key).sort();
+    for (const name of ["commonmark", "github", "custom"]) {
+      expect(Object.keys(FEATURE_PRESETS[name]).sort()).toEqual(keys);
+    }
+  });
+
+  it("matches the Rust flavor preset table (§6.1)", () => {
+    const cm = FEATURE_PRESETS.commonmark;
+    expect(Object.values(cm).every((v) => v === false)).toBe(true);
+
+    const gh = FEATURE_PRESETS.github;
+    expect(gh.strikethrough && gh.table && gh.task_list).toBe(true);
+    expect(gh.footnotes || gh.math || gh.highlight).toBe(false);
+
+    const custom = FEATURE_PRESETS.custom;
+    expect(Object.values(custom).every((v) => v === true)).toBe(true);
   });
 });
 
