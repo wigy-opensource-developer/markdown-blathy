@@ -4501,6 +4501,7 @@ dependencies = [
  "comemo",
  "comrak",
  "open",
+ "regex",
  "serde",
  "serde_json",
  "strsim",

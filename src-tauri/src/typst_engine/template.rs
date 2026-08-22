@@ -8,6 +8,8 @@
 //! source only changes when the template or the render options change, while
 //! the markdown body is passed per render via `render_inputs`.
 
+use std::fmt::Write;
+
 use crate::markdown::convert::{md_to_typst, DocMeta};
 use crate::options::RenderOptions;
 use crate::typst_engine::engine::FontOptions;
@@ -87,10 +89,27 @@ fn helper_scope() -> String {
 /// ASCII values.
 pub fn compose(template_source: &str, args: &TemplateArgs) -> String {
     let scope = helper_scope();
-    format!(
-        "{template_source}\n\n#article(\n  paper: {:?},\n  margin-x: {}mm,\n  margin-y: {}mm,\n  text-align: {:?},\n  title: sys.inputs.title,\n  author: sys.inputs.author,\n)[\n#eval(sys.inputs.body, mode: \"markup\", scope: ({scope}))\n]",
-        args.paper, args.margin_x_mm, args.margin_y_mm, args.text_align,
-    )
+    let mut out = String::new();
+    (|| -> std::fmt::Result {
+        writeln!(out, "{template_source}")?;
+        writeln!(out)?;
+        writeln!(out, "#article(")?;
+        writeln!(out, "  paper: {:?},", args.paper)?;
+        writeln!(out, "  margin-x: {}mm,", args.margin_x_mm)?;
+        writeln!(out, "  margin-y: {}mm,", args.margin_y_mm)?;
+        writeln!(out, "  text-align: {:?},", args.text_align)?;
+        writeln!(out, "  title: sys.inputs.title,")?;
+        writeln!(out, "  author: sys.inputs.author,")?;
+        writeln!(out, ")[")?;
+        writeln!(
+            out,
+            "#eval(sys.inputs.body, mode: \"markup\", scope: ({scope}))"
+        )?;
+        write!(out, "]")?;
+        Ok(())
+    })()
+    .expect("write to String does not fail");
+    out
 }
 
 /// The static part of the composed source for the given template + options
@@ -143,23 +162,36 @@ pub fn render_inputs(
 
 /// The font families a template references via `#set text(font: ...)` (§6.3).
 ///
-/// A plain scan for `font:` followed by quoted strings — catches `font: "X"`
+/// A regex scan for `font:` followed by quoted strings — catches `font: "X"`
 /// and `font: ("X", "Y")` (a `#let`-indirect font is not detected, and those
 /// templates keep the full system-font scan as a fallback). The command layer
 /// uses the result to load only these families into the engine's font book,
 /// which keeps per-render compiles fast (a 700-face book makes them ~5×
 /// slower).
 pub fn referenced_font_families(source: &str) -> Vec<String> {
+    // Parenthesized list: font: ("X", "Y")
+    static PAREN_RE: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+        regex::Regex::new(r#"font:\s*\(([^)]+)\)"#).expect("hardcoded regex is valid")
+    });
+    // Simple form: font: "X"
+    static SIMPLE_RE: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+        regex::Regex::new(r#"font:\s*"([^"]+)""#).expect("hardcoded regex is valid")
+    });
+
     let mut families: Vec<String> = Vec::new();
-    let mut rest = source;
-    while let Some(idx) = rest.find("font:") {
-        rest = &rest[idx + 5..];
-        let end = rest.find(['\n', ')']).unwrap_or(rest.len());
-        for part in rest[..end].split('"').skip(1).step_by(2) {
+    for cap in PAREN_RE.captures_iter(source) {
+        let content = &cap[1];
+        for part in content.split('"').skip(1).step_by(2) {
             let name = part.trim();
             if !name.is_empty() && !families.iter().any(|f| f.eq_ignore_ascii_case(name)) {
                 families.push(name.to_string());
             }
+        }
+    }
+    for cap in SIMPLE_RE.captures_iter(source) {
+        let name = cap[1].trim();
+        if !name.is_empty() && !families.iter().any(|f| f.eq_ignore_ascii_case(name)) {
+            families.push(name.to_string());
         }
     }
     families
@@ -182,7 +214,7 @@ pub fn resolve_template(options: &RenderOptions) -> Result<(String, FontOptions)
             let fonts = crate::typst_engine::engine::font_options_for_source(path, &user);
             Ok((source, fonts))
         }
-        None => Ok((DEFAULT_TEMPLATE.to_string(), FontOptions::default())),
+        None => Ok((DEFAULT_TEMPLATE.to_owned(), FontOptions::default())),
     }
 }
 
@@ -218,6 +250,21 @@ pub fn prepare_render(markdown: &str, options: &RenderOptions) -> Result<Prepare
     })
 }
 
+/// The probe document body that exercises every helper the converter emits
+/// (except `figure-image`, whose image file cannot exist during validation).
+const PROBE_BODY: &str = "\
+= Probe heading #label(\"probe-heading\")\n\
+#blockquote[Probe quote]\n\
+#task-list(task-done([Done]), task-todo([Todo]), task-plain([Plain]))\n\
+#thematic-break()\n\
+#inline-code(\"code\")\n\
+#code-block(\"rust\", \"fn main() {}\")\n\
+#markdown-table(columns: 2, header: ([a], [b]), rows: (([1], [2]),))\n\
+#ordered-list(1, [One], [Two])\n\
+#internal-link(\"probe-heading\")[Probe link]\n\
+#mark[Probe mark] #superscript[Probe sup] #subscript[Probe sub]\n\
+#definition-list(([Probe term], [Probe details]))";
+
 /// The probe document's `sys.inputs` (M6): a title/author pair plus a body
 /// that exercises every helper the converter emits (except `figure-image`,
 /// whose image file cannot exist during validation). Shared by
@@ -226,24 +273,7 @@ pub fn probe_inputs() -> Dict {
     let mut inputs = Dict::new();
     inputs.insert("title".into(), "Probe".into_value());
     inputs.insert("author".into(), "Probe Author".into_value());
-    inputs.insert(
-        "body".into(),
-        [
-            "= Probe heading #label(\"probe-heading\")",
-            "#blockquote[Probe quote]",
-            "#task-list(task-done([Done]), task-todo([Todo]), task-plain([Plain]))",
-            "#thematic-break()",
-            "#inline-code(\"code\")",
-            "#code-block(\"rust\", \"fn main() {}\")",
-            "#markdown-table(columns: 2, header: ([a], [b]), rows: (([1], [2]),))",
-            "#ordered-list(1, [One], [Two])",
-            "#internal-link(\"probe-heading\")[Probe link]",
-            "#mark[Probe mark] #superscript[Probe sup] #subscript[Probe sub]",
-            "#definition-list(([Probe term], [Probe details]))",
-        ]
-        .join("\n")
-        .into_value(),
-    );
+    inputs.insert("body".into(), PROBE_BODY.into_value());
     inputs
 }
 
@@ -313,11 +343,7 @@ mod tests {
         // (title/author/body) is read from sys.inputs (M6, §7.5). The scope
         // list comes from the same PRELUDE_HELPERS constant `compose` uses,
         // so adding a helper cannot drift the two apart.
-        let scope = super::PRELUDE_HELPERS
-            .iter()
-            .map(|name| format!("{name}: {name}"))
-            .collect::<Vec<_>>()
-            .join(", ");
+        let scope = super::helper_scope();
         let expected = format!(
             "{TMPL}\n\n#article(\n  paper: \"a4\",\n  margin-x: 20mm,\n  margin-y: 25mm,\n  text-align: \"left\",\n  title: sys.inputs.title,\n  author: sys.inputs.author,\n)[\n#eval(sys.inputs.body, mode: \"markup\", scope: ({scope}))\n]"
         );
@@ -442,6 +468,11 @@ mod tests {
         // Case-insensitive dedupe across multiple rules.
         assert_eq!(
             referenced_font_families("#set text(font: \"Ubuntu\")\n#set heading(font: \"ubuntu\")"),
+            vec!["Ubuntu".to_string()]
+        );
+        // Double-space after `font:` — the parser must tolerate extra whitespace.
+        assert_eq!(
+            referenced_font_families("#set text(font:  \"Ubuntu\")"),
             vec!["Ubuntu".to_string()]
         );
     }

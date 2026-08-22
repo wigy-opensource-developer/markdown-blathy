@@ -61,4 +61,9 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 # Required for svg_in_bundle link resolution (footnote/heading anchors).
 comemo = "0.5"
 
+# Font-family extraction from Typst templates (§6.3): regex scan for
+# `font:` rules. Already in the tree via typst, declared directly because
+# template.rs uses it at runtime.
+regex = "1"
+
 [dev-dependencies]
