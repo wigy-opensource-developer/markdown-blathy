@@ -83,7 +83,7 @@ describe("applyOptionsPatch", () => {
     // Mantine Select fires onChange(null) when the already-selected option is
     // clicked again; applying that blindly corrupts the IPC payload.
     const next = applyOptionsPatch(DEFAULT_SETTINGS.options, { flavor: null });
-    expect(next.flavor).toBe("github");
+    expect(next.flavor).toBe("custom");
   });
 
   it("keeps a null templatePath — clearing the custom template is legitimate (§8.4)", () => {
@@ -98,7 +98,7 @@ describe("applyOptionsPatch", () => {
       paper: "a5",
     });
     expect(next.paper).toBe("a5");
-    expect(next.flavor).toBe("github");
+    expect(next.flavor).toBe("custom");
     expect(next.textAlign).toBe("left");
     expect(next.margins).toEqual(DEFAULT_SETTINGS.options.margins);
   });

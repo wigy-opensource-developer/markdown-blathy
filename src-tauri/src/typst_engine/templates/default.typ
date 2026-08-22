@@ -30,6 +30,14 @@
 // proportional body font — breaking code indentation and word spacing.
 #show raw: set text(font: "DejaVu Sans Mono")
 
+// Math is pinned to the embedded math face: Typst resolves math glyphs only
+// from a MATH-table OpenType font, and none of the text faces provide one —
+// without this rule every formula fails with "no font could be found" when
+// the font book holds no other math font (the default book loads no system
+// fonts). A theme can restyle equations with its own `#show math.equation`
+// rule placed after this prelude.
+#show math.equation: set text(font: "DejaVu Math TeX Gyre")
+
 // --- Task lists --------------------------------------------------------------
 // Each item function returns a (checkbox cell, content cell) pair; the grid
 // needs those as flat alternating cells, so `task-list` concatenates the
@@ -66,6 +74,13 @@
 // --- Inline code (string argument avoids backtick-fence escaping) ------------
 #let inline-code(text) = raw(text)
 
+// --- Highlight / superscript / subscript (==mark==, ^sup^, ~sub~) ------------
+// Thin wrappers over the Typst built-ins so a custom template can restyle
+// them by redefining the helper (§6.3).
+#let mark(body) = highlight(body)
+#let superscript(body) = super(body)
+#let subscript(body) = sub(body)
+
 // --- Code blocks: light background, monospace, no highlighting in v1 ---------
 #let code-block(lang, source) = block(
   fill: rgb("#f5f5f5"),
@@ -87,6 +102,23 @@
     columns: widths,
     ..header.map(cell => [*#cell*]),
     ..cells.map(cell => [#cell]),
+  )
+}
+
+// --- Definition lists: (term, details) pairs in a two-column grid -----------
+// Typst has no native definition list, so each `(term, details)` tuple the
+// converter passes becomes a row: bold term on the left, details on the right.
+#let definition-list(..items) = {
+  let cells = ()
+  for item in items.pos() {
+    cells.push(strong(item.at(0)))
+    cells.push(item.at(1))
+  }
+  grid(
+    columns: (auto, 1fr),
+    column-gutter: 12pt,
+    row-gutter: 0.65em,
+    ..cells,
   )
 }
 

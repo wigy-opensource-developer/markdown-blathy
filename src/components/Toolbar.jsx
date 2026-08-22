@@ -10,14 +10,15 @@ import {
   IconTemplate,
   IconTemplateOff,
 } from "@tabler/icons-react";
-import { ALIGNS, FLAVORS, MARGIN_PRESETS, PAPERS } from "../lib/presets.js";
+import { ALIGNS, MARGIN_PRESETS, PAPERS } from "../lib/presets.js";
 import DocumentSettings from "./DocumentSettings.jsx";
 
-// The four toolbar option selects differ only in label, option table, width
-// and which options field they write; a config row + one component removes
-// the copy-pasted <Select> blocks.
+// The toolbar option selects differ only in label, option table, width and
+// which options field they write; a config row + one component removes the
+// copy-pasted <Select> blocks. Flavor is intentionally absent: it is a
+// per-document setting now (front matter, via the Document popover), with the
+// all-on Custom default from settings.
 const OPTION_SELECTS = [
-  { label: "Flavor", data: FLAVORS, width: 130, field: "flavor" },
   { label: "Paper", data: PAPERS, width: 110, field: "paper" },
   { label: "Margins", data: MARGIN_PRESETS, width: 190, field: "marginPreset" },
   { label: "Align", data: ALIGNS, width: 110, field: "textAlign" },

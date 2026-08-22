@@ -191,7 +191,7 @@ The probe body exercises all helpers except `figure-image` (its image file canno
 
 ### Font loading
 
-The engine is always given embedded DejaVu Sans (regular + bold). A custom template loads only the font families it references via `#set text(font: ...)` (`template::referenced_font_families` parses the source; `typst-kit-fonts` + `TypstKitFontOptions`), plus any font files in the template's own folder. The scan runs once per engine (re)build, not per keystroke render.
+The engine is always given embedded DejaVu Sans (regular + bold), DejaVu Sans Mono (code), and DejaVu Math TeX Gyre (math — Typst resolves math glyphs only from a MATH-table font, and the default prelude pins equations to it via `#show math.equation: set text(font: ...)`). A custom template loads only the font families it references via `#set text(font: ...)` (`template::referenced_font_families` parses the source; `typst-kit-fonts` + `TypstKitFontOptions`), plus any font files in the template's own folder. The scan runs once per engine (re)build, not per keystroke render.
 
 ## 6. Engine & compilation
 
@@ -283,7 +283,8 @@ src/
 ├── main.jsx          # font imports, MantineProvider, <App/>
 ├── App.jsx           # app state, debounce loop, seq guard, layout
 ├── components/
-│   ├── Toolbar.jsx   # file buttons, flavor/paper/margins/align selects, template, export
+│   ├── Toolbar.jsx   # file buttons, paper/margins/align selects, document settings, template, export
+│   ├── DocumentSettings.jsx # front-matter settings popover (title/author/heading level/extensions)
 │   ├── Editor.jsx    # CodeMirror 6 via @uiw/react-codemirror
 │   ├── Preview.jsx   # SVG pages from render_preview
 │   ├── StatusBar.jsx # page count / warnings / Ready
@@ -291,7 +292,7 @@ src/
 ├── lib/
 │   ├── api.js        # invoke() wrappers (one per command)
 │   ├── settings.js   # localStorage-backed settings + applyOptionsPatch
-│   └── presets.js    # FLAVORS, PAPERS, MARGIN_PRESETS, ALIGNS tables
+│   └── presets.js    # PAPERS, MARGIN_PRESETS, ALIGNS, FEATURES tables
 └── styles.css        # app-level layout only
 ```
 

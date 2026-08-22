@@ -2,13 +2,9 @@
 //
 // `value` fields are the wire values the Rust side deserializes — the serde
 // enums in `src-tauri/src/options.rs` use `rename_all = "snake_case"`, so the
-// select values must be exactly `commonmark`/`github`/`custom`, etc.
-
-export const FLAVORS = [
-  { value: "commonmark", label: "CommonMark" },
-  { value: "github", label: "GitHub" },
-  { value: "custom", label: "Custom" },
-];
+// select values must be exactly `a4`/`left`/etc. Flavor is not a toolbar
+// select (it is a per-document front-matter setting), so there is no table
+// for it here.
 
 export const PAPERS = [
   { value: "a4", label: "A4" },

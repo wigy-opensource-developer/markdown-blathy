@@ -1,8 +1,8 @@
 // The sample document shown on startup (§8.4 of SPEC.md).
 //
 // Deliberately frontmatter-free: the app derives the title "Sample" as the
-// fallback, and a leading `---` block would render as thematic breaks in the
-// GFM preview (comrak only parses frontmatter in the Custom flavor).
+// fallback. It renders with the default flavor (Custom — every extension on),
+// so it exercises the full syntax in one short document.
 export const SAMPLE_DOC = [
   "# Hello, Markdown editor",
   "",
@@ -12,8 +12,9 @@ export const SAMPLE_DOC = [
   "",
   "## Text styles",
   "",
-  "**Bold**, *italic*, `inline code` and ~~strikethrough~~ all work, as do",
-  "[links](https://example.com).",
+  "**Bold**, *italic*, `inline code`, ~~strikethrough~~, ==highlight==,",
+  "x^superscript^, H~2~O and math like $a^2 + b^2 = c^2$ all work, as do",
+  "[links](https://example.com) and [internal links](#lists).",
   "",
   "> Tip: add YAML front-matter at the very top of the document — e.g.",
   "> `title: My Doc` — and that title overrides the file name for the",
@@ -31,6 +32,10 @@ export const SAMPLE_DOC = [
   "- [x] completed task that has a long text body so it overflows to the next",
   "      line and therefore shows how to do this properly.",
   "- [ ] open task",
+  "",
+  "Term",
+  "",
+  ": A definition list pairs a term with its definition.",
   "",
   "## Code",
   "",
@@ -58,6 +63,6 @@ export const SAMPLE_DOC = [
   "",
   "*A soft break continues on the next line*",
   "",
-  "**Try the toolbar:** switch Flavor / Paper / Margins / Align, then Export",
-  "PDF — the file defaults to `Sample.pdf`.",
+  "**Try the toolbar:** switch Paper / Margins / Align, then Export PDF — the",
+  "file defaults to `Sample.pdf`.",
 ].join("\n");

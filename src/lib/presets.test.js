@@ -3,18 +3,11 @@ import {
   ALIGNS,
   FEATURES,
   FEATURE_PRESETS,
-  FLAVORS,
   MARGIN_PRESETS,
   PAPERS,
   marginsForPreset,
   renderOptionsPayload,
 } from "./presets.js";
-
-describe("FLAVORS", () => {
-  it("uses the snake_case values the Rust Flavor enum expects (§6.1)", () => {
-    expect(FLAVORS.map((f) => f.value)).toEqual(["commonmark", "github", "custom"]);
-  });
-});
 
 describe("FEATURES / FEATURE_PRESETS", () => {
   it("lists every toggleable extension with a FeatureFlags key", () => {

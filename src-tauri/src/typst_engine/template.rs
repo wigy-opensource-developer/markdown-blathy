@@ -54,8 +54,12 @@ pub const PRELUDE_HELPERS: &[&str] = &[
     "blockquote",
     "thematic-break",
     "inline-code",
+    "mark",
+    "superscript",
+    "subscript",
     "code-block",
     "markdown-table",
+    "definition-list",
     "ordered-list",
     "figure-image",
     "internal-link",
@@ -234,6 +238,8 @@ pub fn probe_inputs() -> Dict {
             "#markdown-table(columns: 2, header: ([a], [b]), rows: (([1], [2]),))",
             "#ordered-list(1, [One], [Two])",
             "#internal-link(\"probe-heading\")[Probe link]",
+            "#mark[Probe mark] #superscript[Probe sup] #subscript[Probe sub]",
+            "#definition-list(([Probe term], [Probe details]))",
         ]
         .join("\n")
         .into_value(),

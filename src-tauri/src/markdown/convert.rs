@@ -283,6 +283,32 @@ impl Renderer {
                     array_literal(&rows),
                 )
             }
+            // The prelude's `definition-list` lays out (term, details) pairs;
+            // Rust passes each item as a `(term, details)` content tuple (§6.2).
+            NodeValue::DescriptionList => {
+                let mut items: Vec<String> = Vec::new();
+                for item in node.children() {
+                    let mut term = None;
+                    let mut details = None;
+                    for child in item.children() {
+                        match &child.data().value {
+                            // comrak moves the term's paragraph in as a child,
+                            // so the term holds blocks, not bare inlines.
+                            NodeValue::DescriptionTerm => {
+                                term = Some(self.render_block_children(child));
+                            }
+                            NodeValue::DescriptionDetails => {
+                                details = Some(self.render_block_children(child));
+                            }
+                            _ => {}
+                        }
+                    }
+                    if let (Some(t), Some(d)) = (term, details) {
+                        items.push(format!("([{}], [{}])", t, d));
+                    }
+                }
+                format!("#definition-list({})", items.join(", "))
+            }
             _ => String::new(),
         }
     }
@@ -503,6 +529,11 @@ impl Renderer {
                         NodeValue::Strong => writer.push_str("*"),
                         NodeValue::Emph => writer.push_str("_"),
                         NodeValue::Strikethrough => writer.push_str("#strike["),
+                        // `==mark==`, `^sup^`, `~sub~` (Custom flavor, §4) —
+                        // the prelude helpers own the styling.
+                        NodeValue::Highlight => writer.push_str("#mark["),
+                        NodeValue::Superscript => writer.push_str("#superscript["),
+                        NodeValue::Subscript => writer.push_str("#subscript["),
                         NodeValue::Link(link) => {
                             // A `#fragment` URL targets a heading label (§6.2). The prelude's
                             // `internal-link` owns the guard: a missing label degrades to
@@ -565,7 +596,11 @@ impl Renderer {
                     match &n.data().value {
                         NodeValue::Strong => writer.push_str("*"),
                         NodeValue::Emph => writer.push_str("_"),
-                        NodeValue::Strikethrough | NodeValue::Link(_) => writer.push_str("]"),
+                        NodeValue::Strikethrough
+                        | NodeValue::Highlight
+                        | NodeValue::Superscript
+                        | NodeValue::Subscript
+                        | NodeValue::Link(_) => writer.push_str("]"),
                         NodeValue::Image(_) => writer.push_str("])"),
                         _ => {}
                     }
@@ -1206,6 +1241,63 @@ mod tests {
         // Without the extension the syntax is ordinary (escaped) text.
         let gfm = md_to_typst("text[^1] and $x^2$", Flavor::Github, &default_heading_ids());
         assert_eq!(gfm.body, "text\\[^1\\] and \\$x^2\\$");
+    }
+
+    #[test]
+    fn maps_highlight_superscript_subscript_in_custom_flavor_only() {
+        let highlight = md_to_typst("a ==marked== b", Flavor::Custom, &default_heading_ids());
+        assert_eq!(highlight.body, "a #mark[marked] b");
+
+        let superscript = md_to_typst("x^sup^", Flavor::Custom, &default_heading_ids());
+        assert_eq!(superscript.body, "x#superscript[sup]");
+
+        let subscript = md_to_typst("H~sub~O", Flavor::Custom, &default_heading_ids());
+        assert_eq!(subscript.body, "H#subscript[sub]O");
+
+        // Nesting composes with the other inline wrappers.
+        let nested = md_to_typst("**==both==**", Flavor::Custom, &default_heading_ids());
+        assert_eq!(nested.body, "*#mark[both]*");
+
+        // Without the extensions the markers stay literal text.
+        let github = md_to_typst("a ==marked== b", Flavor::Github, &default_heading_ids());
+        assert_eq!(github.body, "a ==marked== b");
+    }
+
+    #[test]
+    fn maps_definition_lists_in_custom_flavor_only() {
+        let single = md_to_typst(
+            "Term 1\n\n: Details 1",
+            Flavor::Custom,
+            &default_heading_ids(),
+        );
+        assert_eq!(single.body, "#definition-list(([Term 1], [Details 1]))");
+
+        let multi = md_to_typst(
+            "Term 1\n\n: Details 1\n\nTerm 2\n\n: Details 2",
+            Flavor::Custom,
+            &default_heading_ids(),
+        );
+        assert_eq!(
+            multi.body,
+            "#definition-list(([Term 1], [Details 1]), ([Term 2], [Details 2]))"
+        );
+    }
+
+    /// Regression guard: every Custom-flavor construct actually renders.
+    /// Before these render arms existed, comrak parsed the constructs but the
+    /// converter dropped them, so selecting Custom silently lost content.
+    #[test]
+    fn custom_flavor_renders_every_construct() {
+        let md = "==marked==\n\nx^sup^ and H~sub~O\n\nTerm\n\n: Details";
+        let doc = md_to_typst(md, Flavor::Custom, &default_heading_ids());
+        assert!(doc.body.contains("#mark[marked]"), "{}", doc.body);
+        assert!(doc.body.contains("#superscript[sup]"), "{}", doc.body);
+        assert!(doc.body.contains("#subscript[sub]"), "{}", doc.body);
+        assert!(
+            doc.body.contains("#definition-list(([Term], [Details]))"),
+            "{}",
+            doc.body
+        );
     }
 
     #[test]

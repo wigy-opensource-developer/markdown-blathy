@@ -26,9 +26,14 @@ use typst_layout::PagedDocument;
 /// face is required by `raw()`: the default template's font book loads no
 /// system fonts, so without an embedded monospace face code blocks would
 /// silently fall back to the proportional body font.
+///
+/// The math face is required by math mode: Typst resolves math glyphs only
+/// from a MATH-table OpenType font, which none of the text faces provide —
+/// without it every formula fails with "no font could be found".
 pub const FONT_BYTES: &[u8] = include_bytes!("../../fonts/DejaVuSans.ttf");
 pub const FONT_BOLD_BYTES: &[u8] = include_bytes!("../../fonts/DejaVuSans-Bold.ttf");
 pub const FONT_MONO_BYTES: &[u8] = include_bytes!("../../fonts/DejaVuSansMono.ttf");
+pub const FONT_MATH_BYTES: &[u8] = include_bytes!("../../fonts/DejaVuMathTeXGyre.ttf");
 
 /// Per-page SVG strings plus any compile warnings (never fatal).
 #[derive(Debug)]
@@ -129,7 +134,8 @@ fn load_families(families: &[String], extra_dirs: &[PathBuf]) -> Vec<Vec<u8>> {
 
 /// Build a Typst engine for the given static source (§6.4, M6).
 ///
-/// The embedded DejaVu Sans is always available. When the template references
+/// The embedded DejaVu faces (text, mono, math) are always available. When
+/// the template references
 /// specific font families (`FontOptions.families`), only those are loaded —
 /// a small font book keeps per-render compiles fast; otherwise `fonts` adds
 /// the full system scan and/or extra directories. Called by the command
@@ -143,6 +149,7 @@ pub fn build_engine(
         FONT_BYTES.to_vec(),
         FONT_BOLD_BYTES.to_vec(),
         FONT_MONO_BYTES.to_vec(),
+        FONT_MATH_BYTES.to_vec(),
     ];
     let mut search_system = false;
     if !fonts.families.is_empty() {
@@ -890,6 +897,8 @@ mod tests {
             "---",
             "# White on black",
             "",
+            "==Marked== text on a dark card.",
+            "",
             "> A block quote on a dark card.",
             "",
             "- [x] completed task",
@@ -984,6 +993,26 @@ mod tests {
         );
     }
 
+    /// The dark theme must restyle ==highlight==: the prelude's stock
+    /// `highlight` fill is a light yellow designed for white pages, which
+    /// would glare against a dark page and wash out light text. `dark.typ`
+    /// overrides `mark` with a dark derivative of its inline-code accent
+    /// (#ff7b72, channels scaled to one third), so the SVG must show that
+    /// themed fill.
+    #[test]
+    fn dark_theme_highlight_uses_a_dark_accent_fill() {
+        let theme_path = format!("{}/../examples/dark.typ", env!("CARGO_MANIFEST_DIR"));
+        let theme = std::fs::read_to_string(&theme_path).expect("examples/dark.typ must exist");
+        let template = format!("{DEFAULT_TEMPLATE}\n\n{theme}");
+        let outcome = compile_custom_theme(&template, "==marked== text");
+        let svg = &outcome.pages[0];
+        assert!(
+            svg.contains("fill=\"#552926\""),
+            "the themed highlight fill must be drawn: {:?}",
+            svg
+        );
+    }
+
     /// Regression: the prelude `markdown-table` must lay cells out in columns.
     /// `columns: auto` is a *single* auto column, which stacks every cell
     /// vertically; the converter passes the markdown column count and the
@@ -1043,6 +1072,36 @@ mod tests {
         .join("\n");
         let outcome = compile_markdown(&markdown, &gfm_options());
         assert!(!outcome.pages.is_empty(), "expected at least one page");
+    }
+
+    /// The Custom-flavor extended syntax (M7) compiles end-to-end: the
+    /// prelude helpers `mark`/`superscript`/`subscript`/`definition-list`
+    /// must be valid Typst AND reach the eval'd body's scope, and the content
+    /// must survive the round trip (before the converter had render arms for
+    /// these, comrak parsed them but the converter dropped them, so Custom
+    /// silently lost content). The math line guards the sample's formula:
+    /// math is passed through verbatim, so it must be valid Typst math (e.g.
+    /// `mc` with no space parses as one undefined identifier).
+    #[test]
+    fn custom_extended_syntax_compiles_through_full_pipeline() {
+        let markdown = [
+            "==marked==, x^sup^, H~sub~O and math like $a^2 + b^2 = c^2$.",
+            "",
+            "Term One",
+            "",
+            ": The details for term one.",
+            "",
+            "Term Two",
+            "",
+            ": The details for term two.",
+        ]
+        .join("\n");
+        let outcome = compile_markdown(&markdown, &custom_options());
+        assert!(!outcome.pages.is_empty(), "expected at least one page");
+        assert!(
+            outcome.pages[0].contains("<path"),
+            "expected rendered glyphs"
+        );
     }
 
     /// Heading IDs attach as real Typst labels (§6.2): the emitted

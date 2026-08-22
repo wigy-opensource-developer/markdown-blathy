@@ -9,7 +9,10 @@ const STORAGE_KEY = "tauri-md-editor.settings";
 /** The settings shape (§8.6): toolbar options plus the editor font size. */
 export const DEFAULT_SETTINGS = {
   options: {
-    flavor: "github",
+    // Custom = every extension on (§6.1). Flavor is no longer a toolbar
+    // control — a document overrides it via front matter (`flavor:` / `ext_*`,
+    // editable in the Document settings popover).
+    flavor: "custom",
     paper: "a4",
     marginPreset: "normal",
     margins: { topMm: 25, bottomMm: 25, leftMm: 20, rightMm: 20 },

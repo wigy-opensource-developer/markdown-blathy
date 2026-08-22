@@ -10,7 +10,7 @@
 //   article          — page fill (black) + light text + link/heading colors
 //   title-block      — front-matter title/author styling
 //   task-done/task-todo/task-plain — alternative task item bullets
-//   blockquote, thematic-break, inline-code, code-block, markdown-table
+//   blockquote, thematic-break, inline-code, code-block, markdown-table, mark
 
 // --- Page + text: white on black ---------------------------------------------
 // The `article` function is the only required seam. It receives the render
@@ -92,6 +92,13 @@
   radius: 4pt,
   raw(source, block: true, lang: if lang == "" { none } else { lang }),
 )
+
+// --- Highlight (==mark==): a dark derivative of the inline-code accent -------------
+// The prelude's stock `highlight` fill is a light yellow designed for white
+// pages — light text on it would be unreadable here. Scaling each channel of
+// the theme's warm accent (#ff7b72) to one third gives #552926, a deep brick
+// card that stays subtle on the near-black page while keeping the text light.
+#let mark(body) = highlight(fill: rgb("#552926"), body)
 
 // --- Tables: keep the prelude's auto columns + bold header, add dark lines --------
 #let markdown-table(columns: 1, header: (), rows: ()) = {

@@ -28,7 +28,7 @@ User-visible behaviour:
 
 1. Split-screen window: **Markdown editor** (left) and **live preview** (right).
 2. The preview updates automatically while typing (debounced), rendering pages with print margins, exactly as they will appear in the PDF.
-3. A toolbar offers: New / Open / Save Markdown files, flavor selection (CommonMark / GitHub / Custom), paper size, margins, text alignment, and **Export PDF** (system save dialog).
+3. A toolbar offers: New / Open / Save Markdown files, a **Document** settings popover (title, author, auto-heading level, and the Markdown extensions/flavor), paper size, margins, text alignment, and **Export PDF** (system save dialog). Flavor is a per-document setting (front matter), not a toolbar select; the default is Custom (every extension on).
 4. The default document style is provided by an embedded Typst template; users may supply their own `.typ` template.
 5. Compile warnings (e.g. unknown fonts) are surfaced in the UI, not swallowed.
 
@@ -123,7 +123,7 @@ See **IMPLEMENTATION.md** for acceptance criteria and test plans per milestone.
 
 - Raw HTML in Markdown is stripped to text, except the `<!-- pagebreak -->` marker (Custom flavor), which becomes a page break.
 - No syntax highlighting inside code blocks in the PDF.
-- Only the embedded DejaVu family by default (Sans regular + bold, Sans Mono for code); no CJK coverage out of the box. Custom templates can reference system fonts and ship font files next to the `.typ` file.
+- Only the embedded DejaVu family by default (Sans regular + bold, Sans Mono for code, Math TeX Gyre for math); no CJK coverage out of the box. Custom templates can reference system fonts and ship font files next to the `.typ` file.
 - **System-font naming is typst's, not fontconfig's** — typst strips styling suffixes from family names, so a font whose *name* carries the styling may be unreachable. Use the trimmed family name or a font without a styling suffix.
 - Remote images unsupported; images must be local files reachable through the world's file resolver.
 - No LaTeX math macros.
