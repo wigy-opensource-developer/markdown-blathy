@@ -115,7 +115,8 @@ with the fewest flips, plus only the differing flags.
 | **M4 — Files & export** | Open/Save/Export commands wired to toolbar | ✅ Done |
 | **M5 — Settings & polish** | localStorage settings, template override + validation | ✅ Done |
 | **M6 — Engine cache & fonts** | Reusable engine + system/template-side fonts | ✅ Done |
-| **M7 — Logging & extended syntax** | `tracing` + SVG internal links + heading IDs + new constructs | 🚧 In progress — tracing, links and heading IDs done; new constructs remain |
+| **M7 — Logging & extended syntax** | `tracing` + SVG internal links + heading IDs + new constructs | ✅ Done |
+| **M8 — Polish & ship** | Guard against pathological nesting, Tauri bundling, and release packaging | 🚧 Next |
 
 See **IMPLEMENTATION.md** for acceptance criteria and test plans per milestone.
 
@@ -133,7 +134,7 @@ See **IMPLEMENTATION.md** for acceptance criteria and test plans per milestone.
 - SVG preview text is not selectable (inline SVG).
 - **Emoji shortcodes** (`:smile:`) are not expanded — the author pastes actual emoji characters.
 - **Automatic URL linking** is not enabled — users write explicit bare links (`<https://example.com>`) when they want a link.
-- **Table of contents**: manual TOCs work via heading IDs (a list of `[Title](#slug)` links). An auto-marker `[[_TOC_]]` (GitLab convention) triggers auto-TOC in Custom flavor.
+- **Table of contents**: the `[[_TOC_]]` marker (GitLab convention) triggers an auto-generated table of contents in Custom flavor.
 - **Internal links in the SVG preview are inert on typst 0.15** — the paged introspector has no anchors, so footnote/heading/TOC links carry no `href` in the preview; they work in the exported PDF. The resolution machinery is in place and activates once typst grows paged anchors.
 - **Pathologically nested Markdown can crash the preview** — comrak caps list nesting (`MAX_LIST_DEPTH`) but not blockquote nesting, so AST depth is unbounded. The converter's footnote collection walks iteratively, but the block renderer recurses with the AST depth, so a contrived document (tens of KB of `> ` markers) can overflow the render thread's stack. The proper fix is a general AST depth limit upstream in comrak, alongside the existing list cap.
 

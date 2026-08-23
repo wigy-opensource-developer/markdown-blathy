@@ -7,6 +7,12 @@ dist/
 # Rust build output
 src-tauri/target/
 
+# AppImage output (repo root — distinct from src-tauri/target/)
+target/
+
+# Project-local tools (downloaded appimagetool, etc.)
+.local/
+
 # Tauri generated schemas
 src-tauri/gen/
 

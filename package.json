@@ -10,7 +10,9 @@
     "preview": "vite preview",
     "tauri": "tauri",
     "test": "vitest run",
-    "check:licenses": "node scripts/check-licenses.mjs"
+    "check:licenses": "node scripts/check-licenses.mjs",
+    "appimage": "python3 scripts/build-appimage.py",
+    "appimage:dry": "python3 scripts/build-appimage.py --dry-run --skip-download"
   },
   "dependencies": {
     "@codemirror/commands": "^6.10.4",
