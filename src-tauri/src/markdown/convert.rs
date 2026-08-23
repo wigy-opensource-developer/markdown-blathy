@@ -16,6 +16,19 @@ use crate::markdown::{
 };
 use crate::options::{FeatureFlags, Flavor, HeadingIds};
 
+/// A single entry in the table of contents: heading level, rendered text,
+/// and the slug that the heading's label resolves to.
+#[derive(Debug, Clone, Serialize)]
+pub struct TocItem {
+    /// 1–6, matching the Markdown heading level.
+    pub level: u8,
+    /// The heading's rendered inline text (escaped for Typst).
+    pub text: String,
+    /// The slug used in the `#label("…")` call (empty when the heading
+    /// carries no ID — the prelude helper skips such entries).
+    pub slug: String,
+}
+
 /// Typst body plus front-matter metadata (empty doc → body `[]`) and the
 /// effective document settings, so the frontend can display/edit them
 /// without parsing YAML itself (§6.2).
@@ -31,6 +44,8 @@ pub struct ConvertedDocument {
     pub features: FeatureFlags,
     /// The effective auto heading level (0 = disabled).
     pub auto_heading_level: u8,
+    /// Headings collected for the `[[_TOC_]]` marker (Custom flavor).
+    pub toc: Vec<TocItem>,
 }
 
 /// The effective document settings, serialized to the frontend so it can
@@ -45,6 +60,9 @@ pub struct DocMeta {
     pub flavor: Flavor,
     pub features: FeatureFlags,
     pub auto_heading_level: u8,
+    /// Headings collected for the `[[_TOC_]]` marker (Custom flavor).
+    #[serde(default)]
+    pub toc: Vec<TocItem>,
 }
 
 /// Convert Markdown to Typst markup.
@@ -84,9 +102,19 @@ pub fn md_to_typst(
         .map(|max_level| HeadingIds { max_level })
         .unwrap_or(*base_heading_ids);
 
+    // Pre-process: replace `[[_TOC_]]` (GitLab convention) with an HTML
+    // comment so comrak parses it as an HtmlBlock — gated on `page_toc`.
+    let source = if features.page_toc {
+        scan.source
+            .replace("[[_TOC_]]", "<!-- [[_TOC_]] -->")
+            .to_string()
+    } else {
+        scan.source.to_string()
+    };
+
     let arena = Arena::new();
     let opts = comrak_options(&features);
-    let root = parse_document(&arena, &scan.source, &opts);
+    let root = parse_document(&arena, &source, &opts);
 
     let mut renderer = Renderer::new(heading_ids, features.page_break);
     // Footnote definitions are rendered inline at their references —
@@ -94,6 +122,9 @@ pub fn md_to_typst(
     // the definition block itself must not emit anything (§6.2). Collect them
     // up front so references resolve anywhere in the document.
     renderer.collect_footnotes(root);
+    // Headings are collected up front so the `[[_TOC_]]` marker can emit a
+    // `#markdown-toc(...)` call with all the data (§6.2).
+    renderer.collect_headings(root);
 
     let mut blocks: Vec<String> = Vec::new();
     for child in root.children() {
@@ -117,6 +148,7 @@ pub fn md_to_typst(
         flavor,
         features,
         auto_heading_level: heading_ids.max_level,
+        toc: renderer.toc_items,
     }
 }
 
@@ -167,6 +199,8 @@ struct Renderer {
     /// Extension (§4): honor the pandoc-convention `<!-- pagebreak -->` HTML
     /// block as a page break.
     page_breaks: bool,
+    /// Headings collected for the `[[_TOC_]]` marker (Custom flavor).
+    toc_items: Vec<TocItem>,
 }
 
 impl Renderer {
@@ -177,6 +211,24 @@ impl Renderer {
             seen_ids: HashSet::new(),
             warnings: Vec::new(),
             page_breaks,
+            toc_items: Vec::new(),
+        }
+    }
+
+    /// Walk the tree collecting headings (`level`, rendered text, slug) so the
+    /// `[[_TOC_]]` marker can emit a `#markdown-toc(...)` call with all the
+    /// data (§6.2). Iterative to match `collect_footnotes`'s stack-safety.
+    fn collect_headings(&mut self, root: Node) {
+        for node in root.descendants() {
+            if let NodeValue::Heading(heading) = &node.data().value {
+                let level = heading.level;
+                let text = self.render_inlines(node);
+                // Compute the slug without side effects — just the ID string,
+                // no seen_ids mutation, no warnings. The block renderer will
+                // do the full processing (uniqueness, warnings, label suffix).
+                let slug = heading_slug(node, &self.heading_ids);
+                self.toc_items.push(TocItem { level, text, slug });
+            }
         }
     }
 
@@ -244,12 +296,34 @@ impl Renderer {
             // The prelude's `thematic-break` owns the spacing/stroke constants.
             NodeValue::ThematicBreak => "#thematic-break()".to_string(),
             // Lossy HTML: keep the literal as plain text, escaped. Never pass
-            // HTML through to Typst (§6.2) — except the pandoc-convention
-            // `<!-- pagebreak -->` marker, a whole-block page break in
-            // Custom flavor (§4).
+            // HTML through to Typst (§6.2) — except:
+            // - the pandoc-convention `<!-- pagebreak -->` marker, a
+            //   whole-block page break in Custom flavor (§4),
+            // - the GitLab-convention `[[_TOC_]]` marker, which becomes a
+            //   `#markdown-toc((...))` call with all collected headings
+            //   (Custom flavor only, §6.2).
             NodeValue::HtmlBlock(html) => {
                 if self.page_breaks && is_page_break_marker(&html.literal) {
                     "#pagebreak()".to_string()
+                } else if html.literal.trim() == "<!-- [[_TOC_]] -->" {
+                    // The prelude's `markdown-toc` owns the layout; Rust
+                    // passes the items as a list of `(level, text, slug)`
+                    // tuples — uses Typst tuple syntax `(...)` not content
+                    // brackets `[...]` so the template can iterate.
+                    let items: Vec<String> = self
+                        .toc_items
+                        .iter()
+                        .filter(|item| !item.slug.is_empty())
+                        .map(|item| {
+                            format!(
+                                "({}, [{}], \"{}\")",
+                                item.level,
+                                escape_text(&item.text),
+                                escape_typst_string(&item.slug)
+                            )
+                        })
+                        .collect();
+                    format!("#markdown-toc(({},))", items.join(", "))
                 } else {
                     escape_text(&html.literal)
                 }
@@ -699,6 +773,24 @@ fn heading_auto_slug(node: Node) -> String {
         slug.pop();
     }
     slug
+}
+
+/// Compute the heading's slug (manual ID or auto-slug) without side effects.
+/// Used by `collect_headings` to populate TOC items — the block renderer
+/// does the full uniqueness check and label suffix generation.
+fn heading_slug(node: Node, heading_ids: &HeadingIds) -> String {
+    let NodeValue::Heading(heading) = &node.data().value else {
+        return String::new();
+    };
+    // Manual `{#custom-id}` wins over the auto slug and bypasses the cap.
+    if let Some(manual) = node.data().attrs.as_ref().and_then(|a| a.id.clone()) {
+        return manual;
+    }
+    // Auto-slugs only for levels within the cap (0 = disabled).
+    if heading_ids.max_level == 0 || heading.level > heading_ids.max_level {
+        return String::new();
+    }
+    heading_auto_slug(node)
 }
 
 /// Fold one chunk of heading text into the growing slug: lowercase, keep
@@ -1460,5 +1552,59 @@ mod tests {
         let doc = md_to_typst(md, Flavor::Github, &default_heading_ids());
         assert_eq!(doc.flavor, Flavor::Commonmark);
         assert!(doc.body.contains("| a | b |"), "{}", doc.body);
+    }
+
+    /// `[[_TOC_]]` is collected as TocItems and emitted as a `#markdown-toc(...)` call.
+    #[test]
+    fn toc_collected_and_emitted() {
+        let doc = md_to_typst(
+            "---\nflavor: custom\n---\n\n# First\n\n## Second\n\n[[_TOC_]]",
+            Flavor::Custom,
+            &HeadingIds { max_level: 6 },
+        );
+        // Headings collected for TOC.
+        assert_eq!(doc.toc.len(), 2);
+        assert_eq!(doc.toc[0].level, 1);
+        assert_eq!(doc.toc[0].text, "First");
+        assert_eq!(doc.toc[0].slug, "first");
+        assert_eq!(doc.toc[1].level, 2);
+        assert_eq!(doc.toc[1].text, "Second");
+        assert_eq!(doc.toc[1].slug, "second");
+        // HtmlBlock `[[_TOC_]]` → #markdown-toc(...)
+        assert!(doc.body.contains("#markdown-toc(("));
+        assert!(doc.body.contains("1, [First], \"first\""));
+        assert!(doc.body.contains("2, [Second], \"second\""));
+    }
+
+    /// `[[_TOC_]]` with no headings emits an empty list.
+    #[test]
+    fn toc_empty_list_when_no_headings() {
+        let doc = md_to_typst(
+            "---\nflavor: custom\n---\n\nSome text.\n\n[[_TOC_]]",
+            Flavor::Custom,
+            &HeadingIds { max_level: 6 },
+        );
+        assert_eq!(doc.toc.len(), 0);
+        assert!(doc.body.contains("#markdown-toc(("));
+    }
+
+    /// Headings without IDs are excluded from TOC items when auto-slugs
+    /// are disabled (max_level: 0).
+    #[test]
+    fn toc_excludes_headings_without_ids_when_no_auto_slug() {
+        let doc = md_to_typst(
+            "---\nflavor: custom\n---\n\n# Has ID {#hid}\n\n## No ID\n\n[[_TOC_]]",
+            Flavor::Custom,
+            &HeadingIds { max_level: 0 },
+        );
+        assert_eq!(doc.toc.len(), 2);
+        // Only heading with explicit ID should be in the emitted TOC call.
+        assert!(doc.body.contains("1, [Has ID], \"hid\""));
+        // The TOC call should not contain "No ID" — it's excluded because
+        // it has no slug (empty slug filtered out).
+        let toc_call_start = doc.body.find("#markdown-toc(").unwrap();
+        let toc_call_end = doc.body[toc_call_start..].find(")").unwrap() + toc_call_start;
+        let toc_call = &doc.body[toc_call_start..=toc_call_end];
+        assert!(!toc_call.contains("No ID"), "TOC call: {toc_call}");
     }
 }

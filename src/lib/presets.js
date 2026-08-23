@@ -39,6 +39,7 @@ export const FEATURES = [
   { key: "subscript", label: "Subscript ~text~" },
   { key: "definition_list", label: "Definition lists" },
   { key: "page_break", label: "Page breaks" },
+  { key: "page_toc", label: "Table of Contents [[_TOC_]]" },
 ];
 
 const ALL_OFF = Object.fromEntries(FEATURES.map((f) => [f.key, false]));

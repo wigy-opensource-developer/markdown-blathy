@@ -22,6 +22,7 @@ describe("FEATURES / FEATURE_PRESETS", () => {
       "subscript",
       "definition_list",
       "page_break",
+      "page_toc",
     ]);
   });
 

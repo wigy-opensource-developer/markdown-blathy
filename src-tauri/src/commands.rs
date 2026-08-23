@@ -502,6 +502,7 @@ mod tests {
                 flavor: Flavor::Github,
                 features: FeatureFlags::default(),
                 auto_heading_level: 6,
+                toc: vec![],
             },
             seq: 3,
         };

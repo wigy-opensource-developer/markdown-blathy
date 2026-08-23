@@ -31,11 +31,12 @@ pub enum Feature {
     Subscript,
     DefinitionList,
     PageBreak,
+    Toc,
 }
 
 impl Feature {
     /// Every feature in stable order — the order `encode`/`decode` walk.
-    pub const ALL: [Feature; 10] = [
+    pub const ALL: [Feature; 11] = [
         Feature::Strikethrough,
         Feature::Table,
         Feature::TaskList,
@@ -46,6 +47,7 @@ impl Feature {
         Feature::Subscript,
         Feature::DefinitionList,
         Feature::PageBreak,
+        Feature::Toc,
     ];
 
     /// The front-matter key for this feature (`ext_…`).
@@ -61,6 +63,7 @@ impl Feature {
             Feature::Subscript => "ext_subscript",
             Feature::DefinitionList => "ext_definition_list",
             Feature::PageBreak => "ext_page_break",
+            Feature::Toc => "ext_page_toc",
         }
     }
 
@@ -87,6 +90,7 @@ pub struct FeatureFlags {
     pub subscript: bool,
     pub definition_list: bool,
     pub page_break: bool,
+    pub page_toc: bool,
 }
 
 impl Flavor {
@@ -112,6 +116,7 @@ impl Flavor {
                 subscript: true,
                 definition_list: true,
                 page_break: true,
+                page_toc: true,
             },
         }
     }
@@ -153,6 +158,7 @@ impl FeatureFlags {
             Feature::Subscript => self.subscript,
             Feature::DefinitionList => self.definition_list,
             Feature::PageBreak => self.page_break,
+            Feature::Toc => self.page_toc,
         }
     }
 
@@ -168,6 +174,7 @@ impl FeatureFlags {
             Feature::Subscript => &mut self.subscript,
             Feature::DefinitionList => &mut self.definition_list,
             Feature::PageBreak => &mut self.page_break,
+            Feature::Toc => &mut self.page_toc,
         };
         *slot = on;
     }

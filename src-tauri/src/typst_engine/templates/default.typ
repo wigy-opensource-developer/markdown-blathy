@@ -207,9 +207,44 @@
       )
     )
   } else { it }
+  show block.where(inset: 10pt, radius: 6pt): it => if text-align == "center" { center-block(it) } else { it }
   if title != none { title-block(title, author) }
   body
 }
 
 // Public name; user templates may redefine it to replace the whole look.
+
+// --- Table of contents: `[[_TOC_]]` → #markdown-toc(...) -------------------
+// The converter collects headings as `(level, text, slug)` tuples and passes
+// them as a list argument. This helper renders indented links — no
+// auto-numbering (the heading text carries whatever the author wrote).
+// Template authors can override the function to produce a completely
+// different layout (sidebar, horizontal, numbered, …).
+#let markdown-toc(items) = {
+  let depth = 3
+  let filtered = ()
+  for item in items {
+    if item.at(0) <= depth and item.at(2).len() > 0 {
+      filtered = filtered + (item,)
+    }
+  }
+  let toc-content = ""
+  for item in filtered {
+    let level = item.at(0)
+    let text = item.at(1)
+    let slug = item.at(2)
+    let indent = ""
+    for j in range(level - 1) {
+      indent = indent + "  " 
+    }
+    toc-content = toc-content + [#(indent)#link(label(slug), text) #linebreak()]
+  }
+  if filtered.len() > 0 {
+    block(
+      inset: 10pt,
+      radius: 6pt,
+      toc-content
+    )
+  }
+}
 #let article = default-article

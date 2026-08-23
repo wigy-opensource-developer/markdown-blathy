@@ -65,6 +65,7 @@ pub const PRELUDE_HELPERS: &[&str] = &[
     "ordered-list",
     "figure-image",
     "internal-link",
+    "markdown-toc",
 ];
 
 /// The `scope: (name: name, …)` list for the eval call: each helper resolves
@@ -151,6 +152,7 @@ pub fn render_inputs(
         flavor: converted.flavor,
         features: converted.features,
         auto_heading_level: converted.auto_heading_level,
+        toc: converted.toc,
     };
     let warnings = converted.warnings;
     let mut inputs = Dict::new();
@@ -263,7 +265,8 @@ const PROBE_BODY: &str = "\
 #ordered-list(1, [One], [Two])\n\
 #internal-link(\"probe-heading\")[Probe link]\n\
 #mark[Probe mark] #superscript[Probe sup] #subscript[Probe sub]\n\
-#definition-list(([Probe term], [Probe details]))";
+#definition-list(([Probe term], [Probe details]))\n\
+#markdown-toc(((1, [Heading], \"probe-heading\"),))";
 
 /// The probe document's `sys.inputs` (M6): a title/author pair plus a body
 /// that exercises every helper the converter emits (except `figure-image`,

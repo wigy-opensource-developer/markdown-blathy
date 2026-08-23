@@ -37,6 +37,8 @@
   show heading: set text(weight: 600, fill: rgb("#ffffff"))
   if text-align == "center" { set align(center) }
   else if text-align == "justified" { set par(justify: true) }
+  // Center TOC block as a unit when text-align is center.
+  show block.where(inset: 10pt, radius: 6pt): it => if text-align == "center" { align(center, block(width: auto, it)) } else { it }
   if title != none { title-block(title, author) }
   body
 }

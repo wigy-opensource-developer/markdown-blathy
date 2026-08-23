@@ -1074,6 +1074,36 @@ mod tests {
         assert!(!outcome.pages.is_empty(), "expected at least one page");
     }
 
+    /// ``[[_TOC_]]` marker compiles end-to-end through the full pipeline
+    /// (Custom flavor, §6.2). The prelude helper `markdown-toc` must accept
+    /// the converter's emitted list and render a numbered block without
+    /// compile errors.
+    #[test]
+    fn toc_compiles_through_full_pipeline() {
+        let markdown = [
+            "---",
+            "flavor: custom",
+            "---",
+            "",
+            "# Introduction",
+            "",
+            "Some content.",
+            "",
+            "## Getting started",
+            "",
+            "More content.",
+            "",
+            "### Details",
+            "",
+            "And more.",
+            "",
+            "[[_TOC_]]",
+        ]
+        .join("\n");
+        let outcome = compile_markdown(&markdown, &custom_options());
+        assert!(!outcome.pages.is_empty(), "expected at least one page");
+    }
+
     /// The Custom-flavor extended syntax (M7) compiles end-to-end: the
     /// prelude helpers `mark`/`superscript`/`subscript`/`definition-list`
     /// must be valid Typst AND reach the eval'd body's scope, and the content
