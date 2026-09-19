@@ -1032,6 +1032,29 @@ mod tests {
         assert_eq!(svg, &two_cols, "cells must lay out in two auto columns");
     }
 
+    /// Regression: literal Typst markup characters in ordinary prose must
+    /// not break the compile. A reported document failed with
+    /// "unclosed label" on `(<5–15%)`; an email (`@` reference), a stray
+    /// backtick (raw mode), a literal tilde (non-breaking space) and a
+    /// line-start `/` (term list) are the same class of failure.
+    #[test]
+    fn literal_typst_markup_characters_compile_through_full_pipeline() {
+        let markdown = [
+            "De igen korlátozott hatásfokkal (<5–15%), ezért ajánlott.",
+            "",
+            "Contact user@example.com for details.",
+            "",
+            "It`s fine and about ~5 percent.",
+            "",
+            "/ not a term list",
+            "",
+            "a > b",
+        ]
+        .join("\n");
+        let outcome = compile_markdown(&markdown, &gfm_options());
+        assert!(!outcome.pages.is_empty(), "expected at least one page");
+    }
+
     /// Mirrors the feature set of the startup sample (`lib/sample.js`) so the
     /// class of documents it represents stays compile-green: headings, text
     /// styles, links, blockquote, nested lists, task lists, code, GFM table,

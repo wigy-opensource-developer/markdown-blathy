@@ -7,6 +7,7 @@
 | Test | Type | Priority |
 |---|---|---|
 | escapes hash/brackets/asterisks/underscores/dollar/backslash in text | unit | high |
+| escapes Typst label delimiters (`<`/`>`), references (`@`), raw marker (`` ` ``) and non-breaking space (`~`); escapes `/` at line start (term list) | unit | high |
 | maps heading levels to `=`, `==`, `===`, … | unit | high |
 | maps bold/italic/strikethrough | unit | high |
 | maps inline code and code blocks (with language, without language, containing backticks) | unit | high |
@@ -40,6 +41,7 @@
 | Test | Type | Priority |
 |---|---|---|
 | compile_preview returns at least one SVG containing `<svg` | integration | high |
+| literal Typst markup characters in prose — `(<5–15%)`, an email address, a stray backtick, `~5`, a line-start `/` — compile through the full pipeline (regression for "unclosed label") | integration | high |
 | compile_pdf bytes start with `%PDF` and are non-empty | integration | high |
 | compile error path yields diagnostics, not a panic | integration | high |
 | custom template with a broken override fails the probe compile | integration | high |

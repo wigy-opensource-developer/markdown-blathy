@@ -1243,15 +1243,17 @@ mod tests {
             Flavor::Github,
             &default_heading_ids(),
         );
-        assert_eq!(block.body, "<div>\n<p>\\*hi\\*</p>\n</div>");
+        assert_eq!(block.body, "\\<div\\>\n\\<p\\>\\*hi\\*\\</p\\>\n\\</div\\>");
 
-        // Inline HTML tags pass through; the surrounding markdown is parsed.
+        // Inline HTML tags pass through as literal text; the surrounding
+        // markdown is parsed. The `<`/`>` are escaped so Typst renders the
+        // tags instead of parsing them as (invisible) labels.
         let inline = md_to_typst(
             "a <span>*x*</span> b",
             Flavor::Github,
             &default_heading_ids(),
         );
-        assert_eq!(inline.body, "a <span>_x_</span> b");
+        assert_eq!(inline.body, "a \\<span\\>_x_\\</span\\> b");
     }
 
     /// The pandoc-convention `<!-- pagebreak -->` comment forces a page

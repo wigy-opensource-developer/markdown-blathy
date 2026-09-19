@@ -103,16 +103,25 @@ pub struct PreviewOutcome { pub pages: Vec<String>, pub warnings: Vec<String>, p
 
 ### Escaping rules
 
-| Source char | Typst output |
-|---|---|
-| `#` | `\#` |
-| `[` | `\[` |
-| `]` | `\]` |
-| `*` | `\*` |
-| `_` | `\_` |
-| `$` | `\$` |
-| `\` | `\\` |
-| `"` | leave as-is (template disables smart quotes) |
+Every character below is escaped in `Text`, `HtmlInline` and `HtmlBlock`
+content so it renders literally instead of being parsed as Typst markup.
+
+| Source char | Typst output | Why |
+|---|---|---|
+| `#` | `\#` | code |
+| `[` | `\[` | content block |
+| `]` | `\]` | content block |
+| `*` | `\*` | strong |
+| `_` | `\_` | emphasis |
+| `$` | `\$` | math |
+| `\` | `\\` | escape |
+| `<` | `\<` | label start (unclosed → "unclosed label") |
+| `>` | `\>` | label end |
+| `@` | `\@` | reference (emails → "label does not exist") |
+| `` ` `` | `` \` `` | raw start (unpaired → "unclosed raw text") |
+| `~` | `\~` | non-breaking space |
+| `=` `-` `+` `/` | `\=`, `\-`, `\+`, `\/` | block markers — escaped at line start only (heading / list / term list) |
+| `"` | leave as-is (template disables smart quotes) | typographic quotes |
 
 ### Slug algorithm
 
