@@ -41,7 +41,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 ### Frontend (`package.json`)
 
-React 19 + Mantine 8, bundled by Vite. `@codemirror/lang-markdown` added explicitly (transitive via `@uiw/react-codemirror`). Fonts via `@fontsource` (self-hosted, no external requests).
+React 19 + Mantine 8, bundled by Vite. `@codemirror/lang-markdown` added explicitly (transitive via `@uiw/react-codemirror`). Fonts via `@fontsource` (self-hosted, no external requests). Fontsource's WOFF-1.0 fallbacks are stripped by the `woff2Only()` Vite plugin (`scripts/woff2-only.mjs`): every Tauri 2 webview (WebView2, WKWebView, WebKitGTK 2.38+) supports WOFF2, so the fallbacks are ~4 MB of never-fetched bundle; `scripts/check-bundle.mjs` (run by `check.sh`) fails the build if they reappear.
 
 ## 3. API contracts
 
@@ -76,7 +76,7 @@ pub struct PreviewOutcome { pub pages: Vec<String>, pub warnings: Vec<String>, p
 | Markdown node | Typst output |
 |---|---|
 | `Heading` | `"="` × level + space + inline + `#label("slug")` (see slug algorithm) |
-| `Text` | escaped text (see table below) |
+| `Text` | escaped text (see table below); tokens of 24+ chars → `#break-long("…")` (zero-width break opportunities, so Typst can wrap formulas/hashes instead of crossing the margin) |
 | `Strong` | `*…*` |
 | `Emph` | `_…_` |
 | `Strikethrough` | `#strike[…]` |
@@ -96,7 +96,7 @@ pub struct PreviewOutcome { pub pages: Vec<String>, pub warnings: Vec<String>, p
 | `FootnoteReference` | inlined at call site as `#footnote[<definition>]` |
 | `FootnoteDefinition` | dropped (collected for matching) |
 | `Math` | passthrough: inline `$…$`, block `$ … $` |
-| `FrontMatter` | parsed (every flavor) → document settings (`title`/`author`/`autoHeadingLevel`/`flavor`/`ext_*`) in `ConvertedDocument`; nothing in body |
+| `FrontMatter` | parsed (every flavor) → document settings (`title`/`author`/`autoHeadingLevel`/`flavor`/`lang`/`hyphenate`/`ext_*`) in `ConvertedDocument`; `lang`/`hyphenate` also emit a leading `#set text(…)`, nothing else in body |
 | `HtmlInline` / `HtmlBlock` | **lossy**: raw literal as plain text, escaped |
 | `HtmlBlock` that is exactly `<!-- pagebreak -->` (Custom) | `#pagebreak()` — pandoc's page-break convention |
 | `DescriptionList` | `#definition-list((term, [def]), …)` |
@@ -290,17 +290,19 @@ Compiles with `sys.inputs`, calls `typst_pdf::pdf(&doc, &Default::default())`.
 ```
 src/
 ├── main.jsx          # font imports, MantineProvider, <App/>
-├── App.jsx           # app state, debounce loop, seq guard, layout
+├── App.jsx           # app state, debounce loop, seq guard, preview freeze, layout
 ├── components/
 │   ├── Toolbar.jsx   # file buttons, paper/margins/align selects, document settings, template, export
-│   ├── DocumentSettings.jsx # front-matter settings popover (title/author/heading level/extensions)
+│   ├── DocumentSettings.jsx # front-matter settings popover (title/author/heading level/language/hyphenation/extensions); modal, uncontrolled draft read on Apply
 │   ├── Editor.jsx    # CodeMirror 6 via @uiw/react-codemirror
 │   ├── Preview.jsx   # SVG pages from render_preview
-│   ├── StatusBar.jsx # page count / warnings / Ready
+│   ├── StatusBar.jsx # page count / warnings / Ready (inert while settings are open)
 │   └── ErrorBanner.jsx
 ├── lib/
 │   ├── api.js        # invoke() wrappers (one per command)
 │   ├── settings.js   # localStorage-backed settings + applyOptionsPatch
+│   ├── docSettings.js # Document popover form → front-matter patch (tri-state hyphenate)
+│   ├── previewFreeze.js # modal-preview freeze: pause/owe + stash + one catch-up render on close
 │   └── presets.js    # PAPERS, MARGIN_PRESETS, ALIGNS, FEATURES tables
 └── styles.css        # app-level layout only
 ```

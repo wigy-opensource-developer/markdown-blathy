@@ -28,7 +28,7 @@ User-visible behaviour:
 
 1. Split-screen window: **Markdown editor** (left) and **live preview** (right).
 2. The preview updates automatically while typing (debounced), rendering pages with print margins, exactly as they will appear in the PDF.
-3. A toolbar offers: New / Open / Save Markdown files, a **Document** settings popover (title, author, auto-heading level, and the Markdown extensions/flavor), paper size, margins, text alignment, and **Export PDF** (system save dialog). Flavor is a per-document setting (front matter), not a toolbar select; the default is Custom (every extension on).
+3. A toolbar offers: New / Open / Save Markdown files, a **Document** settings popover (title, author, auto-heading level, language/hyphenation, and the Markdown extensions/flavor), paper size, margins, text alignment, and **Export PDF** (system save dialog). Flavor is a per-document setting (front matter), not a toolbar select; the default is Custom (every extension on).
 4. The default document style is provided by an embedded Typst template; users may supply their own `.typ` template.
 5. Compile warnings (e.g. unknown fonts) are surfaced in the UI, not swallowed.
 
@@ -97,12 +97,47 @@ crate); unknown keys warn with a "did you mean …?" suggestion. When the
 block is not valid front matter (e.g. a thematic break mistaken for one), the
 leading `---` is ignored with a warning and the content still renders.
 
+**Language and hyphenation.** `lang: <ISO 639>` (two or three ASCII letters,
+e.g. `hu`) sets the Typst text language for the whole document, which selects
+the hyphenation patterns — without it Typst's default is English, so non-English
+documents get English break points. `hyphenate: true|false` overrides
+hyphenation explicitly (`auto`, the default, hyphenates only justified text).
+Both become a `#set text(…)` rule at the top of the converted body. Invalid
+values warn and are dropped before Typst sees them. The Document settings
+popover edits both (language field + auto/on/off segmented control); clearing
+writes no key. There is no automatic language detection — English and auto
+hyphenation remain the defaults.
+
+**The Document popover is modal.** While it is open the editor, preview and
+status bar are blurred, `inert` and frozen: a render scheduled by earlier
+editor keystrokes is cancelled on open, a render that finishes meanwhile is
+stashed, and the owed/stashed render is shown in a single catch-up pass on
+close (`lib/previewFreeze.js`, `.settings-open` in `styles.css`).
+
+**The settings draft is uncontrolled.** The form reads its values from the
+DOM on Apply (diffed against the mount-time snapshot), and the segmented
+control, checkboxes and presets never call `setState` either. This is a
+performance requirement, not a style: any React commit while the popover is
+open makes WebKitGTK run a full-document pass over the rendered preview —
+measured at ~800 ms per keystroke against a 32-page preview, versus ~40 ms
+with the draft uncontrolled. A preview render itself is far too slow to run
+under the user's hands, so it stays frozen until close.
+
 **Extension overrides.** On top of the `flavor:` preset, each extension can be
 toggled with an `ext_<name>: true|false` key (e.g. `ext_footnotes: true`).
 When the app writes front matter it uses the XOR-minimal encoding: the preset
 with the fewest flips, plus only the differing flags.
 
 **Explicit bare links** (`<https://example.com>`) are supported in **all flavors** — this is standard CommonMark, not an extension. The `autolink` extension (automatic bare-URL linking) is **off in every flavor**.
+
+**Long unbreakable tokens wrap.** Typst's line breaker follows Unicode
+UAX #14, so a long run with no break opportunity (a chemical formula, a hash)
+would cross the margin — most visibly in a table cell. The converter hands
+tokens of 24+ characters to the prelude's `break-long`, which inserts
+zero-width `box` break opportunities: the token wraps where it must, the boxes
+are invisible, and they stay out of the PDF text layer (search and copy are
+unaffected). A template may override `break-long` (e.g. `#let break-long(s) = s`)
+to turn this off.
 
 ## 5. Milestones
 
@@ -119,6 +154,17 @@ with the fewest flips, plus only the differing flags.
 | **M8 — Polish & ship** | Guard against pathological nesting, Tauri bundling, and release packaging | 🚧 Next |
 
 See **IMPLEMENTATION.md** for acceptance criteria and test plans per milestone.
+
+### Deferred issues
+
+Follow-ups found in manual use, to schedule after M8:
+
+- **Taskbar icon flips to a gear and stays there** — opening the Document
+  popover or any Open/Save/Export dialog changes the window/taskbar icon from
+  the blue MD icon to a gear icon, and closing the dialog leaves the gear in
+  place. Almost certainly a GTK/WebKitGTK window-icon side effect when an
+  auxiliary window/portal is mapped; needs a window-level fix (e.g.
+  re-asserting the app icon on focus/close). Cosmetic, no functional impact.
 
 ## 6. Limitations
 

@@ -343,9 +343,9 @@ pub fn open_external(url: String) -> Result<(), String> {
 
 /// Update the document's front matter with a settings patch (§6.2) and
 /// return the full new Markdown. Rust owns the YAML editing: managed keys
-/// (`title`/`author`/`autoHeadingLevel`/`flavor`/`ext_*`) are rewritten in
-/// canonical form and any keys this app does not manage are preserved
-/// verbatim. Synchronous and CPU-trivial, so no `spawn_blocking`.
+/// (`title`/`author`/`autoHeadingLevel`/`lang`/`hyphenate`/`flavor`/`ext_*`)
+/// are rewritten in canonical form and any keys this app does not manage are
+/// preserved verbatim. Synchronous and CPU-trivial, so no `spawn_blocking`.
 #[tauri::command]
 #[instrument(skip(markdown))]
 pub fn update_front_matter(markdown: String, patch: crate::markdown::frontmatter::Patch) -> String {
@@ -499,6 +499,8 @@ mod tests {
             doc: DocMeta {
                 title: Some("My Doc".into()),
                 author: None,
+                lang: Some("hu".into()),
+                hyphenate: Some(false),
                 flavor: Flavor::Github,
                 features: FeatureFlags::default(),
                 auto_heading_level: 6,
@@ -514,6 +516,9 @@ mod tests {
         assert!(json.contains("\"title\":\"My Doc\""), "{json}");
         assert!(json.contains("\"flavor\":\"github\""), "{json}");
         assert!(json.contains("\"autoHeadingLevel\":6"), "{json}");
+        // The Document settings widget reads these back (§6.2).
+        assert!(json.contains("\"lang\":\"hu\""), "{json}");
+        assert!(json.contains("\"hyphenate\":false"), "{json}");
     }
 
     /// Success outcome must not carry a `canceled` flag — the frontend reads

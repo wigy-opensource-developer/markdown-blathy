@@ -417,6 +417,21 @@ mod tests {
         compile_preview_with_inputs(&engine, &inputs).expect("must compile")
     }
 
+    /// The rightmost `<use>` run offset in a page SVG, ignoring the enclosing
+    /// transforms. Not a page coordinate: only for comparing two documents
+    /// that share the same page/group structure (e.g. with and without a
+    /// wrapping helper), where a smaller offset means a narrower line.
+    fn max_run_x(svg: &str) -> f64 {
+        svg.split("<use")
+            .skip(1)
+            .filter_map(|frag| {
+                let start = frag.find("x=\"")? + 3;
+                let rest = &frag[start..];
+                rest[..rest.find('"')?].parse::<f64>().ok()
+            })
+            .fold(0.0f64, f64::max)
+    }
+
     /// The leftmost glyph x (absolute) in a page SVG. For a left-aligned list
     /// this is the left margin; for a centered, shrink-wrapped list it sits
     /// well inside the page. Walks the `<g transform="…">` nesting so a glyph
@@ -628,6 +643,80 @@ mod tests {
         assert!(
             glyph_runs >= 4,
             "table cells must render text runs: {glyph_runs}"
+        );
+    }
+
+    /// Front-matter `lang:`/`hyphenate:` must actually reach Typst through
+    /// the eval'd body: with justified text, `lang: hu` hyphenates and
+    /// `hyphenate: false` suppresses it, so the two layouts must differ.
+    /// Without the settings the bodies would lay out identically — this is
+    /// the end-to-end acceptance test for the feature.
+    #[test]
+    fn front_matter_hyphenation_settings_change_the_layout() {
+        let words = "megkülönböztetés ".repeat(40);
+        let options = RenderOptions {
+            text_align: TextAlign::Justified,
+            ..gfm_options()
+        };
+        let hyphenated = compile_markdown(&format!("---\nlang: hu\n---\n\n{words}"), &options);
+        let off = compile_markdown(
+            &format!("---\nlang: hu\nhyphenate: false\n---\n\n{words}"),
+            &options,
+        );
+        assert!(
+            !hyphenated.pages.is_empty() && !off.pages.is_empty(),
+            "both variants must compile"
+        );
+        assert_ne!(
+            hyphenated.pages[0], off.pages[0],
+            "hyphenate: false must change the justified layout"
+        );
+    }
+
+    /// An empty document with text settings still compiles: the preamble is
+    /// followed by the empty-content `[]` marker the converter emits.
+    #[test]
+    fn empty_document_with_front_matter_text_settings_compiles() {
+        let outcome = compile_markdown("---\nlang: hu\nhyphenate: false\n---\n", &gfm_options());
+        assert!(!outcome.pages.is_empty(), "empty doc must still render");
+    }
+
+    /// A long unbreakable token in a table cell must not cross the right
+    /// margin: the converter wraps it in the prelude's `break-long`, whose
+    /// zero-width boxes give Typst break opportunities *and* shrink the auto
+    /// column to fit. The control — `break-long` overridden to return the text
+    /// unchanged — must overflow, proving the test measures the helper.
+    #[test]
+    fn long_formula_wraps_inside_the_table() {
+        let markdown = "| Leírásmód | Érték |\n|---|---|\n\
+            | Kondenzált képlet | CH₃CH₂CH=CHCH₂CH=CHCH₂CH=CHCH₂CH=CHCH₂CH=CH(CH₂)₃COOH [Fatty acid] |";
+        let wrapped = compile_markdown(markdown, &custom_options());
+        let unwrapped = compile_custom_theme(
+            &format!("{DEFAULT_TEMPLATE}\n\n#let break-long(s) = s"),
+            markdown,
+        );
+        let wrapped_x = max_run_x(&wrapped.pages[0]);
+        let unwrapped_x = max_run_x(&unwrapped.pages[0]);
+
+        // The formula wraps (both rows on one line in the control), so the
+        // wrapped render reaches far less to the right. Absolute positions are
+        // not asserted — the SVG transform walker's offsets are not page
+        // coordinates; the two documents share them, so the comparison is.
+        assert!(
+            wrapped_x < unwrapped_x - 50.0,
+            "break-long must wrap the formula and pull the table in: \
+             {wrapped_x:.1}pt vs {unwrapped_x:.1}pt"
+        );
+    }
+
+    /// An invalid `lang` is dropped by the front-matter parser with a
+    /// warning, so it can never reach Typst as a compile error.
+    #[test]
+    fn invalid_front_matter_lang_is_dropped_and_still_compiles() {
+        let outcome = compile_markdown("---\nlang: hungarian\n---\n\nHello", &gfm_options());
+        assert!(
+            !outcome.pages.is_empty(),
+            "invalid lang must not fail the render"
         );
     }
 
@@ -1240,22 +1329,9 @@ mod tests {
     /// and word spacing broke (commit 177c8c8 introduced the exclusion).
     #[test]
     fn code_blocks_render_in_a_monospace_font() {
-        /// Rightmost glyph placement on the page — the width of the only
-        /// text line (each document is a single code block).
-        fn max_glyph_x(svg: &str) -> f64 {
-            svg.split("<use")
-                .skip(1)
-                .filter_map(|frag| {
-                    let start = frag.find("x=\"")? + 3;
-                    let rest = &frag[start..];
-                    rest[..rest.find('"')?].parse::<f64>().ok()
-                })
-                .fold(0.0f64, f64::max)
-        }
-
         let narrow = compile_markdown("```\niiii\n```", &gfm_options());
         let wide = compile_markdown("```\nmmmm\n```", &gfm_options());
-        let (narrow_x, wide_x) = (max_glyph_x(&narrow.pages[0]), max_glyph_x(&wide.pages[0]));
+        let (narrow_x, wide_x) = (max_run_x(&narrow.pages[0]), max_run_x(&wide.pages[0]));
         assert!(
             (narrow_x - wide_x).abs() < 0.01,
             "monospace advances must match: iiii ends at {narrow_x}, mmmm at {wide_x}"

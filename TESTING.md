@@ -56,6 +56,9 @@
 | heading slug = kebab-case(plain text) for all flavors; custom `{#id}` overrides slug | integration | high |
 | highlight/subscript/superscript map to `#mark`/`#subscript`/`#superscript` in Custom flavor; not mapped in CommonMark/GFM | integration | high |
 | definition list maps to `#definition-list((term, [def]), …)` in Custom flavor | integration | high |
+| long unbreakable tokens are wrapped in the prelude's `break-long`; short words are untouched | unit | high |
+| a long chemical formula in a table cell wraps inside the margin; the control (with `break-long` disabled) overflows | integration | high |
+| TOC entries keep the rendered heading markup without double escaping (`_Bold_`, not literal backslashes) | unit | medium |
 
 ### Frontend (Vitest, pure modules)
 
@@ -73,6 +76,12 @@
 | isStaleResponse correctly identifies stale vs fresh sequence numbers | seq.js | high |
 | api wrappers call invoke with correct command names | api.js | high |
 | FLAVORS, PAPERS, MARGIN_PRESETS, ALIGNS have expected values | presets.js | high |
+| Document patch diffs the form; hyphenate is tri-state (absent = keep, null = clear, boolean = set); feature maps compare order-insensitively | docSettings.js | high |
+| Preview freeze defers renders while the Document popover is open, stashes finished ones, and owes exactly one catch-up render on close | previewFreeze.js | high |
+| stripWoffFallbacks drops WOFF-1.0 `src` alternatives (any order, quotes) and keeps woff2 | scripts/woff2-only.mjs | medium |
+
+Build guard: `npm run check:bundle` (in `./check.sh`, after the build) fails when
+`dist/` contains a `.woff` file or a dangling `.woff` CSS reference.
 
 Component tests (React Testing Library) are not required for v1; the seq guard and debounce are simple enough to review by hand.
 

@@ -11,7 +11,8 @@ use comrak::{parse_document, Arena};
 use serde::Serialize;
 
 use crate::markdown::{
-    comrak_options, escape::escape_text, escape::escape_text_into, escape::escape_typst_string,
+    comrak_options, escape::escape_text, escape::escape_text_into,
+    escape::escape_text_wrapping_long_words_into, escape::escape_typst_string,
     escape::escape_typst_string_into, frontmatter,
 };
 use crate::options::{FeatureFlags, Flavor, HeadingIds};
@@ -36,6 +37,11 @@ pub struct ConvertedDocument {
     pub body: String,
     pub title: Option<String>,
     pub author: Option<String>,
+    /// Effective document language from the front matter (Typst's default
+    /// when unset), surfaced to the frontend via `DocMeta`.
+    pub lang: Option<String>,
+    /// Effective hyphenation override from the front matter (`None` = auto).
+    pub hyphenate: Option<bool>,
     /// Non-fatal warnings (front matter first, then rendering).
     pub warnings: Vec<String>,
     /// The effective flavor (front matter overrides the toolbar).
@@ -57,6 +63,10 @@ pub struct ConvertedDocument {
 pub struct DocMeta {
     pub title: Option<String>,
     pub author: Option<String>,
+    /// Effective document language (`None` = Typst's default, English).
+    pub lang: Option<String>,
+    /// Effective hyphenation override (`None` = auto, i.e. justified text).
+    pub hyphenate: Option<bool>,
     pub flavor: Flavor,
     pub features: FeatureFlags,
     pub auto_heading_level: u8,
@@ -81,19 +91,18 @@ pub fn md_to_typst(
     // source (a stray leading `---` stripped) — the original is untouched.
     let scan = frontmatter::scan(markdown);
 
-    // Move the parsed fields out of the settings (no clones).
-    let (title, author, fm_flavor, fm_auto_level, ext_overrides, fm_warnings) = match scan.settings
-    {
-        Some(s) => (
-            s.title,
-            s.author,
-            s.flavor,
-            s.auto_heading_level,
-            s.ext_overrides,
-            s.warnings,
-        ),
-        None => (None, None, None, None, Vec::new(), Vec::new()),
-    };
+    // Move the parsed fields out of the settings (no clones). `Settings`
+    // defaults to "no front matter", so the absent case needs no tuple.
+    let frontmatter::Settings {
+        title,
+        author,
+        flavor: fm_flavor,
+        auto_heading_level: fm_auto_level,
+        lang,
+        hyphenate,
+        ext_overrides,
+        warnings: fm_warnings,
+    } = scan.settings.unwrap_or_default();
 
     // Effective settings: front matter beats the toolbar.
     let flavor = fm_flavor.unwrap_or(base_flavor);
@@ -140,10 +149,21 @@ pub fn md_to_typst(
     warnings.extend(fm_warnings);
     warnings.extend(renderer.warnings);
 
+    // The language / hyphenation settings must be the first thing in the
+    // body: the body is eval'd as one content block, so a leading `set`
+    // rule scopes over every block that follows.
+    let mut body = join_blocks(blocks);
+    let preamble = text_settings_preamble(lang.as_deref(), hyphenate);
+    if !preamble.is_empty() {
+        body = format!("{preamble}\n{body}");
+    }
+
     ConvertedDocument {
-        body: join_blocks(blocks),
+        body,
         title,
         author,
+        lang,
+        hyphenate,
         warnings,
         flavor,
         features,
@@ -162,6 +182,26 @@ fn join_blocks(blocks: Vec<String>) -> String {
         "[]".to_string()
     } else {
         non_empty.join("\n\n")
+    }
+}
+
+/// The document-level `#set text(…)` line for the front-matter `lang` and
+/// `hyphenate` settings (empty when neither is set, leaving Typst's defaults).
+/// `lang` selects the hyphenation patterns; `hyphenate: false` turns
+/// hyphenation off. The caller emits it at the top of the converted body, so
+/// the rule scopes over every following block.
+fn text_settings_preamble(lang: Option<&str>, hyphenate: Option<bool>) -> String {
+    let mut parts: Vec<String> = Vec::new();
+    if let Some(lang) = lang {
+        parts.push(format!("lang: \"{}\"", escape_typst_string(lang)));
+    }
+    if let Some(hyphenate) = hyphenate {
+        parts.push(format!("hyphenate: {hyphenate}"));
+    }
+    if parts.is_empty() {
+        String::new()
+    } else {
+        format!("#set text({})", parts.join(", "))
     }
 }
 
@@ -315,10 +355,13 @@ impl Renderer {
                         .iter()
                         .filter(|item| !item.slug.is_empty())
                         .map(|item| {
+                            // `item.text` is already rendered + escaped markup;
+                            // escaping it again would turn `_em_` into literal
+                            // backslashes in the TOC.
                             format!(
                                 "({}, [{}], \"{}\")",
                                 item.level,
-                                escape_text(&item.text),
+                                item.text,
                                 escape_typst_string(&item.slug)
                             )
                         })
@@ -589,7 +632,12 @@ impl Renderer {
                         continue;
                     }
                     match &n.data().value {
-                        NodeValue::Text(text) => escape_text_into(text, &mut writer.buf),
+                        // Long unbreakable tokens (formulas, hashes) go through
+                        // the prelude's `break-long` helper — Typst's UAX #14
+                        // line breaking has no opportunity inside them (§6.2).
+                        NodeValue::Text(text) => {
+                            escape_text_wrapping_long_words_into(text, &mut writer.buf)
+                        }
                         NodeValue::SoftBreak => writer.push_str(" "),
                         // `\ ` (backslash + space) is a hard line break in Typst markup.
                         NodeValue::LineBreak => writer.push_str("\\ "),
@@ -1414,6 +1462,52 @@ mod tests {
         assert_eq!(custom.body, "text\\[^1\\]");
     }
 
+    /// Typst cannot break a long token that UAX #14 gives no opportunity in
+    /// (a chemical formula, a hash): without help it crosses the margin. The
+    /// converter hands such tokens to the prelude's `break-long`, which adds
+    /// zero-width break opportunities.
+    #[test]
+    fn long_unbreakable_tokens_get_break_opportunities() {
+        let formula = "CH₃CH₂CH=CHCH₂CH=CHCH₂CH=CH(CH₂)₇COOH";
+        let doc = md_to_typst(
+            &format!("| K | V |\n|---|---|\n| a | {formula} |"),
+            Flavor::Github,
+            &default_heading_ids(),
+        );
+        assert!(
+            doc.body.contains(&format!("#break-long(\"{formula}\")")),
+            "{}",
+            doc.body
+        );
+    }
+
+    /// Short words are left exactly as before — no boxing, no markup.
+    #[test]
+    fn short_words_are_not_wrapped() {
+        let doc = md_to_typst(
+            "megkülönböztetés a szénhidrátokra",
+            Flavor::Custom,
+            &default_heading_ids(),
+        );
+        assert_eq!(doc.body, "megkülönböztetés a szénhidrátokra");
+    }
+
+    /// The TOC entry embeds the already-escaped heading markup; escaping it a
+    /// second time turned `*Bold*` into literal backslashes in the TOC.
+    #[test]
+    fn toc_entry_keeps_heading_markup_without_double_escaping() {
+        let doc = md_to_typst(
+            "---\nflavor: custom\n---\n\n# *Bold* title\n\n[[_TOC_]]",
+            Flavor::Custom,
+            &HeadingIds { max_level: 6 },
+        );
+        assert!(
+            doc.body.contains("1, [_Bold_ title], \"bold-title\""),
+            "{}",
+            doc.body
+        );
+    }
+
     #[test]
     fn parses_front_matter_title_and_author() {
         let doc = md_to_typst(
@@ -1461,6 +1555,59 @@ mod tests {
         assert_eq!(
             doc.body,
             "see #link(\"https://example.com\")[https://example.com] now"
+        );
+    }
+
+    /// Document language and hyphenation (`lang:`, `hyphenate:`) become a
+    /// `#set text(…)` preamble at the top of the converted body, so Typst
+    /// hyphenates with the right patterns — the body is one eval'd content
+    /// block, so the `set` rule scopes over every following block (§6.2).
+    #[test]
+    fn front_matter_lang_and_hyphenate_emit_text_settings() {
+        let doc = md_to_typst(
+            "---\nlang: hu\nhyphenate: false\n---\n\n# Body",
+            Flavor::Custom,
+            &default_heading_ids(),
+        );
+        assert_eq!(
+            doc.body,
+            "#set text(lang: \"hu\", hyphenate: false)\n= Body #label(\"body\")"
+        );
+        assert!(doc.warnings.is_empty(), "{:?}", doc.warnings);
+    }
+
+    /// The effective language/hyphenation settings travel to the frontend in
+    /// `ConvertedDocument` (and on to `DocMeta`), so the Document settings
+    /// widget shows what the render actually used.
+    #[test]
+    fn converted_document_reports_effective_lang_and_hyphenate() {
+        let doc = md_to_typst(
+            "---\nlang: hu\nhyphenate: false\n---\nBody",
+            Flavor::Custom,
+            &default_heading_ids(),
+        );
+        assert_eq!(doc.lang.as_deref(), Some("hu"));
+        assert_eq!(doc.hyphenate, Some(false));
+
+        let none = md_to_typst("Body", Flavor::Custom, &default_heading_ids());
+        assert_eq!(none.lang, None);
+        assert_eq!(none.hyphenate, None);
+    }
+
+    /// An invalid `lang` never reaches Typst (it would fail the compile); the
+    /// warning is surfaced and the body stays untouched.
+    #[test]
+    fn invalid_lang_emits_no_text_settings() {
+        let doc = md_to_typst(
+            "---\nlang: hungarian\n---\n\nBody",
+            Flavor::Custom,
+            &default_heading_ids(),
+        );
+        assert_eq!(doc.body, "Body");
+        assert!(
+            doc.warnings.iter().any(|w| w.contains("lang")),
+            "expected an invalid-lang warning: {:?}",
+            doc.warnings
         );
     }
 

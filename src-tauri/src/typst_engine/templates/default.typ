@@ -11,6 +11,7 @@
 //   blockquote(body)
 //   thematic-break()
 //   inline-code(text)                // text is a string
+//   break-long(text)                 // text is a string; adds break opportunities
 //   code-block(lang, source)         // lang/source are strings
 //   markdown-table(header, rows)     // header: array of content, rows: array of arrays
 //   ordered-list(start, ..items)     // native Typst enum, markdown-style markers
@@ -73,6 +74,31 @@
 
 // --- Inline code (string argument avoids backtick-fence escaping) ------------
 #let inline-code(text) = raw(text)
+
+// --- Long unbreakable words --------------------------------------------------
+// Typst's line breaker follows Unicode UAX #14: it breaks at spaces and soft
+// punctuation, but a long run with none of those (a chemical formula, a hash)
+// has no break opportunity and crosses the margin. The converter hands every
+// token of ~24+ characters to this helper. A zero-width `box` is an inline
+// item, and Typst offers a contingent line-break opportunity around inline
+// items — so the boxes make the token wrappable without being visible and
+// without polluting the PDF text layer (unlike a zero-width space), keeping
+// copy/search intact. Breaks are preferred after separators; the 12-cluster
+// fallback lets even a featureless run wrap. Templates may override this
+// (e.g. `#let break-long(s) = s` to turn it off).
+#let break-long(s) = {
+  let out = []
+  let run = 0
+  for c in s.clusters() {
+    out += c
+    run += 1
+    if run >= 12 or c in ("=", ")", "(", "/", "-", ",", ";", ".", ":") {
+      out += box(width: 0pt)
+      run = 0
+    }
+  }
+  out
+}
 
 // --- Highlight / superscript / subscript (==mark==, ^sup^, ~sub~) ------------
 // Thin wrappers over the Typst built-ins so a custom template can restyle

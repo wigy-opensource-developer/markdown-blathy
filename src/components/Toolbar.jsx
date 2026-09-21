@@ -49,6 +49,7 @@ function Toolbar({
   onExport,
   docMeta,
   onApplySettings,
+  onSettingsOpenChange,
 }) {
   const customTemplate = options.templatePath;
   return (
@@ -71,7 +72,11 @@ function Toolbar({
         </Tooltip>
         {/* Not wrapped in a Tooltip on purpose: Mantine cannot wrap another
             floating component (the settings Popover) in a Tooltip. */}
-        <DocumentSettings docMeta={docMeta} onApplySettings={onApplySettings} />
+        <DocumentSettings
+          docMeta={docMeta}
+          onApplySettings={onApplySettings}
+          onOpenChange={onSettingsOpenChange}
+        />
       </Group>
 
       <Divider orientation="vertical" />

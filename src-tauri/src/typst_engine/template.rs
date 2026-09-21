@@ -56,6 +56,7 @@ pub const PRELUDE_HELPERS: &[&str] = &[
     "blockquote",
     "thematic-break",
     "inline-code",
+    "break-long",
     "mark",
     "superscript",
     "subscript",
@@ -149,6 +150,8 @@ pub fn render_inputs(
     let meta = DocMeta {
         title: converted.title.clone(),
         author: converted.author.clone(),
+        lang: converted.lang.clone(),
+        hyphenate: converted.hyphenate,
         flavor: converted.flavor,
         features: converted.features,
         auto_heading_level: converted.auto_heading_level,
@@ -260,6 +263,7 @@ const PROBE_BODY: &str = "\
 #task-list(task-done([Done]), task-todo([Todo]), task-plain([Plain]))\n\
 #thematic-break()\n\
 #inline-code(\"code\")\n\
+#break-long(\"ProbeLongTokenThatWraps\")\n\
 #code-block(\"rust\", \"fn main() {}\")\n\
 #markdown-table(columns: 2, header: ([a], [b]), rows: (([1], [2]),))\n\
 #ordered-list(1, [One], [Two])\n\
@@ -424,6 +428,22 @@ mod tests {
             ),
             other => panic!("body must be a string, got {other:?}"),
         }
+    }
+
+    /// The Document settings widget reads the effective language and
+    /// hyphenation back from `docMeta`, so `render_inputs` must forward them
+    /// (and `null` when the front matter does not set them).
+    #[test]
+    fn render_inputs_forwards_lang_and_hyphenate_meta() {
+        let options = default_options();
+        let (_, meta, _) =
+            render_inputs("---\nlang: hu\nhyphenate: false\n---\n# Hi", &options).unwrap();
+        assert_eq!(meta.lang.as_deref(), Some("hu"));
+        assert_eq!(meta.hyphenate, Some(false));
+
+        let (_, none, _) = render_inputs("# Hi", &options).unwrap();
+        assert_eq!(none.lang, None);
+        assert_eq!(none.hyphenate, None);
     }
 
     /// Converter warnings (e.g. duplicate heading IDs) travel alongside the

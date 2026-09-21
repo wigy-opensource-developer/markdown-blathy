@@ -2,9 +2,10 @@
 //!
 //! Front matter is a leading `---`-delimited block of `key: value` lines,
 //! parsed in **every** flavor. It carries the document's settings — `title`,
-//! `author`, `autoHeadingLevel`, `flavor`, and `ext_*` extension overrides —
-//! which override the toolbar options. Unknown keys warn (with a "did you
-//! mean …?" suggestion); the block is otherwise left untouched.
+//! `author`, `autoHeadingLevel`, `flavor`, `lang`, `hyphenate`, and `ext_*`
+//! extension overrides — which override the toolbar options. Unknown keys
+//! warn (with a "did you mean …?" suggestion); the block is otherwise left
+//! untouched.
 //!
 //! Only `key: value` syntax is supported (one pair per line, no YAML crate).
 //! A leading `---` block that is *not* valid front matter (e.g. a thematic
@@ -32,6 +33,11 @@ pub struct Settings {
     pub ext_overrides: Vec<(Feature, bool)>,
     /// Document-declared auto heading level, when set and numeric.
     pub auto_heading_level: Option<u8>,
+    /// Document-declared ISO 639 text language (2–3 ASCII letters), used by
+    /// Typst for language-aware typesetting such as hyphenation.
+    pub lang: Option<String>,
+    /// Document-declared hyphenation override (`true`/`false`).
+    pub hyphenate: Option<bool>,
     pub warnings: Vec<String>,
 }
 
@@ -83,23 +89,47 @@ pub fn scan(markdown: &str) -> Scan<'_> {
 
 /// The known top-level front-matter keys — the suggestion dictionary.
 fn known_keys() -> Vec<&'static str> {
-    ["title", "author", "autoHeadingLevel", "flavor"]
-        .into_iter()
-        .chain(Feature::ALL.iter().map(|f| f.ext_key()))
-        .collect()
+    [
+        "title",
+        "author",
+        "autoHeadingLevel",
+        "flavor",
+        "lang",
+        "hyphenate",
+    ]
+    .into_iter()
+    .chain(Feature::ALL.iter().map(|f| f.ext_key()))
+    .collect()
 }
 
 /// A settings patch from the UI (§6.2). `None` leaves the existing value
-/// untouched; `Some` sets it — for `title`/`author` an empty string clears
-/// the key. `features` is the *effective* extension set; it is written back
-/// in the XOR-minimal encoding (`flavor:` + only the differing `ext_*`).
+/// untouched; `Some` sets it — for `title`/`author`/`lang` an empty string
+/// clears the key. `features` is the *effective* extension set; it is written
+/// back in the XOR-minimal encoding (`flavor:` + only the differing `ext_*`).
 #[derive(Debug, Default, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct Patch {
     pub title: Option<String>,
     pub author: Option<String>,
     pub auto_heading_level: Option<u8>,
+    /// Document language; an empty string clears the key (§6.2).
+    pub lang: Option<String>,
+    /// Tri-state hyphenation: `None` keeps the existing value, `Some(None)`
+    /// clears it (back to auto), `Some(Some(on))` sets it.
+    #[serde(default, deserialize_with = "present_option")]
+    pub hyphenate: Option<Option<bool>>,
     pub features: Option<FeatureFlags>,
+}
+
+/// Deserialize a present key into `Some(Option<T>)`: JSON `null` becomes
+/// `Some(None)` (clear) instead of collapsing into the outer `None` (keep).
+/// Only called when the key is present, because the field is `default`.
+fn present_option<'de, D, T>(deserializer: D) -> Result<Option<Option<T>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    Option::<T>::deserialize(deserializer).map(Some)
 }
 
 /// Rewrite the document's front matter with `patch` applied, preserving any
@@ -125,6 +155,8 @@ pub fn apply_patch(markdown: &str, patch: &Patch) -> String {
     let title = patch.title.clone().or(existing.title);
     let author = patch.author.clone().or(existing.author);
     let auto = patch.auto_heading_level.or(existing.auto_heading_level);
+    let lang = patch.lang.clone().or(existing.lang);
+    let hyphenate = patch.hyphenate.unwrap_or(existing.hyphenate);
 
     let mut lines: Vec<String> = Vec::new();
     if let Some(t) = title.as_deref().filter(|t| !t.is_empty()) {
@@ -135,6 +167,12 @@ pub fn apply_patch(markdown: &str, patch: &Patch) -> String {
     }
     if let Some(n) = auto {
         lines.push(format!("autoHeadingLevel: {n}"));
+    }
+    if let Some(l) = lang.as_deref().filter(|l| !l.is_empty()) {
+        lines.push(format!("lang: {}", yaml_value(l)));
+    }
+    if let Some(h) = hyphenate {
+        lines.push(format!("hyphenate: {h}"));
     }
     match patch.features {
         Some(flags) => {
@@ -171,6 +209,8 @@ struct ExistingBlock {
     title: Option<String>,
     author: Option<String>,
     auto_heading_level: Option<u8>,
+    lang: Option<String>,
+    hyphenate: Option<bool>,
     flavor: Option<Flavor>,
     ext_overrides: Vec<(Feature, bool)>,
     preserved: Vec<String>,
@@ -204,6 +244,16 @@ fn parse_block_for_patch(block: &str) -> ExistingBlock {
             "autoHeadingLevel" => {
                 if ex.auto_heading_level.is_none() {
                     ex.auto_heading_level = value.parse().ok();
+                }
+            }
+            "lang" => {
+                if ex.lang.is_none() {
+                    ex.lang = Some(value);
+                }
+            }
+            "hyphenate" => {
+                if ex.hyphenate.is_none() {
+                    ex.hyphenate = parse_bool(&value);
                 }
             }
             "flavor" => {
@@ -295,6 +345,8 @@ fn parse_block(block: &str) -> Settings {
                 settings.author.get_or_insert(value);
             }
             "autoHeadingLevel" => parse_auto_heading_level(&value, &mut settings),
+            "lang" => parse_lang(&value, &mut settings),
+            "hyphenate" => parse_hyphenate(&value, &mut settings),
             "flavor" => parse_flavor(&value, &mut settings),
             key if key.starts_with("ext_") => parse_ext(key, &value, &mut settings),
             _ => {
@@ -319,6 +371,35 @@ fn parse_auto_heading_level(value: &str, settings: &mut Settings) {
         Ok(level) => settings.auto_heading_level = Some(level),
         Err(_) => settings.warnings.push(format!(
             "invalid front-matter autoHeadingLevel \"{value}\" — keeping the toolbar setting"
+        )),
+    }
+}
+
+/// Parse the document language. Typst's own `Lang` parser is the single
+/// source of truth for what is valid (two or three ASCII letters, ISO 639);
+/// anything else would fail the compile, so it warns and is dropped instead.
+fn parse_lang(value: &str, settings: &mut Settings) {
+    if settings.lang.is_some() {
+        return; // first occurrence wins
+    }
+    if value.parse::<typst::text::Lang>().is_ok() {
+        settings.lang = Some(value.to_string());
+    } else {
+        settings.warnings.push(format!(
+            "invalid front-matter lang \"{value}\" — expected a two- or three-letter \
+             ISO 639 code (e.g. \"hu\")"
+        ));
+    }
+}
+
+fn parse_hyphenate(value: &str, settings: &mut Settings) {
+    if settings.hyphenate.is_some() {
+        return; // first occurrence wins
+    }
+    match parse_bool(value) {
+        Some(on) => settings.hyphenate = Some(on),
+        None => settings.warnings.push(format!(
+            "invalid front-matter hyphenate \"{value}\" — expected true or false"
         )),
     }
 }
@@ -456,6 +537,40 @@ mod tests {
         assert!(s.warnings.is_empty(), "{:?}", s.warnings);
     }
 
+    /// Document language and hyphenation: `lang: hu` feeds Typst's
+    /// `text(lang:)` (which selects the hyphenation patterns), while
+    /// `hyphenate: false` turns hyphenation off (§6.2).
+    #[test]
+    fn parses_lang_and_hyphenate() {
+        let scan = scan("---\nlang: hu\nhyphenate: false\n---\nx");
+        let s = scan.settings.expect("front matter");
+        assert_eq!(s.lang.as_deref(), Some("hu"));
+        assert_eq!(s.hyphenate, Some(false));
+        assert!(s.warnings.is_empty(), "{:?}", s.warnings);
+    }
+
+    /// Invalid values warn and are dropped — an unparseable `lang` must not
+    /// reach Typst (it would fail the compile), and `hyphenate` is a strict
+    /// bool toggle like the `ext_*` keys.
+    #[test]
+    fn invalid_lang_and_hyphenate_warn_and_are_dropped() {
+        let scan = scan("---\nlang: hungarian\nhyphenate: maybe\n---\nx");
+        let s = scan.settings.expect("front matter");
+        assert_eq!(s.lang, None);
+        assert_eq!(s.hyphenate, None);
+        assert_eq!(s.warnings.len(), 2, "{:?}", s.warnings);
+        assert!(s.warnings.iter().any(|w| w.contains("lang")));
+        assert!(s.warnings.iter().any(|w| w.contains("hyphenate")));
+    }
+
+    #[test]
+    fn lang_and_hyphenate_first_occurrence_wins() {
+        let scan = scan("---\nlang: hu\nlang: de\nhyphenate: false\nhyphenate: true\n---\nx");
+        let s = scan.settings.expect("front matter");
+        assert_eq!(s.lang.as_deref(), Some("hu"));
+        assert_eq!(s.hyphenate, Some(false));
+    }
+
     #[test]
     fn no_front_matter_returns_none() {
         let scan = scan("# Just a heading\n\nbody");
@@ -567,6 +682,45 @@ mod tests {
         );
     }
 
+    /// `hyphenate` is tri-state over IPC: an absent key keeps the setting,
+    /// JSON `null` clears it (back to auto) and a boolean sets it. Plain
+    /// `Option<bool>` cannot express that (`null` and absent both map to
+    /// `None`), so the deserializer must preserve the distinction.
+    #[test]
+    fn patch_hyphenate_deserializes_tri_state() {
+        let keep: Patch = serde_json::from_str("{}").expect("empty patch");
+        assert_eq!(keep.hyphenate, None);
+
+        let clear: Patch = serde_json::from_str(r#"{"hyphenate":null}"#).expect("clear patch");
+        assert_eq!(clear.hyphenate, Some(None));
+
+        let set: Patch = serde_json::from_str(r#"{"hyphenate":false}"#).expect("set patch");
+        assert_eq!(set.hyphenate, Some(Some(false)));
+
+        let lang: Patch = serde_json::from_str(r#"{"lang":"hu"}"#).expect("lang patch");
+        assert_eq!(lang.lang.as_deref(), Some("hu"));
+        let clear_lang: Patch = serde_json::from_str(r#"{"lang":""}"#).expect("clear lang");
+        assert_eq!(clear_lang.lang.as_deref(), Some(""));
+    }
+
+    /// The widget's exact IPC path: camelCase JSON → `Patch` → `apply_patch`
+    /// → `scan`, including clearing with `""`/`null` and dropping the block
+    /// when nothing is left.
+    #[test]
+    fn patch_json_round_trips_lang_and_hyphenate() {
+        let set: Patch =
+            serde_json::from_str(r#"{"lang":"hu","hyphenate":false}"#).expect("set patch");
+        let out = apply_patch("# Body", &set);
+        assert_eq!(out, "---\nlang: hu\nhyphenate: false\n---\n# Body");
+        let s = scan(&out).settings.expect("front matter");
+        assert_eq!(s.lang.as_deref(), Some("hu"));
+        assert_eq!(s.hyphenate, Some(false));
+
+        let clear: Patch =
+            serde_json::from_str(r#"{"lang":"","hyphenate":null}"#).expect("clear patch");
+        assert_eq!(apply_patch(&out, &clear), "# Body");
+    }
+
     #[test]
     fn patch_empty_title_clears_the_key() {
         let out = apply_patch("---\ntitle: Old\nauthor: A\n---\nBody", &patch_title(""));
@@ -614,6 +768,45 @@ mod tests {
             out,
             "---\ntitle: T\nflavor: github\next_footnotes: true\n---\nBody"
         );
+    }
+
+    /// A patch that does not mention `lang`/`hyphenate` keeps the existing
+    /// values (canonicalized to their managed position).
+    #[test]
+    fn patch_keeps_unpatched_lang_and_hyphenate() {
+        let md = "---\nlang: hu\nhyphenate: false\ntitle: T\n---\nBody";
+        let out = apply_patch(md, &patch_title("T2"));
+        assert_eq!(out, "---\ntitle: T2\nlang: hu\nhyphenate: false\n---\nBody");
+        // …and the rewritten keys still parse and render.
+        let s = scan(&out).settings.expect("front matter");
+        assert_eq!(s.lang.as_deref(), Some("hu"));
+        assert_eq!(s.hyphenate, Some(false));
+    }
+
+    /// The settings UI manages `lang`/`hyphenate`: a patch sets them, an
+    /// empty language / `Some(None)` hyphenate clears them back to Typst's
+    /// defaults.
+    #[test]
+    fn patch_sets_and_clears_lang_and_hyphenate() {
+        let set = apply_patch(
+            "# Body",
+            &Patch {
+                lang: Some("hu".to_string()),
+                hyphenate: Some(Some(false)),
+                ..Default::default()
+            },
+        );
+        assert_eq!(set, "---\nlang: hu\nhyphenate: false\n---\n# Body");
+
+        let cleared = apply_patch(
+            "---\nlang: hu\nhyphenate: false\ntitle: T\n---\nBody",
+            &Patch {
+                lang: Some(String::new()),
+                hyphenate: Some(None),
+                ..Default::default()
+            },
+        );
+        assert_eq!(cleared, "---\ntitle: T\n---\nBody");
     }
 
     #[test]

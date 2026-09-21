@@ -3,6 +3,7 @@ import { useDebouncedCallback } from "@mantine/hooks";
 import { open } from "@tauri-apps/plugin-dialog";
 import * as api from "./lib/api.js";
 import { marginsForPreset } from "./lib/presets.js";
+import { createPreviewFreeze } from "./lib/previewFreeze.js";
 import { isStaleResponse } from "./lib/seq.js";
 import { applyOptionsPatch, loadSettings, saveSettings } from "./lib/settings.js";
 import { SAMPLE_DOC } from "./lib/sample.js";
@@ -33,11 +34,20 @@ export default function App() {
   // Last preview request sequence we *sent*; responses older than this are
   // dropped (§7.5).
   const seq = useRef(0);
+  // The preview freeze, built below once the render callback it wraps exists
+  // (§6.2; see lib/previewFreeze.js).
+  const previewFreeze = useRef(null);
 
   // The effective document settings from the last render (§6.2): Rust parses
   // the front matter and returns it, so the frontend never parses YAML
   // itself. Null until the first render lands.
   const [docMeta, setDocMeta] = useState(null);
+
+  // True while the Document settings popover is open: the app then treats it
+  // as a modal — the editor/preview/status are blurred, `inert` (for real:
+  // clicks, caret and screen readers stay out) and frozen (see `.settings-open`
+  // in styles.css and lib/previewFreeze.js).
+  const [settingsOpen, setSettingsOpen] = useState(false);
 
   // The document title: the Rust-parsed frontmatter `title` wins, then the
   // file stem, then "Sample" for the (still untitled) sample document
@@ -49,30 +59,64 @@ export default function App() {
     [docMeta, filePath]
   );
 
+  /** The pages of a finished render land in one (heavy) React commit. */
+  const applyPreview = useCallback((result) => {
+    setPages(result.pages);
+    setWarnings(result.warnings);
+    setDocMeta(result.doc);
+    setError(null);
+  }, []);
+
   // Debounced preview refresh: pauses 200ms after the last keystroke, well
   // within the ≤300ms acceptance for M3. `useDebouncedCallback` keeps the
   // latest callback in a ref, so `markdown`/`options` are always fresh when
   // the debounced call actually fires. The returned function is stable across
   // renders, so effects/callbacks depending on it stay stable too.
   const refreshPreview = useDebouncedCallback(async () => {
+    const freeze = previewFreeze.current;
+    freeze.started();
     const seqId = ++seq.current;
     try {
       const result = await api.renderPreview(markdown, options, seqId);
       if (isStaleResponse(result.seq, seq.current)) return; // stale — drop
-      setPages(result.pages);
-      setWarnings(result.warnings);
-      setDocMeta(result.doc);
-      setError(null);
+      freeze.finish(result); // commit now, or stash while settings are open
     } catch (err) {
       setError(String(err)); // keep the last good preview
     }
   }, 200);
 
+  // Freezes document renders while the Document settings popover is open
+  // (§6.2): rendering blocks the UI thread and scales with the document, so
+  // settings edits must not race a render scheduled by earlier editor
+  // keystrokes; changes made meanwhile collapse into one catch-up render on
+  // close. lib/previewFreeze.js owns that ordering; the App only reports
+  // render lifecycle (`started`/`finish`) and the popover open/close. The
+  // cycle — refreshPreview uses the freeze, the freeze re-schedules
+  // refreshPreview — resolves through the ref: both exist before either is
+  // called, and all three captured functions are stable across renders.
+  if (!previewFreeze.current) {
+    previewFreeze.current = createPreviewFreeze({
+      refresh: refreshPreview,
+      cancel: refreshPreview.cancel,
+      apply: applyPreview,
+    });
+  }
+
+  /** Schedule a preview; deferred as owed while the popover is open. */
+  const requestPreview = useCallback(() => previewFreeze.current.request(), []);
+
+  /** Popover opened → freeze; closed → the freeze catches up once. */
+  const handleSettingsOpenChange = useCallback((open) => {
+    setSettingsOpen(open);
+    if (open) previewFreeze.current.open();
+    else previewFreeze.current.close();
+  }, []);
+
   // Initial render of the starting document.
   useEffect(() => {
-    refreshPreview();
+    requestPreview();
     return () => refreshPreview.cancel();
-  }, [refreshPreview]);
+  }, [requestPreview, refreshPreview]);
 
   // Load the startup working directory ($XDG_DATA_HOME / $HOME) for the
   // dialogs; until it resolves the dialogs fall back to the OS default.
@@ -94,9 +138,9 @@ export default function App() {
   const handleEditorChange = useCallback(
     (value) => {
       setMarkdown(value);
-      refreshPreview();
+      requestPreview();
     },
-    [refreshPreview]
+    [requestPreview]
   );
 
   // Apply a partial options patch; switching the margin preset maps it to
@@ -116,9 +160,9 @@ export default function App() {
       const next = { ...settings, options: nextOptions };
       setSettings(next);
       saveSettings(next, window.localStorage);
-      refreshPreview();
+      requestPreview();
     },
-    [settings, refreshPreview]
+    [settings, requestPreview]
   );
 
   // Every file/template/link handler shares one error path: surface the
@@ -139,8 +183,8 @@ export default function App() {
   const handleNew = useCallback(() => {
     setFilePath(null);
     setMarkdown(SAMPLE_DOC);
-    refreshPreview();
-  }, [refreshPreview]);
+    requestPreview();
+  }, [requestPreview]);
 
   const handleOpen = useCallback(
     () =>
@@ -150,9 +194,9 @@ export default function App() {
         setFilePath(res.path);
         setMarkdown(res.content);
         setDirectory(parentDirectory(res.path));
-        refreshPreview();
+        requestPreview();
       }),
-    [runFileAction, directory, refreshPreview]
+    [runFileAction, directory, requestPreview]
   );
 
   // Always a "Save As…" dialog: the filename defaults to `<title>.md` in the
@@ -196,14 +240,17 @@ export default function App() {
 
   // Document settings popover (§6.2): apply a front-matter patch through the
   // Rust editor, which preserves unmanaged keys, then re-render the result.
+  // Requesting while the popover is still open defers the render to its close
+  // (`handleSettingsOpenChange`), so the document is not re-rendered under the
+  // user's hands.
   const handleApplySettings = useCallback(
     (patch) =>
       runFileAction(async () => {
         const updated = await api.updateFrontMatter(markdown, patch);
         setMarkdown(updated);
-        refreshPreview();
+        requestPreview();
       }),
-    [runFileAction, markdown, refreshPreview]
+    [runFileAction, markdown, requestPreview]
   );
 
   const handleExport = useCallback(
@@ -227,7 +274,7 @@ export default function App() {
   );
 
   return (
-    <div className="app">
+    <div className={settingsOpen ? "app settings-open" : "app"}>
       <Toolbar
         options={options}
         onOptionChange={changeOption}
@@ -239,8 +286,9 @@ export default function App() {
         onExport={handleExport}
         docMeta={docMeta}
         onApplySettings={handleApplySettings}
+        onSettingsOpenChange={handleSettingsOpenChange}
       />
-      <main id="panes">
+      <main id="panes" inert={settingsOpen}>
         <section id="editor-pane">
           <Editor
             value={markdown}
@@ -253,7 +301,11 @@ export default function App() {
           <Preview pages={pages} onExternalLink={handleExternalLink} />
         </section>
       </main>
-      <StatusBar pageCount={pages.length} warnings={warnings} />
+      <StatusBar
+        pageCount={pages.length}
+        warnings={warnings}
+        inert={settingsOpen}
+      />
       <ErrorBanner message={error} onClose={dismissError} />
     </div>
   );

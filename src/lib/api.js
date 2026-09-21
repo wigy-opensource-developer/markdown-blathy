@@ -54,9 +54,10 @@ export const openExternal = (url) => invoke("open_external", { url });
 
 /** Update the document's front matter with a settings patch and resolve with
  *  the full new Markdown (§6.2). Rust owns the YAML editing: managed keys are
- *  rewritten canonically, unknown keys preserved. The patch uses `null` (or an
- *  omitted key) to leave a value untouched; `title`/`author` accept `""` to
- *  clear. */
+ *  rewritten canonically, unknown keys preserved. An omitted key leaves a
+ *  value untouched; `title`/`author`/`lang` accept `""` to clear, and
+ *  `hyphenate` clears with an explicit `null` (absent = keep, since `false`
+ *  is a meaningful value). */
 export const updateFrontMatter = (markdown, patch) =>
   invoke("update_front_matter", { markdown, patch });
 

@@ -31,6 +31,19 @@ body {
   height: 100%;
 }
 
+/* The Document settings popover is modal: while it is open the editor,
+   preview and status bar are blurred and not re-rendered — a full document
+   render is too slow to run under the user's hands (the toolbar and the
+   popover stay crisp and interactive). They are also `inert` (set in
+   App.jsx), which covers clicks, selection and assistive tech. `filter`
+   promotes the panes to their own layer, so keystrokes in the form do not
+   repaint them. */
+.app.settings-open #panes,
+.app.settings-open #status {
+  filter: blur(2px);
+  opacity: 0.55;
+}
+
 #toolbar {
   display: flex;
   align-items: flex-end;
