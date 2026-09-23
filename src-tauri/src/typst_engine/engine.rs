@@ -65,7 +65,9 @@ impl Error for EngineError {}
 /// Font loading options (M6, §6.3): what to load beyond the embedded DejaVu
 /// Sans. Used when an engine is (re)built — the M6 cache does that once per
 /// template change, so the system-font scan is not repeated per render.
-#[derive(Debug, Clone, Default)]
+/// Serializable so the prewarm hint (`crate::prewarm`) can remember them
+/// across launches.
+#[derive(Debug, Clone, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct FontOptions {
     /// Scan the system's font directories (needed for families like
     /// "Times New Roman" in custom templates). Ignored when `families` is set.

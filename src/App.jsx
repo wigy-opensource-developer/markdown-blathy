@@ -4,6 +4,7 @@ import { open } from "@tauri-apps/plugin-dialog";
 import * as api from "./lib/api.js";
 import { marginsForPreset } from "./lib/presets.js";
 import { createPreviewFreeze } from "./lib/previewFreeze.js";
+import { createRenderStatus } from "./lib/renderStatus.js";
 import { isStaleResponse } from "./lib/seq.js";
 import { applyOptionsPatch, loadSettings, saveSettings } from "./lib/settings.js";
 import { SAMPLE_DOC } from "./lib/sample.js";
@@ -37,6 +38,15 @@ export default function App() {
   // The preview freeze, built below once the render callback it wraps exists
   // (§6.2; see lib/previewFreeze.js).
   const previewFreeze = useRef(null);
+  // The delayed "Rendering…" state machine (lib/renderStatus.js), built
+  // below with its React binding.
+  const renderStatus = useRef(null);
+  // The document the *next render* will use. Normally synced from state on
+  // every render — but a freshly opened file is written here before calling
+  // `requestPreviewNow`, because the immediate render runs before React has
+  // committed the new `markdown`.
+  const docRef = useRef({ markdown: SAMPLE_DOC, options });
+  docRef.current = { markdown, options };
 
   // The effective document settings from the last render (§6.2): Rust parses
   // the front matter and returns it, so the frontend never parses YAML
@@ -65,25 +75,48 @@ export default function App() {
     setWarnings(result.warnings);
     setDocMeta(result.doc);
     setError(null);
+    renderStatus.current.stop(); // the pending note comes down with the pages
   }, []);
+
+  // Delayed "Rendering…" feedback on the preview pane: keystroke renders
+  // usually land before the note even arms (350 ms), so it never flickers;
+  // big documents do pend long enough to show it. lib/renderStatus.js owns
+  // the timing; this binding just mirrors visibility into React state.
+  const [renderBusy, setRenderBusy] = useState(false);
+  if (!renderStatus.current) {
+    renderStatus.current = createRenderStatus({ delayMs: 350, notify: setRenderBusy });
+  }
 
   // Debounced preview refresh: pauses 200ms after the last keystroke, well
   // within the ≤300ms acceptance for M3. `useDebouncedCallback` keeps the
   // latest callback in a ref, so `markdown`/`options` are always fresh when
   // the debounced call actually fires. The returned function is stable across
   // renders, so effects/callbacks depending on it stay stable too.
-  const refreshPreview = useDebouncedCallback(async () => {
+  // The render body: reads `docRef`, so a `requestPreviewNow()` fired in the
+  // same event as `setMarkdown(...)` still renders the new text, and the
+  // debounced path renders whatever is current when the timer fires. All its
+  // captures are refs/stable setters, so this callback itself is stable.
+  const runRender = useCallback(async () => {
     const freeze = previewFreeze.current;
     freeze.started();
+    renderStatus.current.start();
     const seqId = ++seq.current;
+    const { markdown: doc, options: opts } = docRef.current;
     try {
-      const result = await api.renderPreview(markdown, options, seqId);
-      if (isStaleResponse(result.seq, seq.current)) return; // stale — drop
+      const result = await api.renderPreview(doc, opts, seqId);
+      if (isStaleResponse(result.seq, seq.current)) return; // stale — drop (a newer render owns the note now)
       freeze.finish(result); // commit now, or stash while settings are open
     } catch (err) {
+      renderStatus.current.stop();
       setError(String(err)); // keep the last good preview
     }
-  }, 200);
+  }, []);
+
+  // Debounced preview refresh: pauses 200ms after the last keystroke, well
+  // within the ≤300ms acceptance for M3. Keystrokes are the only callers
+  // that want to wait; a freshly loaded document asks for `requestNow`
+  // (below) and starts rendering at once.
+  const refreshPreview = useDebouncedCallback(runRender, 200);
 
   // Freezes document renders while the Document settings popover is open
   // (§6.2): rendering blocks the UI thread and scales with the document, so
@@ -93,10 +126,11 @@ export default function App() {
   // render lifecycle (`started`/`finish`) and the popover open/close. The
   // cycle — refreshPreview uses the freeze, the freeze re-schedules
   // refreshPreview — resolves through the ref: both exist before either is
-  // called, and all three captured functions are stable across renders.
+  // called, and all captured functions are stable across renders.
   if (!previewFreeze.current) {
     previewFreeze.current = createPreviewFreeze({
       refresh: refreshPreview,
+      refreshNow: runRender,
       cancel: refreshPreview.cancel,
       apply: applyPreview,
     });
@@ -105,6 +139,16 @@ export default function App() {
   /** Schedule a preview; deferred as owed while the popover is open. */
   const requestPreview = useCallback(() => previewFreeze.current.request(), []);
 
+  /**
+   * Render a just-loaded document right away (no 200 ms debounce). `patch`
+   * carries the fresh text when the caller's `setMarkdown(...)` has not
+   * re-rendered yet — the initial sample needs no patch.
+   */
+  const requestPreviewNow = useCallback((patch) => {
+    if (patch) docRef.current = { ...docRef.current, ...patch };
+    previewFreeze.current.requestNow();
+  }, []);
+
   /** Popover opened → freeze; closed → the freeze catches up once. */
   const handleSettingsOpenChange = useCallback((open) => {
     setSettingsOpen(open);
@@ -112,11 +156,12 @@ export default function App() {
     else previewFreeze.current.close();
   }, []);
 
-  // Initial render of the starting document.
+  // Initial render of the starting document: straight away — this is boot,
+  // not a keystroke. (The Rust side prewarms the default engine meanwhile.)
   useEffect(() => {
-    requestPreview();
+    requestPreviewNow();
     return () => refreshPreview.cancel();
-  }, [requestPreview, refreshPreview]);
+  }, [requestPreviewNow, refreshPreview]);
 
   // Load the startup working directory ($XDG_DATA_HOME / $HOME) for the
   // dialogs; until it resolves the dialogs fall back to the OS default.
@@ -183,8 +228,8 @@ export default function App() {
   const handleNew = useCallback(() => {
     setFilePath(null);
     setMarkdown(SAMPLE_DOC);
-    requestPreview();
-  }, [requestPreview]);
+    requestPreviewNow({ markdown: SAMPLE_DOC });
+  }, [requestPreviewNow]);
 
   const handleOpen = useCallback(
     () =>
@@ -194,9 +239,9 @@ export default function App() {
         setFilePath(res.path);
         setMarkdown(res.content);
         setDirectory(parentDirectory(res.path));
-        requestPreview();
+        requestPreviewNow({ markdown: res.content });
       }),
-    [runFileAction, directory, requestPreview]
+    [runFileAction, directory, requestPreviewNow]
   );
 
   // Always a "Save As…" dialog: the filename defaults to `<title>.md` in the
@@ -297,8 +342,8 @@ export default function App() {
             fontSize={editorFontSize}
           />
         </section>
-        <section id="preview-pane">
-          <Preview pages={pages} onExternalLink={handleExternalLink} />
+        <section id="preview-pane" data-rendering={renderBusy ? "true" : undefined}>
+          <Preview pages={pages} busy={renderBusy} onExternalLink={handleExternalLink} />
         </section>
       </main>
       <StatusBar

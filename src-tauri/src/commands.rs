@@ -135,9 +135,10 @@ async fn with_cached_engine<R: Send + 'static>(
 /// on `spawn_blocking`; `seq` is echoed back so the frontend can drop stale
 /// responses.
 #[tauri::command]
-#[instrument(skip(state, payload), fields(seq = payload.seq, md_len = payload.markdown.len()))]
+#[instrument(skip(state, app, payload), fields(seq = payload.seq, md_len = payload.markdown.len()))]
 pub async fn render_preview(
     state: State<'_, Arc<Mutex<TemplateEngineCache>>>,
+    app: AppHandle,
     payload: RenderPayload,
 ) -> Result<PreviewOutcome, String> {
     let t0 = std::time::Instant::now();
@@ -166,6 +167,25 @@ pub async fn render_preview(
     // Summary at info level — return value contains full SVG pages (too large
     // for `#[instrument] ret`).
     info!(pages = outcome.pages.len(), svg_bytes, "preview rendered");
+
+    // Prewarm hint for the next launch (§7.5): the static source just
+    // rendered with is what the next launch's first render will want, so
+    // setup() can build that engine under the boot loader. Saved on a
+    // background thread, and a no-op while the file already holds it.
+    let hint = crate::prewarm::PrewarmHint {
+        static_source: prepared.static_source.clone(),
+        fonts: prepared.fonts.clone(),
+    };
+    tauri::async_runtime::spawn_blocking(move || {
+        use tauri::Manager as _;
+        let Ok(dir) = app.path().app_data_dir() else {
+            return;
+        };
+        let _ = std::fs::create_dir_all(&dir);
+        if let Err(e) = crate::prewarm::save_hint(&crate::prewarm::hint_path(&dir), &hint) {
+            debug!("prewarm hint not saved: {e}");
+        }
+    });
 
     Ok(PreviewOutcome {
         pages: outcome.pages,

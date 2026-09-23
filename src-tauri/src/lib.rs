@@ -10,6 +10,7 @@ pub mod files;
 pub mod links;
 pub mod markdown;
 pub mod options;
+pub mod prewarm;
 pub mod typst_engine;
 
 /// Reads `RUST_LOG` from the environment; defaults to `warn` when unset.
@@ -33,6 +34,48 @@ pub fn run() {
         .manage(std::sync::Arc::new(std::sync::Mutex::new(
             engine_cache::TemplateEngineCache::new(),
         )))
+        // §7.5 engine prewarm: build the engine the first render will want
+        // while the webview boots (under the boot loader), instead of under
+        // the first preview request. The remembered static source
+        // (`prewarm.json`, written after each successful render) covers
+        // returning users with persisted options; a first launch falls back
+        // to the fresh-install defaults. A miss only costs the (background)
+        // rebuild on the first render — same as before the prewarm existed.
+        .setup(|app| {
+            use tauri::Manager;
+            let cache = app
+                .state::<std::sync::Arc<std::sync::Mutex<engine_cache::TemplateEngineCache>>>()
+                .inner()
+                .clone();
+            let hint_file = app
+                .path()
+                .app_data_dir()
+                .ok()
+                .map(|dir| prewarm::hint_path(&dir));
+            tauri::async_runtime::spawn_blocking(move || {
+                let (source, fonts) = match hint_file.as_deref().and_then(prewarm::load_hint) {
+                    Some(hint) => (hint.static_source, hint.fonts),
+                    None => {
+                        let options = options::RenderOptions::frontend_defaults();
+                        match typst_engine::template::prepare_render("", &options) {
+                            Ok(prepared) => (prepared.static_source, prepared.fonts),
+                            Err(e) => {
+                                tracing::debug!("engine prewarm: prepare failed: {e}");
+                                return;
+                            }
+                        }
+                    }
+                };
+                match cache.lock() {
+                    Ok(mut cache) => match cache.engine_for(&source, &fonts) {
+                        Ok(_) => tracing::debug!("engine prewarmed"),
+                        Err(e) => tracing::debug!("engine prewarm: build failed: {e}"),
+                    },
+                    Err(_) => tracing::debug!("engine prewarm: cache lock poisoned"),
+                }
+            });
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             commands::render_preview,
             commands::open_markdown,

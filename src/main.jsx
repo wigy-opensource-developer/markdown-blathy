@@ -2,7 +2,9 @@ import React from "react";
 import ReactDOM from "react-dom/client";
 
 // Self-hosted fonts (bundled by Vite; no external requests).
-import "@fontsource/iosevka/400.css";
+// Only the Iosevka weight the editor actually styles with (500, pinned on
+// `.cm-scroller` in styles.css) — each static Iosevka weight is ~1 MB of
+// woff2; scripts/check-bundle.mjs fails the build if another one shows up.
 import "@fontsource/iosevka/500.css";
 // Archivo Narrow Variable: single file, wght axis 400-700 (real 400/500/600/700
 // instances). The axis CSS bundles the latin + latin-ext subsets via

@@ -75,7 +75,11 @@ body {
   flex: 1;
   min-width: 0;
   background: #525659;
-  overflow: auto;
+  /* Positioning context for the "Rendering…" note: scrolling moved to
+     #preview so the note stays centered in the visible pane while a long
+     document scrolls under it. */
+  position: relative;
+  overflow: hidden;
 }
 
 /* CodeMirror fills the editor pane. CodeMirror's base theme hardcodes
@@ -104,6 +108,38 @@ body {
 
 #preview {
   padding: 24px;
+  height: 100%;
+  overflow: auto;
+  /* The last-good pages stay legible-but-idle behind the "Rendering…" note
+     (Preview.jsx; the flag is armed by lib/renderStatus.js). */
+  transition: opacity 180ms ease;
+}
+
+#preview-pane[data-rendering] #preview {
+  opacity: 0.45;
+}
+
+/* The app's little sibling of a text style: this note and the boot note in
+   index.html share the tilted, white look. index.html repeats the few
+   declarations inline because it renders before any stylesheet exists —
+   keep the two in sync if you restyle. */
+.tilted-note {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+  color: #fff;
+  font-weight: 600;
+  font-size: 22px;
+  letter-spacing: 0.03em;
+  text-shadow: 0 1px 6px rgba(0, 0, 0, 0.45);
+}
+
+.tilted-note > span {
+  display: block;
+  transform: rotate(-30deg);
 }
 
 /* Each SVG page is a white sheet with a shadow, centered, sized to the pane

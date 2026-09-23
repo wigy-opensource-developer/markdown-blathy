@@ -13,6 +13,12 @@
     "windows": [
       {
         "title": "Markdown to PDF",
+        "backgroundColor": [
+          24,
+          89,
+          217,
+          255
+        ],
         "width": 1200,
         "height": 800,
         "minWidth": 800,
@@ -20,7 +26,10 @@
       }
     ],
     "security": {
-      "csp": "default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:"
+      "csp": "default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:",
+      "dangerousDisableAssetCspModification": [
+        "style-src"
+      ]
     }
   },
   "bundle": {

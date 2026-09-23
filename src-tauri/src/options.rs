@@ -282,6 +282,24 @@ pub struct RenderOptions {
     pub heading_ids: HeadingIds,
 }
 
+impl RenderOptions {
+    /// The fresh-install defaults, kept in sync with `DEFAULT_SETTINGS.options`
+    /// in `src/lib/settings.js`. Stored as the frontend's own JSON so the
+    /// serde camelCase contract stays in one place; parsed once at startup by
+    /// the engine prewarm (§7.5) — a user who persisted different settings
+    /// simply misses the prewarmed engine and rebuilds it (cheaply) on the
+    /// first render, exactly as before the prewarm existed.
+    pub fn frontend_defaults() -> Self {
+        // If this literal and settings.js drift, the app still boots — the
+        // prewarm is best-effort; `frontend_defaults_shape_is_the_fresh_install_state`
+        // guards the values themselves.
+        serde_json::from_str(
+            r#"{"flavor":"custom","paper":"a4","margins":{"topMm":25,"bottomMm":25,"leftMm":20,"rightMm":20},"textAlign":"left","templatePath":null}"#,
+        )
+        .expect("frontend default options must parse as RenderOptions")
+    }
+}
+
 impl Paper {
     /// Typst `page` paper names.
     pub fn typst_name(self) -> &'static str {
@@ -372,6 +390,29 @@ mod tests {
             serde_json::to_string(&TextAlign::Justified).unwrap(),
             "\"justified\""
         );
+    }
+
+    /// The prewarm's defaults must mirror `DEFAULT_SETTINGS.options` in
+    /// `src/lib/settings.js`: custom flavor (every extension on), A4,
+    /// 25/25/20/20 mm margins ("normal" preset), left-aligned, embedded
+    /// template, all six auto-heading levels.
+    #[test]
+    fn frontend_defaults_shape_is_the_fresh_install_state() {
+        let o = RenderOptions::frontend_defaults();
+        assert_eq!(o.flavor, Flavor::Custom);
+        assert_eq!(o.paper, Paper::A4);
+        assert_eq!(
+            o.margins,
+            super::Margins {
+                top_mm: 25.0,
+                bottom_mm: 25.0,
+                left_mm: 20.0,
+                right_mm: 20.0
+            }
+        );
+        assert_eq!(o.text_align, TextAlign::Left);
+        assert_eq!(o.template_path, None);
+        assert_eq!(o.heading_ids, HeadingIds::default());
     }
 
     #[test]

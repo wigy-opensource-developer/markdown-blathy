@@ -12,9 +12,16 @@ import { createPreviewFreeze } from "./previewFreeze.js";
 /** The freeze wired to spy render side-effects. */
 const make = () => {
   const refresh = vi.fn();
+  const refreshNow = vi.fn();
   const cancel = vi.fn();
   const apply = vi.fn();
-  return { refresh, cancel, apply, freeze: createPreviewFreeze({ refresh, cancel, apply }) };
+  return {
+    refresh,
+    refreshNow,
+    cancel,
+    apply,
+    freeze: createPreviewFreeze({ refresh, refreshNow, cancel, apply }),
+  };
 };
 
 describe("createPreviewFreeze", () => {
@@ -131,5 +138,45 @@ describe("createPreviewFreeze", () => {
     freeze.request();
     freeze.close();
     expect(refresh).toHaveBeenCalledTimes(2);
+  });
+
+  // — requestNow: the un-debounced path for freshly loaded documents (the
+  // initial sample, New, Open) where waiting out the debounce is pure lag.
+
+  it("requestNow runs the render now, skipping the debounce", () => {
+    const { refresh, refreshNow, freeze } = make();
+    freeze.requestNow();
+    expect(refreshNow).toHaveBeenCalledOnce();
+    expect(refresh).not.toHaveBeenCalled();
+  });
+
+  it("requestNow drops a debounce still in flight", () => {
+    // A keystroke render may already be scheduled; the immediate render for
+    // the new document supersedes it and must not be followed by a second.
+    const { cancel, freeze } = make();
+    freeze.requestNow();
+    expect(cancel).toHaveBeenCalledOnce();
+  });
+
+  it("requestNow while frozen defers to the close catch-up", () => {
+    const { refresh, refreshNow, freeze } = make();
+    freeze.open();
+    freeze.requestNow();
+    expect(refreshNow).not.toHaveBeenCalled();
+    freeze.close();
+    expect(refresh).toHaveBeenCalledOnce(); // caught up the debounced way
+  });
+
+  it("requestNow leaves nothing owed once the render started", () => {
+    // Mirror of request()'s contract: after the (immediate) render's
+    // started(), a popover open/close cycle must not schedule a phantom
+    // catch-up render.
+    const { refresh, refreshNow, freeze } = make();
+    freeze.requestNow();
+    expect(refreshNow).toHaveBeenCalledOnce(); // immediate, not debounced
+    freeze.started();
+    freeze.open();
+    freeze.close();
+    expect(refresh).not.toHaveBeenCalled();
   });
 });

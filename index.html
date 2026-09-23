@@ -4,9 +4,50 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Markdown to PDF</title>
+    <style>
+      /* Boot note: this markup is the first paint of the webview (the app's
+         own CSS arrives ~300ms later inside the JS bundle), and React clears
+         #root on mount — no removal code needed. The text fades in only
+         after 300ms, so a quick start shows no flash at all, while an older
+         machine gets a signal during the bundle fetch/eval. The style
+         mirrors `.tilted-note` in src/styles.css (keep in sync); the window
+         background color (tauri.conf.json backgroundColor, the icon blue
+         #1859d9) fills the same phase *before* the webview paints anything. */
+      html,
+      body {
+        /* Match the window backgroundColor: WebKit paints the document
+           background (default light grey) over the window color as soon as
+           the page commits, long before styles.css exists — without this
+           the boot flashes blue → grey → blue. Once the app mounts,
+           Mantine's own body background (bundled CSS, later cascade) wins. */
+        margin: 0;
+        background: #1859d9;
+      }
+      .tilted-note {
+        /* Fixed (not #root-centered) so the layout of the mounted app is
+           unaffected: React only clears #root's children, and these rules
+           keep living in the document. */
+        position: fixed;
+        inset: 0;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        opacity: 1;
+        color: #fff;
+        font: 600 22px/1.4 system-ui, sans-serif;
+        letter-spacing: 0.03em;
+        text-shadow: 0 1px 6px rgba(0, 0, 0, 0.25);
+      }
+      .tilted-note > span {
+        display: inline-block;
+        transform: rotate(-30deg);
+      }
+    </style>
   </head>
   <body>
-    <div id="root"></div>
+    <div id="root">
+      <div class="tilted-note"><span>Markdown Editor is starting</span></div>
+    </div>
     <script type="module" src="/src/main.jsx"></script>
   </body>
 </html>

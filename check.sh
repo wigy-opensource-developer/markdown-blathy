@@ -24,7 +24,7 @@ npm run build
 echo "==> npm test (frontend unit tests)"
 npm test
 
-echo "==> npm run check:bundle (no WOFF 1.0 in dist — woff2Only plugin)"
+echo "==> npm run check:bundle (dist guards: no WOFF 1.0, no unused font weights, no js/css grammars)"
 npm run check:bundle
 
 echo "==> npm run check:licenses (frontend dependencies)"

@@ -2,10 +2,12 @@
 // settings popover can be modal (§6.2). A full render blocks the UI thread
 // and scales with the document, so while the popover is open nothing may
 // render under the user's hands; changes made meanwhile collapse into ONE
-// catch-up render on close. The App wires it to three call sites:
+// catch-up render on close. The App wires it to these call sites:
 //
 //   refreshPreview  → started() before the IPC, finish(result) after
-//   requestPreview  → request()
+//   requestPreview  → request()          (keystroke/option changes)
+//   requestNow      → requestNow()       (a freshly loaded document starts
+//                                         rendering at once, no debounce)
 //   settings opened → open(); settings closed → close()
 //
 // Three bits of state: `paused` (the popover is open), `owed` (something
@@ -16,7 +18,7 @@
 // debt, while one already in flight hands its result to `finish()` instead.
 // And only a real pause can owe: an unpaired `close()` (the popover widget
 // notifying its initial closed state) never schedules a double render.
-export function createPreviewFreeze({ refresh, cancel, apply }) {
+export function createPreviewFreeze({ refresh, refreshNow, cancel, apply }) {
   let paused = false;
   let owed = false;
   let stashed = null;
@@ -25,6 +27,18 @@ export function createPreviewFreeze({ refresh, cancel, apply }) {
     request() {
       owed = true;
       if (!paused) refresh();
+    },
+    /** A change from a *loaded* document: render now, not after the
+     *  debounce. Any keystroke render still scheduled is superseded and
+     *  cancelled — it would render the old text anyway. While frozen the
+     *  request stays owed and catches up (the debounced way) on close. */
+    requestNow() {
+      if (paused) {
+        owed = true;
+        return;
+      }
+      cancel();
+      refreshNow();
     },
     /** A scheduled render began; nothing is owed any more. */
     started() {
