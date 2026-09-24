@@ -124,6 +124,9 @@ function DocumentSettingsForm({ docMeta, onApply, onClose }) {
 
   return (
     <Stack ref={rootRef} gap="sm">
+      <Text size="xs" c="dimmed">
+        Saved in this document's front matter.
+      </Text>
       <Group grow gap="sm">
         <TextInput
           ref={titleRef}
@@ -244,7 +247,7 @@ function DocumentSettings({ docMeta, onApplySettings, onOpenChange }) {
           Document
         </Button>
       </Popover.Target>
-      <Popover.Dropdown>
+      <Popover.Dropdown className="app-popover">
         {/* Mounted only while open: fresh draft + snapshot on every open. */}
         {opened && (
           <DocumentSettingsForm

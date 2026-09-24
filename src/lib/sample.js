@@ -63,6 +63,6 @@ export const SAMPLE_DOC = [
   "",
   "*A soft break continues on the next line*",
   "",
-  "**Try the toolbar:** switch Paper / Margins / Align, then Export PDF — the",
-  "file defaults to `Sample.pdf`.",
+  "**Try the Page… button** in the toolbar: switch Paper / Margins / Align,",
+  "then Export PDF — the file defaults to `Sample.pdf`.",
 ].join("\n");

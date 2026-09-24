@@ -6,6 +6,7 @@
 import { describe, expect, it } from "vitest";
 import {
   docTitle,
+  fileBasename,
   filenameStem,
   parentDirectory,
   safeFileName,
@@ -69,6 +70,21 @@ describe("parentDirectory", () => {
 
   it("returns the root for the root itself", () => {
     expect(parentDirectory("/")).toBe("/");
+  });
+});
+
+describe("fileBasename", () => {
+  it("returns the final component of a POSIX path", () => {
+    expect(fileBasename("/a/b/dark.typ")).toBe("dark.typ");
+  });
+
+  it("returns the final component of a Windows path", () => {
+    expect(fileBasename("C:\\Users\\u\\dark.typ")).toBe("dark.typ");
+  });
+
+  it("keeps a bare filename and tolerates empty input", () => {
+    expect(fileBasename("dark.typ")).toBe("dark.typ");
+    expect(fileBasename(null)).toBe("");
   });
 });
 

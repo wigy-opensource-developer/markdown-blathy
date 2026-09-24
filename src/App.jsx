@@ -17,7 +17,7 @@ import ErrorBanner from "./components/ErrorBanner.jsx";
 
 export default function App() {
   // Settings are loaded once from localStorage (M5, §8.6) and are the single
-  // source of truth for the toolbar options; every option change persists
+  // source of truth for the render options; every option change persists
   // through `changeOption`. `marginPreset` is UI-only and stripped when the
   // payload is built (see lib/api.js); the rest mirrors RenderOptions (§6.1).
   const [settings, setSettings] = useState(() => loadSettings(window.localStorage));

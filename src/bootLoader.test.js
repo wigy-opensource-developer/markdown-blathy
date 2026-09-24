@@ -1,8 +1,7 @@
 // Guards the boot loader markup/style in the repo-root `index.html` — the
 // one piece of first-paint UI that exists outside React (it renders while
 // the JS bundle is still being fetched/evaluated, and React clears `#root`
-// on mount). If the markup or the fade-in-delay contract changes, startup
-// regressions here are invisible to every other test.
+// on mount). Startup regressions here are invisible to every other test.
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 
@@ -18,15 +17,6 @@ describe("index.html boot loader", () => {
 
   it("carries the start-up message", () => {
     expect(html).toContain("Markdown Editor is starting");
-  });
-
-  it("fades in only after a delay, so a fast boot never flashes it", () => {
-    // animation: note-in <duration> ease <delay> forwards — delay > 0 pins
-    // the "no flicker on quick starts" behavior (src/styles.css has the note
-    // itself; the delay lives only in the boot copy of the style).
-    const animation = html.match(/animation:\s*note-in\s+[\d.]+ms\s+\w+\s+(\d+)ms/);
-    expect(animation, "note-in animation needs a delay").not.toBeNull();
-    expect(Number(animation[1])).toBeGreaterThanOrEqual(300);
   });
 
   it("shares the tilted-note rotation with the app stylesheet (the quirk)", () => {

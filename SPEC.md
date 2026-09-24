@@ -28,7 +28,7 @@ User-visible behaviour:
 
 1. Split-screen window: **Markdown editor** (left) and **live preview** (right).
 2. The preview updates automatically while typing (debounced), rendering pages with print margins, exactly as they will appear in the PDF.
-3. A toolbar offers: New / Open / Save Markdown files, a **Document** settings popover (title, author, auto-heading level, language/hyphenation, and the Markdown extensions/flavor), paper size, margins, text alignment, and **Export PDF** (system save dialog). Flavor is a per-document setting (front matter), not a toolbar select; the default is Custom (every extension on).
+3. A toolbar offers, on the left, New / Open / Save Markdown files and a **Document** settings popover (title, author, auto-heading level, language/hyphenation, and the Markdown extensions/flavor); on the right, a **Page settings** popover (paper size, margins, text alignment and the Typst template — global preferences, applied live) and **Export PDF** (system save dialog). A custom template is marked by a dot on the Page button. Flavor is a per-document setting (front matter), not a page-setup select; the default is Custom (every extension on).
 4. The default document style is provided by an embedded Typst template; users may supply their own `.typ` template.
 5. Compile warnings (e.g. unknown fonts) are surfaced in the UI, not swallowed.
 
@@ -49,7 +49,7 @@ User-visible behaviour:
 │  CodeMirror 6 (markdown, via @uiw/react-codemirror) → debounce 200ms    │
 │      → invoke("render_preview")                                         │
 │  Preview pane: <div> of inline SVG pages (one per printed page)          │
-│  Mantine Toolbar / status bar / error banner                            │
+│  Mantine toolbar / status bar / error banner                             │
 └───────────────▲──────────────────────────────────────────┬───────────────┘
         invoke()│  (JSON over Tauri IPC)                    │invoke()
 ┌───────────────┴──────────────────────────────────────────▼───────────────┐

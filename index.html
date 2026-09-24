@@ -7,10 +7,8 @@
     <style>
       /* Boot note: this markup is the first paint of the webview (the app's
          own CSS arrives ~300ms later inside the JS bundle), and React clears
-         #root on mount — no removal code needed. The text fades in only
-         after 300ms, so a quick start shows no flash at all, while an older
-         machine gets a signal during the bundle fetch/eval. The style
-         mirrors `.tilted-note` in src/styles.css (keep in sync); the window
+         #root on mount — no removal code needed. The style mirrors
+         `.tilted-note` in src/styles.css (keep in sync); the window
          background color (tauri.conf.json backgroundColor, the icon blue
          #1859d9) fills the same phase *before* the webview paints anything. */
       html,

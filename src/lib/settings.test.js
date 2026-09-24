@@ -5,6 +5,7 @@ import {
   applyOptionsPatch,
   DEFAULT_SETTINGS,
   loadSettings,
+  pageSetupDefaultsPatch,
   saveSettings,
 } from "./settings.js";
 
@@ -75,6 +76,21 @@ describe("saveSettings", () => {
     saveSettings(DEFAULT_SETTINGS, storage);
     const raw = storage.getItem("tauri-md-editor.settings");
     expect(JSON.parse(raw)).toEqual(DEFAULT_SETTINGS);
+  });
+});
+
+describe("pageSetupDefaultsPatch", () => {
+  it("restores paper, margins, alignment and template in one patch", () => {
+    expect(pageSetupDefaultsPatch()).toEqual({
+      paper: DEFAULT_SETTINGS.options.paper,
+      marginPreset: DEFAULT_SETTINGS.options.marginPreset,
+      textAlign: DEFAULT_SETTINGS.options.textAlign,
+      templatePath: DEFAULT_SETTINGS.options.templatePath,
+    });
+  });
+
+  it("clears a custom template — null is a real value (§8.4)", () => {
+    expect(pageSetupDefaultsPatch().templatePath).toBeNull();
   });
 });
 

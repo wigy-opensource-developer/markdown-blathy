@@ -292,7 +292,8 @@ src/
 ├── main.jsx          # font imports, MantineProvider, <App/>
 ├── App.jsx           # app state, debounce loop, seq guard, preview freeze, layout
 ├── components/
-│   ├── Toolbar.jsx   # file buttons, paper/margins/align selects, document settings, template, export
+│   ├── Toolbar.jsx   # left: file buttons + Document popover; right: Page popover + export
+│   ├── PageSettings.jsx # page setup (paper/margins/align) + template popover; non-modal, live apply
 │   ├── DocumentSettings.jsx # front-matter settings popover (title/author/heading level/language/hyphenation/extensions); modal, uncontrolled draft read on Apply
 │   ├── Editor.jsx    # CodeMirror 6 via @uiw/react-codemirror
 │   ├── Preview.jsx   # SVG pages from render_preview

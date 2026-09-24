@@ -1,42 +1,18 @@
-// Toolbar: file buttons, flavor/paper/margins/align selects, document
-// settings, template picker and export (§8.4 of SPEC.md).
+// Toolbar: file buttons and the Document settings popover on the left (the
+// authoring side); the Page settings popover and Export PDF on the right (the
+// typesetting side). Paper/margins/align and the template all live inside the
+// Page popover (§8.4, §8.6 of SPEC.md), so the toolbar only carries the small
+// custom-template dot on its button.
 import { memo } from "react";
-import { Badge, Button, Divider, Group, Select, Tooltip } from "@mantine/core";
+import { Button, Group, Tooltip } from "@mantine/core";
 import {
   IconDeviceFloppy,
   IconFilePlus,
   IconFileTypePdf,
   IconFolderOpen,
-  IconTemplate,
-  IconTemplateOff,
 } from "@tabler/icons-react";
-import { ALIGNS, MARGIN_PRESETS, PAPERS } from "../lib/presets.js";
 import DocumentSettings from "./DocumentSettings.jsx";
-
-// The toolbar option selects differ only in label, option table, width and
-// which options field they write; a config row + one component removes the
-// copy-pasted <Select> blocks. Flavor is intentionally absent: it is a
-// per-document setting now (front matter, via the Document popover), with the
-// all-on Custom default from settings.
-const OPTION_SELECTS = [
-  { label: "Paper", data: PAPERS, width: 110, field: "paper" },
-  { label: "Margins", data: MARGIN_PRESETS, width: 190, field: "marginPreset" },
-  { label: "Align", data: ALIGNS, width: 110, field: "textAlign" },
-];
-
-/** A single toolbar option select: writes `{ [field]: value }` up to the app. */
-function OptionSelect({ label, data, width, field, value, onOptionChange }) {
-  return (
-    <Select
-      label={label}
-      size="sm"
-      w={width}
-      data={data}
-      value={value}
-      onChange={(v) => onOptionChange({ [field]: v })}
-    />
-  );
-}
+import PageSettings from "./PageSettings.jsx";
 
 function Toolbar({
   options,
@@ -51,7 +27,6 @@ function Toolbar({
   onApplySettings,
   onSettingsOpenChange,
 }) {
-  const customTemplate = options.templatePath;
   return (
     <header id="toolbar">
       <Group gap="xs">
@@ -79,54 +54,14 @@ function Toolbar({
         />
       </Group>
 
-      <Divider orientation="vertical" />
-
-      <Group gap="xs" align="end">
-        {OPTION_SELECTS.map((select) => (
-          <OptionSelect
-            key={select.field}
-            {...select}
-            value={options[select.field]}
-            onOptionChange={onOptionChange}
-          />
-        ))}
-      </Group>
-
       <div className="spacer" />
 
-      <Group gap="xs" align="center">
-        {customTemplate && (
-          <Tooltip label={`Remove custom template (${customTemplate})`}>
-            <Badge
-              variant="light"
-              color="teal"
-              leftSection={<IconTemplateOff size={12} />}
-              onClick={onClearTemplate}
-              style={{ cursor: "pointer" }}
-            >
-              Custom template
-            </Badge>
-          </Tooltip>
-        )}
-        <Tooltip
-          label={
-            customTemplate
-              ? "Replace the custom .typ template"
-              : "Choose a custom .typ template"
-          }
-        >
-          <Button
-            variant={customTemplate ? "light" : "subtle"}
-            size="compact-md"
-            leftSection={
-              customTemplate ? <IconTemplateOff size={16} /> : <IconTemplate size={16} />
-            }
-            onClick={onPickTemplate}
-          >
-            Template…
-          </Button>
-        </Tooltip>
-      </Group>
+      <PageSettings
+        options={options}
+        onOptionChange={onOptionChange}
+        onPickTemplate={onPickTemplate}
+        onClearTemplate={onClearTemplate}
+      />
       <Button color="blue" size="compact-md" leftSection={<IconFileTypePdf size={16} />} onClick={onExport}>
         Export PDF
       </Button>

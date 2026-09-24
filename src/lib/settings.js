@@ -6,12 +6,12 @@
 
 const STORAGE_KEY = "tauri-md-editor.settings";
 
-/** The settings shape (§8.6): toolbar options plus the editor font size. */
+/** The settings shape (§8.6): render options plus the editor font size. */
 export const DEFAULT_SETTINGS = {
   options: {
-    // Custom = every extension on (§6.1). Flavor is no longer a toolbar
-    // control — a document overrides it via front matter (`flavor:` / `ext_*`,
-    // editable in the Document settings popover).
+    // Custom = every extension on (§6.1). Flavor is not a page-setup control —
+    // a document overrides it via front matter (`flavor:` / `ext_*`, editable
+    // in the Document settings popover).
     flavor: "custom",
     paper: "a4",
     marginPreset: "normal",
@@ -45,7 +45,7 @@ export function saveSettings(settings, storage) {
 // the custom template, §8.4).
 const NULLABLE_OPTION_FIELDS = new Set(["templatePath"]);
 
-/** Merge a partial patch into the toolbar options, dropping null values for
+/** Merge a partial patch into the render options, dropping null values for
  *  fields that cannot be empty. Mantine Select fires `onChange(null)` when
  *  the already-selected option is clicked again (`allowDeselect` defaults to
  *  true); applying that blindly would corrupt the settings and the IPC
@@ -57,6 +57,15 @@ export function applyOptionsPatch(options, patch) {
     cleaned[field] = value;
   }
   return { ...options, ...cleaned };
+}
+
+/** The options patch that restores the page-setup defaults: paper, margin
+ *  preset, alignment and the embedded template. The Page settings popover's
+ *  "Restore defaults" action applies it through the same `changeOption` path
+ *  as any other patch (§8.6). */
+export function pageSetupDefaultsPatch() {
+  const { paper, marginPreset, textAlign, templatePath } = DEFAULT_SETTINGS.options;
+  return { paper, marginPreset, textAlign, templatePath };
 }
 
 /** Merge parsed settings onto the defaults, dropping anything malformed. */

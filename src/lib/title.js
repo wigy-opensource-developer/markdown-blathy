@@ -29,6 +29,13 @@ export function parentDirectory(path) {
   return idx === 0 ? "/" : p.slice(0, idx);
 }
 
+/** The final path component: "/a/b/dark.typ" → "dark.typ". Handles both
+ *  separators, since the file dialog may hand back a Windows path on Windows.
+ *  Used for the template basename shown in the Page settings popover. */
+export function fileBasename(path) {
+  return String(path ?? "").split(/[\\/]/).pop() ?? "";
+}
+
 /** Sanitize a title into something safe to use as a file name: strips path
  *  separators and reserved characters (both major OSes), collapses
  *  whitespace, and falls back to "document" when nothing usable remains.

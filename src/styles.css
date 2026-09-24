@@ -58,6 +58,25 @@ body {
   flex: 1;
 }
 
+/* Both toolbar popovers (Document, Page) share this skin: a slightly stronger
+   border than Mantine's default and soft bottom corners, while the top edge
+   stays crisp under the arrow. The arrow is a child of the dropdown and reads
+   the same `--popover-border-color`, so overriding the variable skins both. */
+.app-popover {
+  --popover-border-color: var(--mantine-color-gray-5, #adb5bd);
+  border-radius: 0 0 6px 6px;
+}
+
+/* The custom-template marker on the Page button (PageSettings.jsx): visible
+   only while a custom template is active, tooltip carries its basename. */
+.template-dot {
+  display: block;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--mantine-color-teal-6, #0ca678);
+}
+
 #panes {
   flex: 1;
   display: flex;
