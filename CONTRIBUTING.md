@@ -31,6 +31,92 @@ npm run tauri build
 
 Output lands in `src-tauri/target/release/bundle/`.
 
+## How to release a new version
+
+Preparation happens **manually on the dev machine**; CI only packages the
+release and opens a draft. The order matters: the metainfo references
+screenshots by raw tag URL (`docs/screenshots/…` at `v<version>`, SPEC §5
+M8 task 2), so they must be in the tagged commit.
+
+### Tooling
+
+- **git-cliff** — changelog from the conventional-commit history
+  (`cargo install git-cliff --locked`, or your package manager).
+- **Screenshot capture** — WebdriverIO with `@wdio/tauri-service` (default
+  embedded provider via `tauri-plugin-wdio-webdriver`; `tauri-driver` +
+  `webkit2gtk-driver` works on Linux too), plus `xvfb`, `openbox`/`mutter`,
+  `picom`, `xdotool`, `maim` (or ImageMagick `import`) and ImageMagick. See
+  <https://v2.tauri.app/develop/tests/webdriver/>.
+
+### 1. Pre-flight
+
+`./check.sh` passes, the working tree is clean, and pick the version:
+
+```bash
+VERSION=v0.2.0   # tags are v-prefixed
+```
+
+### 2. Refresh the screenshots
+
+Screenshots always come from the real binary — a mocked `render_preview`
+cannot reproduce Typst layout, and someone has to pick a good window state
+and content.
+
+1. Start the release binary on a virtual display with a window manager and
+   compositor (`picom`) so the window gets its native shadow. The app takes
+   no CLI file argument, so the document is the built-in sample or typed via
+   the WebDriver session.
+2. Drive it to the state to show (open the Document or Page popover, …) and
+   wait for the render.
+3. Capture the app window by id with `maim` (ImageMagick `import` works
+   too) — `browser.takeScreenshot()` only captures the webview viewport.
+4. Follow Flathub's screenshot quality guidelines: window-only, no desktop
+   background, native shadow and rounded corners, ~1000×700 (2000×1400
+   HiDPI), one-sentence captions, first screenshot `type="default"`.
+5. Save to `docs/screenshots/` and update the metainfo `<screenshots>`.
+
+Validate the metainfo locally with `AS_VALIDATE_NONET=1` set —
+`appstreamcli` otherwise fetches the screenshot URLs, which do not resolve
+until the tag is pushed.
+
+### 3. Generate the changelog
+
+```bash
+git-cliff --unreleased --tag "$VERSION" --prepend CHANGELOG.md
+```
+
+This prepends the commits since the last tag as the new version's section.
+The repo has no tags yet, so the first run covers the whole history: recent
+commits follow conventional commits (`feat:`, `fix(scope):`, `refactor:`,
+`chore:`, `doc:`), while the earliest free-form messages match no parser and
+need hand-curation for that first section. Add the matching
+`<release version="…" date="…">` entry to the metainfo as well.
+
+### 4. Bump the version
+
+Keep these in sync:
+
+- `package.json` → `version`
+- `src-tauri/Cargo.toml` → `[package] version`
+- `src-tauri/tauri.conf.json` → `version`
+- the metainfo `<releases>` entry
+
+### 5. Commit, tag, push
+
+```bash
+git add -A
+git commit -m "chore(release): $VERSION"
+git tag -a "$VERSION" -m "$VERSION"
+git push --follow-tags
+```
+
+### 6. Review the draft release
+
+The tag-triggered workflow (SPEC §5, M8 task 3) builds `.deb`, `.rpm` and
+the AppImage and opens an **unpublished** GitHub release with the artifacts
+and git-cliff release notes for the tag. Review the notes and assets, then
+publish manually — nothing is public until you do.
+
 ## Specification
 
 Three documents describe the project:
