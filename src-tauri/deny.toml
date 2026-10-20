@@ -51,6 +51,20 @@ ignore = [
   # untrusted XML can reach quick-xml in this app.
   "RUSTSEC-2026-0194",
   "RUSTSEC-2026-0195",
+  #
+  # LaTeX math translator (tylax -> mitex). `fxhash` is unmaintained but has
+  # no vulnerability. `rkyv` 0.7.46 is used by mitex-spec only to read its
+  # *static, build-time-generated* command-spec archive; this app never
+  # deserializes untrusted rkyv archives (the only render input is Markdown
+  # text). The patched rkyv 0.8 line is not compatible with mitex 0.2.
+  "RUSTSEC-2025-0057",  # fxhash — unmaintained
+  "RUSTSEC-2026-0235",  # rkyv 0.7 — static spec archive only
+  #
+  # unsafe-libyaml is unmaintained and reached through serde_yaml ->
+  # hayagriva -> typst-library. Typst's parser is the only consumer; the app
+  # never reads user-provided YAML through this path (front matter uses the
+  # small `key: value` scanner in markdown/frontmatter.rs).
+  "RUSTSEC-2024-0449",  # unsafe-libyaml — unmaintained
 ]
 
 [licenses]

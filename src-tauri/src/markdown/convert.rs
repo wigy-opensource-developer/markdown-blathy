@@ -13,7 +13,7 @@ use serde::Serialize;
 use crate::markdown::{
     comrak_options, escape::escape_text, escape::escape_text_into,
     escape::escape_text_wrapping_long_words_into, escape::escape_typst_string,
-    escape::escape_typst_string_into, frontmatter,
+    escape::escape_typst_string_into, frontmatter, math,
 };
 use crate::options::{FeatureFlags, Flavor, HeadingIds};
 
@@ -597,7 +597,7 @@ impl Renderer {
     }
 
     /// Render a node's inline children into escaped Typst markup.
-    fn render_inlines(&self, node: Node) -> String {
+    fn render_inlines(&mut self, node: Node) -> String {
         let mut writer = Writer::new();
         self.render_inlines_into(node, &mut writer);
         writer.finish()
@@ -606,7 +606,7 @@ impl Renderer {
     /// Accumulator form of `render_inlines`: appends to `writer` instead of
     /// returning a string, so container nodes wrap their children without
     /// per-node intermediate strings.
-    fn render_inlines_into(&self, node: Node, writer: &mut Writer) {
+    fn render_inlines_into(&mut self, node: Node, writer: &mut Writer) {
         for child in node.children() {
             self.render_inline_into(child, writer);
         }
@@ -621,7 +621,7 @@ impl Renderer {
     /// writes. `depth`/`skip_below` preserve the recursive version's
     /// drop-unknown-subtree behavior: a node matched by no arm removes its
     /// whole subtree from the output.
-    fn render_inline_into(&self, node: Node, writer: &mut Writer) {
+    fn render_inline_into(&mut self, node: Node, writer: &mut Writer) {
         let mut depth = 0usize;
         let mut skip_below: Option<usize> = None;
         for edge in node.traverse() {
@@ -680,15 +680,35 @@ impl Renderer {
                             writer.push_str("\", [");
                         }
                         NodeValue::HtmlInline(html) => escape_text_into(html, &mut writer.buf),
-                        // Passthrough: LaTeX macros are not converted in v1 (§6.2).
+                        // Math is authored in LaTeX notation; the dedicated
+                        // translator converts it to Typst math and reports
+                        // constructs it could not translate (§6.2).
                         NodeValue::Math(math) => {
+                            let translated = math::translate(&math.literal);
+                            let line = n.data().sourcepos.start.line;
+                            for diagnostic in translated.diagnostics {
+                                let warning = match diagnostic.fix {
+                                    Some(fix) => format!(
+                                        "line {line}: math: {} (fix: `{fix}`)",
+                                        diagnostic.message
+                                    ),
+                                    None => {
+                                        format!("line {line}: math: {}", diagnostic.message)
+                                    }
+                                };
+                                // Headings are rendered twice (TOC collection +
+                                // the heading itself); keep the warning once.
+                                if !self.warnings.contains(&warning) {
+                                    self.warnings.push(warning);
+                                }
+                            }
                             if math.display_math {
                                 writer.push_str("$ ");
-                                writer.push_str(&math.literal);
+                                writer.push_str(&translated.typst);
                                 writer.push_str(" $");
                             } else {
                                 writer.push_str("$");
-                                writer.push_str(&math.literal);
+                                writer.push_str(&translated.typst);
                                 writer.push_str("$");
                             }
                         }
@@ -1378,11 +1398,29 @@ mod tests {
             Flavor::Custom,
             &default_heading_ids(),
         );
-        assert_eq!(math.body, "Inline $x^2$ and display $ y $.");
+        assert_eq!(math.body, "Inline $x^(2)$ and display $ y $.");
 
         // Without the extension the syntax is ordinary (escaped) text.
         let gfm = md_to_typst("text[^1] and $x^2$", Flavor::Github, &default_heading_ids());
         assert_eq!(gfm.body, "text\\[^1\\] and \\$x^2\\$");
+    }
+
+    /// Math diagnostics carry the Markdown source line and, when the
+    /// translator produced a safe replacement, the suggested fix.
+    #[test]
+    fn math_diagnostics_are_surfaced_with_line_and_fix() {
+        let doc = md_to_typst(
+            "before\n\nSPHINCS$^+$\n",
+            Flavor::Custom,
+            &default_heading_ids(),
+        );
+        let warning = doc
+            .warnings
+            .iter()
+            .find(|w| w.contains("empty base"))
+            .unwrap_or_else(|| panic!("expected empty-base warning: {:?}", doc.warnings));
+        assert!(warning.contains("line 3: math:"), "{warning}");
+        assert!(warning.contains("fix: `\"\"^(+)`"), "{warning}");
     }
 
     #[test]

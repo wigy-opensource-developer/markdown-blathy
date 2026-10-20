@@ -128,6 +128,20 @@ toggled with an `ext_<name>: true|false` key (e.g. `ext_footnotes: true`).
 When the app writes front matter it uses the XOR-minimal encoding: the preset
 with the fewest flips, plus only the differing flags.
 
+**Math input is LaTeX-flavored.** Markdown authors write inline and display
+math in TeX/LaTeX notation (`$...$`, `$$...$$`) — the convention used by
+pandoc, GitHub, Obsidian, Jupyter and most Markdown tooling. Typst is the
+rendering backend, not the document-facing math dialect. A dedicated
+translator (`markdown/math.rs`) converts LaTeX math to Typst math; raw math is
+**not** passed through. It covers common notation: scripts (including TeX's
+empty base, `$^+$`), fractions, roots, sums/integrals, Greek letters and
+operators, text/style wrappers, matrices, delimiters, `\stackrel`, and common
+macro definitions. Translator warnings and invalid output become math
+diagnostics with the Markdown source line and, where available, a suggested
+fix. This is not a full LaTeX engine: packages, exotic primitives and some
+TikZ/environment edge cases remain unsupported; those are reported rather than
+silently mangled. Math remains opt-in (Custom flavor / `ext_math`).
+
 **Explicit bare links** (`<https://example.com>`) are supported in **all flavors** — this is standard CommonMark, not an extension. The `autolink` extension (automatic bare-URL linking) is **off in every flavor**.
 
 **Long unbreakable tokens wrap.** Typst's line breaker follows Unicode
@@ -225,7 +239,7 @@ one closes only when the upstream crate is patched — there is no in-repo fix.
 - Only the embedded DejaVu family by default (Sans regular + bold, Sans Mono for code, Math TeX Gyre for math); no CJK coverage out of the box. Custom templates can reference system fonts and ship font files next to the `.typ` file.
 - **System-font naming is typst's, not fontconfig's** — typst strips styling suffixes from family names, so a font whose *name* carries the styling may be unreachable. Use the trimmed family name or a font without a styling suffix.
 - Remote images unsupported; images must be local files reachable through the world's file resolver.
-- No LaTeX math macros.
+- **Math is LaTeX-flavored, but not a full LaTeX engine.** Common LaTeX math (scripts, fractions/roots, symbols, styles, matrices, common macros) is translated to Typst math. Packages, exotic TeX primitives and some environment/TikZ edge cases remain unsupported; translator diagnostics report them.
 - No incremental compilation — full recompile per change.
 - **Linux UI text is grayscale-antialiased** — WebKitGTK renders text onto composited transparent layers. The Typst SVG preview is vector paths and unaffected.
 - **Non-UTF-8 filenames on legacy-locale Linux** — paths travel over IPC as JSON strings (UTF-8), so a filename in e.g. latin-2 bytes is echoed back lossily. File *contents* still load and writes still go to the correct file.

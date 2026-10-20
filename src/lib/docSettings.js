@@ -47,3 +47,25 @@ export function buildDocSettingsPatch(form, initial) {
   }
   return patch;
 }
+
+/**
+ * Merge an already-applied front-matter patch into the last render's docMeta.
+ * The patch is canonical (Rust wrote it), so the popover can show the new
+ * values immediately instead of waiting for the follow-up render — which may
+ * be deferred while the popover is open, or fail on unrelated document
+ * content and leave the old metadata in place. Absent keys keep the current
+ * value; empty title/author/lang clear it (the front-matter key was removed).
+ */
+export function applyDocSettingsPatch(docMeta, patch) {
+  if (!docMeta) return docMeta;
+  const next = { ...docMeta };
+  if (patch.title !== undefined) next.title = patch.title || null;
+  if (patch.author !== undefined) next.author = patch.author || null;
+  if (patch.autoHeadingLevel !== undefined) {
+    next.autoHeadingLevel = patch.autoHeadingLevel;
+  }
+  if (patch.lang !== undefined) next.lang = patch.lang || null;
+  if (patch.hyphenate !== undefined) next.hyphenate = patch.hyphenate;
+  if (patch.features !== undefined) next.features = { ...patch.features };
+  return next;
+}

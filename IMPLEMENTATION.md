@@ -95,11 +95,39 @@ pub struct PreviewOutcome { pub pages: Vec<String>, pub warnings: Vec<String>, p
 | `ThematicBreak` | `#thematic-break()` |
 | `FootnoteReference` | inlined at call site as `#footnote[<definition>]` |
 | `FootnoteDefinition` | dropped (collected for matching) |
-| `Math` | passthrough: inline `$…$`, block `$ … $` |
+| `Math` | LaTeX-flavored input translated by `markdown/math.rs` (see “Math dialect” below); not a full LaTeX engine |
 | `FrontMatter` | parsed (every flavor) → document settings (`title`/`author`/`autoHeadingLevel`/`flavor`/`lang`/`hyphenate`/`ext_*`) in `ConvertedDocument`; `lang`/`hyphenate` also emit a leading `#set text(…)`, nothing else in body |
 | `HtmlInline` / `HtmlBlock` | **lossy**: raw literal as plain text, escaped |
 | `HtmlBlock` that is exactly `<!-- pagebreak -->` (Custom) | `#pagebreak()` — pandoc's page-break convention |
 | `DescriptionList` | `#definition-list((term, [def]), …)` |
+
+### Math dialect
+
+Markdown math is authored in TeX/LaTeX notation; Typst is only the renderer.
+`src-tauri/src/markdown/math.rs` owns the dialect boundary and is independent
+of comrak/Tauri. It wraps `tylax` (LaTeX math parser + converter):
+
+```rust
+pub fn translate(latex: &str) -> Translation
+pub struct Translation { pub typst: String, pub diagnostics: Vec<MathDiagnostic> }
+pub struct MathDiagnostic { pub message: String, pub fix: Option<String> }
+```
+
+- `tylax::latex_math_to_typst_with_diagnostics` performs the conversion
+  (fractions, roots, scripts, styles, matrices, common macros/environments).
+- Its warnings become diagnostics. A `ParseError` warning that describes a
+  LaTeX/Typst difference (e.g. `$^+$`) carries the translated output as `fix`;
+  unsupported primitives/macros have no safe automatic fix.
+- The translated Typst is checked with `typst::syntax::parse_math`; a
+  translator regression becomes a math diagnostic instead of a later cryptic
+  “Preview failed”.
+- `convert.rs` adds the Markdown source line to each diagnostic and emits it
+  as a render warning. Headings are rendered twice (TOC collection + heading),
+  so identical warnings are deduplicated.
+
+This is a compatibility translator, not a full LaTeX implementation: packages,
+exotic primitives and some environment/TikZ edge cases remain unsupported and
+are reported as diagnostics. See the §6 limitation in SPEC.md.
 
 ### Escaping rules
 

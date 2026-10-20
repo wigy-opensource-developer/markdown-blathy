@@ -6,6 +6,7 @@
 pub mod convert;
 pub mod escape;
 pub mod frontmatter;
+pub mod math;
 pub mod suggest;
 
 use comrak::Options;

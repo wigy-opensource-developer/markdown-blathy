@@ -16,6 +16,9 @@
 | maps task list items to `#task-list(task-done([…]), task-todo([…]), task-plain([…]))` | unit | high |
 | maps GFM table to `#markdown-table(header: …, rows: …)` (GFM/Custom only) | unit | high |
 | maps footnotes and math in Custom flavor; leaves them as text otherwise | unit | high |
+| `math::translate`: fractions/roots/scripts, styles/text, multi-letter variables, `\stackrel`, matrices/delimiters; clean supported input has no diagnostics | unit | high |
+| `math::translate`: translator warnings become diagnostics; empty script base has a suggested fix; translated Typst is syntax-valid | unit | high |
+| converter surfaces math diagnostics with the Markdown source line and fix text | unit | high |
 | maps heading IDs: manual `{#custom-id}` always honored (every level, any `maxLevel`); auto-slug = kebab-case of plain text, gated by `maxLevel`; one uniqueness namespace, duplicates → warning, first wins; emitted as `#label("id")` | unit | high |
 | maps internal links `[x](#slug)` to `#internal-link("slug")[x]`; external URLs keep `#link("url")`; empty fragment stays a URL link | unit | high |
 | maps explicit bare links `<url>` as Link with label = URL text | unit | high |

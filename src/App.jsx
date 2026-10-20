@@ -6,6 +6,7 @@ import { marginsForPreset } from "./lib/presets.js";
 import { createPreviewFreeze } from "./lib/previewFreeze.js";
 import { createRenderStatus } from "./lib/renderStatus.js";
 import { isStaleResponse } from "./lib/seq.js";
+import { applyDocSettingsPatch } from "./lib/docSettings.js";
 import { applyOptionsPatch, loadSettings, saveSettings } from "./lib/settings.js";
 import { SAMPLE_DOC } from "./lib/sample.js";
 import { docTitle, parentDirectory, safeFileName, windowTitle } from "./lib/title.js";
@@ -50,7 +51,9 @@ export default function App() {
 
   // The effective document settings from the last render (§6.2): Rust parses
   // the front matter and returns it, so the frontend never parses YAML
-  // itself. Null until the first render lands.
+  // itself. Applied settings patches are merged in immediately (the canonical
+  // value Rust just wrote), so the dialog never shows stale values while the
+  // catch-up render is pending. Null until the first render lands.
   const [docMeta, setDocMeta] = useState(null);
 
   // True while the Document settings popover is open: the app then treats it
@@ -293,6 +296,10 @@ export default function App() {
       runFileAction(async () => {
         const updated = await api.updateFrontMatter(markdown, patch);
         setMarkdown(updated);
+        // Reflect the written settings immediately: the catch-up render is
+        // deferred while the popover is open and may fail on unrelated
+        // content, which must not leave the dialog showing stale values.
+        setDocMeta((prev) => applyDocSettingsPatch(prev, patch));
         requestPreview();
       }),
     [runFileAction, markdown, requestPreview]

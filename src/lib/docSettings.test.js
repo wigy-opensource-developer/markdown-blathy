@@ -7,6 +7,7 @@
 // "missing". `lang` clears with an empty string, like title/author.
 import { describe, expect, it } from "vitest";
 import {
+  applyDocSettingsPatch,
   buildDocSettingsPatch,
   hyphenateFormValue,
   hyphenatePatchValue,
@@ -112,5 +113,44 @@ describe("buildDocSettingsPatch", () => {
       autoHeadingLevel: 2,
       features: { a: false },
     });
+  });
+});
+
+describe("applyDocSettingsPatch", () => {
+  const meta = () => ({
+    title: "Old",
+    author: "Ada",
+    autoHeadingLevel: 6,
+    lang: "hu",
+    hyphenate: false,
+    flavor: "custom",
+    features: { superscript: true, table: true },
+    toc: [],
+  });
+
+  it("merges changed fields and clears removed ones", () => {
+    const next = applyDocSettingsPatch(meta(), {
+      title: "",
+      lang: "",
+      hyphenate: null,
+      features: { superscript: false, table: true },
+    });
+    expect(next.title).toBeNull();
+    expect(next.lang).toBeNull();
+    expect(next.hyphenate).toBeNull();
+    expect(next.features).toEqual({ superscript: false, table: true });
+    expect(next.author).toBe("Ada");
+    expect(next.autoHeadingLevel).toBe(6);
+  });
+
+  it("does not touch unpatched fields and tolerates no render yet", () => {
+    const current = meta();
+    expect(applyDocSettingsPatch(current, { author: "Grace" }).author).toBe(
+      "Grace"
+    );
+    expect(applyDocSettingsPatch(current, { author: "Grace" }).title).toBe(
+      "Old"
+    );
+    expect(applyDocSettingsPatch(null, { title: "T" })).toBeNull();
   });
 });

@@ -38,6 +38,11 @@ comrak = { version = "0.54", default-features = false, features = ["bon", "attri
 # darling); declared here because the converter uses it at runtime. MIT.
 strsim = "0.11"
 
+# LaTeX math → Typst math. Markdown authors write LaTeX; Typst is only the
+# renderer. The crate provides the parser, macro expansion, symbol maps and
+# conversion warnings used by `markdown::math`. Apache-2.0.
+tylax = { version = "0.3.8", default-features = false }
+
 # Typst 0.15 engine line — these four crates are released in lockstep and
 # must share the same minor version. typst-as-lib 0.16 is the first line
 # compatible with Typst 0.15 (0.15.x pins Typst 0.14).
