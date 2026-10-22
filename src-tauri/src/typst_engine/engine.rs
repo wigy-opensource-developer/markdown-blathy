@@ -314,7 +314,7 @@ fn render_diagnostic_with_world(
 mod tests {
     use super::{
         build_engine, compile_pdf_with_inputs, compile_preview_with_inputs, FontOptions,
-        PreviewOutcome,
+        PreviewOutcome, FONT_BOLD_BYTES, FONT_BYTES, FONT_MATH_BYTES, FONT_MONO_BYTES,
     };
     use crate::options::{Flavor, HeadingIds, Margins, Paper, RenderOptions, TextAlign};
     use crate::typst_engine::template::{
@@ -322,6 +322,22 @@ mod tests {
     };
     use typst::foundations::{Dict, IntoValue, Value};
     use typst_as_lib::{TypstEngine, TypstTemplateMainFile};
+
+    /// Families embedded in the binary, and therefore available even when
+    /// `system_fonts` is off. Tests that need a *system-only* family must
+    /// skip these — otherwise an embedded face such as "DejaVu Sans Mono"
+    /// would never emit the expected unknown-font warning.
+    fn is_embedded_family(family: &str) -> bool {
+        [
+            FONT_BYTES,
+            FONT_BOLD_BYTES,
+            FONT_MONO_BYTES,
+            FONT_MATH_BYTES,
+        ]
+        .into_iter()
+        .flat_map(|bytes| typst::text::Font::iter(typst::foundations::Bytes::new(bytes)))
+        .any(|font| font.info().family == family)
+    }
 
     fn gfm_options() -> RenderOptions {
         RenderOptions {
@@ -778,11 +794,11 @@ mod tests {
     #[test]
     fn subsetted_font_book_only_loads_referenced_families() {
         let mut system = typst_kit::fonts::system().map(|(_p, i)| i.family);
-        let family = system.find(|f| f != "DejaVu Sans");
+        let family = system.find(|f| !is_embedded_family(f));
         let Some(family) = family else {
             return; // no usable system font on this machine
         };
-        let other = system.find(|f| f != "DejaVu Sans" && f != &family);
+        let other = system.find(|f| !is_embedded_family(f) && f != &family);
         let Some(other) = other else {
             return; // need a second family to prove the subset is exclusive
         };
@@ -818,7 +834,7 @@ mod tests {
     fn system_fonts_are_used_when_enabled() {
         let family = typst_kit::fonts::system()
             .map(|(_path, info)| info.family)
-            .find(|f| f != "DejaVu Sans");
+            .find(|f| !is_embedded_family(f));
         let Some(family) = family else {
             return; // no usable system font on this machine
         };
@@ -857,7 +873,7 @@ mod tests {
     fn user_top_level_font_set_overrides_prelude_default() {
         let family = typst_kit::fonts::system()
             .map(|(_path, info)| info.family)
-            .find(|f| f != "DejaVu Sans");
+            .find(|f| !is_embedded_family(f));
         let Some(family) = family else {
             return; // no usable system font on this machine
         };

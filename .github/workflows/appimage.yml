@@ -15,9 +15,11 @@ jobs:
     # attacker opening a PR that adds an appimage.yml on a different branch
     # and dispatching it with workflow_dispatch.
     if: github.ref == 'refs/heads/master'
-    runs-on: ubuntu-latest
+    # Pin the image: ubuntu-latest is migrating to Ubuntu 26.04. Building the
+    # AppImage on 24.04 also keeps the glibc baseline lower.
+    runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # ---- system dependencies (Tauri + appimagetool runtime) ----------------
       - name: install system deps
@@ -49,9 +51,9 @@ jobs:
 
       # ---- Node.js -----------------------------------------------------------
       - name: setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
-          node-version: 22
+          node-version: 24
           cache: npm
 
       - name: install npm dependencies
@@ -63,7 +65,7 @@ jobs:
 
       # ---- upload artifact ---------------------------------------------------
       - name: upload AppImage artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: tauri-md-editor-x86_64.AppImage
           path: target/appimage/tauri-md-editor-*.AppImage

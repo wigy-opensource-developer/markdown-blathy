@@ -2,11 +2,25 @@
 
 ## Prerequisites
 
-- Node.js ≥ 18 (LTS; v20 via nvm is fine)
+- Node.js ≥ 22 (LTS; v24 recommended, and used by CI)
 - Rust stable
 - `cargo-deny` (`cargo install cargo-deny --locked`, or via your package manager)
-- **Linux:** `libwebkit2gtk-4.1-dev libgtk-3-dev pkg-config build-essential libssl-dev`
+- **Linux:** Tauri's native development headers —
+  `libwebkit2gtk-4.1-dev libgtk-3-dev libsoup-3.0-dev
+  libjavascriptcoregtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev
+  libdbus-1-dev pkg-config build-essential libssl-dev`
 - **macOS:** Xcode Command Line Tools
+
+On minimal Linux containers, install the packages above before running the Rust
+checks. In particular, `libdbus-1-dev` is required by Tauri's Linux stack
+(`libdbus-sys`); without it `cargo test`/`cargo clippy` fail while compiling a
+dependency. On Debian/Ubuntu:
+
+```bash
+sudo apt install libwebkit2gtk-4.1-dev libgtk-3-dev libsoup-3.0-dev \
+  libjavascriptcoregtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev \
+  libdbus-1-dev pkg-config build-essential libssl-dev
+```
 
 ## Development
 
