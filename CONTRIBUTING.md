@@ -9,6 +9,9 @@
   `libwebkit2gtk-4.1-dev libgtk-3-dev libsoup-3.0-dev
   libjavascriptcoregtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev
   libdbus-1-dev pkg-config build-essential libssl-dev`
+- **Linux headless/WebDriver (optional):** `xvfb xauth dbus-x11
+  webkit2gtk-driver` — see [TESTING.md](TESTING.md) for the headless smoke
+  test and the plan for completing the E2E suite.
 - **macOS:** Xcode Command Line Tools
 
 On minimal Linux containers, install the packages above before running the Rust
@@ -21,6 +24,10 @@ sudo apt install libwebkit2gtk-4.1-dev libgtk-3-dev libsoup-3.0-dev \
   libjavascriptcoregtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev \
   libdbus-1-dev pkg-config build-essential libssl-dev
 ```
+
+For headless release smoke tests or WebDriver, add `xvfb xauth dbus-x11
+webkit2gtk-driver`; the exact commands and the remaining E2E work are
+documented in [TESTING.md](TESTING.md#headless-test-environment).
 
 ## Development
 

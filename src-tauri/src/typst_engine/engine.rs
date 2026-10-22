@@ -635,7 +635,7 @@ mod tests {
     fn pdf_bytes_write_atomically_to_disk() {
         let bytes = compile_pdf_body("= Hello\n\nExport me.");
         let target =
-            std::env::temp_dir().join(format!("tauri-md-editor-pdf-{}.pdf", std::process::id()));
+            std::env::temp_dir().join(format!("markdown-blathy-pdf-{}.pdf", std::process::id()));
 
         crate::files::write_atomically(&target, &bytes).expect("must write");
 

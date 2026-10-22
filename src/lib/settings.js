@@ -4,7 +4,7 @@
 // module stays pure and unit-testable in node (which has no
 // `window.localStorage`); the app passes `window.localStorage`.
 
-const STORAGE_KEY = "tauri-md-editor.settings";
+const STORAGE_KEY = "markdown-blathy.settings";
 
 /** The settings shape (§8.6): render options plus the editor font size. */
 export const DEFAULT_SETTINGS = {

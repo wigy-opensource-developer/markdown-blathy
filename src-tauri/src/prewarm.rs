@@ -57,8 +57,10 @@ mod tests {
     use std::fs;
 
     fn temp_dir(tag: &str) -> PathBuf {
-        let dir =
-            std::env::temp_dir().join(format!("md-editor-prewarm-{tag}-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!(
+            "markdown-blathy-prewarm-{tag}-{}",
+            std::process::id()
+        ));
         fs::create_dir_all(&dir).unwrap();
         dir
     }

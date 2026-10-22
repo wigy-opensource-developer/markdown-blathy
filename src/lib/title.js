@@ -49,9 +49,9 @@ export function safeFileName(title) {
   return cleaned === "" ? "document" : cleaned;
 }
 
-/** The OS window title for the current document: "<title> - Markdown to PDF".
+/** The OS window title for the current document: "<title> - MarkdownBláthy".
  *  The app-name suffix keeps multiple instances distinguishable in the
  *  window manager (§8.4). */
 export function windowTitle(title) {
-  return `${title} - Markdown to PDF`;
+  return `${title} - MarkdownBláthy`;
 }

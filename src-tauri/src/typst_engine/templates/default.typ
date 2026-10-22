@@ -1,4 +1,4 @@
-// default.typ — embedded prelude for tauri-md-editor.
+// default.typ — embedded prelude for MarkdownBláthy.
 //
 // This file is the PRELUDE shared by every template (§6.3): it provides
 // default implementations of the helper functions the markdown→Typst

@@ -1,4 +1,4 @@
-# Tauri MD Editor — Test Plan
+# MarkdownBláthy — Test Plan
 
 ## Test matrix
 
@@ -72,7 +72,7 @@
 | loadSettings falls back to defaults on corrupt JSON | settings.js | high |
 | loadSettings merges a partial stored options object onto the defaults | settings.js | high |
 | loadSettings falls back to default margins when stored margins are incomplete | settings.js | high |
-| saveSettings writes JSON under the tauri-md-editor.settings key | settings.js | high |
+| saveSettings writes JSON under the markdown-blathy.settings key | settings.js | high |
 | applyOptionsPatch ignores null patches for fields that cannot be empty (Select deselect) | settings.js | high |
 | applyOptionsPatch keeps null templatePath (clearing custom template is legitimate) | settings.js | high |
 | applyOptionsPatch applies real values and leaves unpatched fields untouched | settings.js | high |
@@ -86,7 +86,132 @@
 Build guard: `npm run check:bundle` (in `./check.sh`, after the build) fails when
 `dist/` contains a `.woff` file or a dangling `.woff` CSS reference.
 
-Component tests (React Testing Library) are not required for v1; the seq guard and debounce are simple enough to review by hand.
+Component tests render through `react-dom/server`; interaction, focus and
+browser layout are intentionally left to the E2E layer described below.
+
+## Headless test environment
+
+The Vitest and Rust suites are headless: they need no X server, but the Rust
+binary still links against Tauri's native Linux stack. On Debian/Ubuntu this
+is the complete build + test set used by CI:
+
+```bash
+sudo apt-get install -y --no-install-recommends \
+  libwebkit2gtk-4.1-dev libgtk-3-dev libsoup-3.0-dev \
+  libjavascriptcoregtk-4.1-dev libayatana-appindicator3-dev \
+  librsvg2-dev libdbus-1-dev pkg-config build-essential libssl-dev
+```
+
+Without those headers, `cargo clippy`/`cargo test` fail while *linking* the
+test binary (`unable to find library -lgdk-3`, `-lwebkit2gtk-4.1`, …).
+
+For a headless display (release smoke test or WebDriver), also install:
+
+```bash
+sudo apt-get install -y --no-install-recommends \
+  xvfb xauth dbus-x11 webkit2gtk-driver
+```
+
+Build the real production binary and smoke-test that the window initializes:
+
+```bash
+npm run tauri build -- --no-bundle
+mkdir -p /tmp/runtime-root && chmod 700 /tmp/runtime-root
+
+env XDG_RUNTIME_DIR=/tmp/runtime-root \
+  xvfb-run -a dbus-run-session -- \
+  env WEBKIT_DISABLE_COMPOSITING_MODE=1 \
+  timeout 15s src-tauri/target/release/markdown-blathy
+```
+
+Exit status `124` means the app stayed alive until `timeout` stopped it — the
+success condition for this smoke test. AT-SPI and EGL warnings about the
+missing accessibility bus or software rendering are expected in a bare
+container.
+
+## Completing the UI test framework
+
+The current layers are:
+
+| Layer | Tool | Coverage |
+|---|---|---|
+| Converters/engine | `cargo test` | Markdown → Typst, compile, fonts, cache, commands |
+| Pure frontend logic | Vitest | settings, titles, presets, seq guard, freeze/status |
+| Components | Vitest + `react-dom/server` | static markup contracts |
+| Build guards | Node scripts | bundle budget, WOFF, licenses, CSP |
+
+What is missing is a **real-webview end-to-end suite**. The unit and component
+tests cannot catch integration regressions in the Tauri window: IPC wiring,
+CodeMirror input, SVG mounting, popover focus/freeze behavior, or the actual
+window title. To complete the framework, add a WebDriver layer around the
+production binary.
+
+### 1. Install a driver
+
+Two supported paths:
+
+- **WebdriverIO + `@wdio/tauri-service`** (recommended; it can use the embedded
+  provider through `tauri-plugin-wdio-webdriver`, or `tauri-driver`).
+- **`tauri-driver` + WebKitWebDriver** on Linux:
+
+  ```bash
+  cargo install tauri-driver --locked
+  # WebKitWebDriver comes from the webkit2gtk-driver package above.
+  ```
+
+Run everything on a virtual display; no physical desktop is required:
+
+```bash
+xvfb-run -a dbus-run-session -- npm run test:e2e
+```
+
+### 2. Add the harness
+
+Suggested layout:
+
+```text
+e2e/
+├── wdio.conf.js       # binary path, Xvfb-friendly capabilities, timeouts
+└── specs/
+    └── smoke.e2e.js   # user journeys, not converter re-tests
+```
+
+Add a `test:e2e` npm script that builds/uses
+`src-tauri/target/release/markdown-blathy` and fails if the binary is absent.
+Use stable `data-testid` selectors, wait for observable state (SVG page count,
+window title, status text) rather than fixed sleeps, and reset localStorage
+between specs.
+
+Minimum critical-path coverage:
+
+1. App launches, shows the sample document, and the window title is
+   `Sample - MarkdownBláthy`.
+2. Typing Markdown updates the SVG preview after the debounce; a malformed
+   document shows diagnostics without dropping the last good preview.
+3. The Document popover applies front-matter settings, freezes rendering
+   while open, and catches up exactly once on close.
+4. Page settings persist across relaunch under `markdown-blathy.settings`.
+5. Toolbar actions remain reachable at the minimum window size.
+
+Keep native open/save/export dialogs out of E2E: they are OS-owned and flaky
+headlessly. Their command layer is already covered by Rust tests; the E2E
+suite should cover in-window flows only.
+
+### 3. Gate it in CI
+
+Add a separate job (not necessarily on every push; nightly or manual is
+acceptable if runtime is a concern) that:
+
+1. installs the native build packages above plus `xvfb`, `xauth`,
+   `dbus-x11` and `webkit2gtk-driver`;
+2. runs `./check.sh`;
+3. builds with `npm run tauri build -- --no-bundle`;
+4. runs the WebDriver suite under `xvfb-run -a dbus-run-session --`;
+5. uploads logs and failure screenshots as workflow artifacts.
+
+A complete framework is reached when the E2E job is required for release
+tags, covers the five journeys above, and fails deterministically on
+regressions without duplicating the converter or engine test matrix.
 
 ## Milestone acceptance criteria
 

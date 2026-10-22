@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "tauri-md-editor",
+  "productName": "MarkdownBláthy",
   "version": "0.1.0",
-  "identifier": "com.example.tauri-md-editor",
+  "identifier": "com.csodafon.markdown-blathy",
   "build": {
     "beforeDevCommand": "npm run dev",
     "devUrl": "http://localhost:1420",
@@ -12,7 +12,7 @@
   "app": {
     "windows": [
       {
-        "title": "Markdown to PDF",
+        "title": "MarkdownBláthy",
         "backgroundColor": [
           24,
           89,

@@ -1,10 +1,10 @@
-# Tauri MD Editor — Implementation Guide
+# MarkdownBláthy — Implementation Guide
 
 ## 1. Module structure
 
 ```
 src-tauri/src/
-├── main.rs              # calls tauri_md_editor_lib::run()
+├── main.rs              # calls markdown_blathy_lib::run()
 ├── lib.rs               # init_logging(), tauri::Builder, command registration
 ├── commands.rs          # #[tauri::command] wrappers, TemplateEngineCache
 ├── options.rs           # Flavor, Paper, TextAlign, Margins, RenderOptions

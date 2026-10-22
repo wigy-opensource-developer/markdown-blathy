@@ -53,7 +53,7 @@ mod tests {
     /// never collide.
     fn temp_dir(tag: &str) -> PathBuf {
         let dir =
-            std::env::temp_dir().join(format!("tauri-md-editor-{}-{tag}", std::process::id()));
+            std::env::temp_dir().join(format!("markdown-blathy-{}-{tag}", std::process::id()));
         fs::create_dir_all(&dir).unwrap();
         dir
     }
@@ -99,7 +99,7 @@ mod tests {
 
     #[test]
     fn write_atomically_errors_when_parent_directory_missing() {
-        let target = std::env::temp_dir().join("tauri-md-editor-missing/child.md");
+        let target = std::env::temp_dir().join("markdown-blathy-missing/child.md");
 
         let err = write_atomically(&target, b"x").unwrap_err();
 

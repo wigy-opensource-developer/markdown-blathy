@@ -91,9 +91,9 @@ describe("getInitialDirectory", () => {
 
 describe("setWindowTitle", () => {
   it("sets the OS window title via the Tauri window API", () => {
-    setWindowTitle("Sample - Markdown to PDF");
+    setWindowTitle("Sample - MarkdownBláthy");
     expect(getCurrentWindow().setTitle).toHaveBeenCalledWith(
-      "Sample - Markdown to PDF"
+      "Sample - MarkdownBláthy"
     );
   });
 });

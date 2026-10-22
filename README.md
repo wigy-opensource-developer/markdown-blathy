@@ -1,6 +1,9 @@
-# tauri-md-editor
+# MarkdownBláthy
 
-A desktop Markdown editor with live preview and on-demand PDF export. The preview and the PDF are produced by the same Typst compilation pipeline — true WYSIWYG.
+**Markdown, transformed.**
+
+MarkdownBláthy is a desktop Markdown editor with live preview and on-demand PDF export. The preview and the PDF are produced by the same Typst compilation pipeline — true WYSIWYG.
+The name commemorates Ottó Titusz Bláthy who among his other inventions became the co-inventor of the efficient alternating current transformer.
 
 ## Features
 

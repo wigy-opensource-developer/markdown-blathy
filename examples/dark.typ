@@ -1,4 +1,4 @@
-// dark.typ — example dark theme for tauri-md-editor.
+// dark.typ — example dark theme for MarkdownBláthy.
 //
 // Load it via the toolbar's Template… button to see how the prelude (§6.3)
 // lets a theme restyle the document WITHOUT touching the markdown→Typst

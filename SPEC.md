@@ -1,4 +1,4 @@
-# Tauri MD Editor — Product Specification
+# MarkdownBláthy — Product Specification
 
 | | |
 |---|---|
@@ -7,6 +7,8 @@
 | **Reader** | Implementer (AI agent or human). Assumes solid Rust & Tokio; beginner–intermediate Tauri 2 and HTML/CSS. |
 
 > **Note:** This is an implementation specification — it describes how the app is built, not how to use it. For a user-facing overview see [README.md](README.md).
+>
+> **Motto:** Markdown, transformed.
 
 ## Table of contents
 

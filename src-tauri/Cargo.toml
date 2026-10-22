@@ -1,12 +1,12 @@
 [package]
-name = "tauri-md-editor"
+name = "markdown-blathy"
 version = "0.1.0"
-description = "Markdown editor with Typst-powered live preview and PDF export"
+description = "Markdown, transformed — Markdown editor with Typst-powered live preview and PDF export"
 license = "GPL-3.0-or-later"
 edition = "2021"
 
 [lib]
-name = "tauri_md_editor_lib"
+name = "markdown_blathy_lib"
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }

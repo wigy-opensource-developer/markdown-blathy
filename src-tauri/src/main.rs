@@ -1,3 +1,3 @@
 fn main() {
-    tauri_md_editor_lib::run()
+    markdown_blathy_lib::run()
 }

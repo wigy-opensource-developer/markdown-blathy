@@ -17,7 +17,7 @@ import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
-const ROOT_NAME = "tauri-md-editor";
+const ROOT_NAME = "markdown-blathy";
 
 // Licenses compatible with GPL-3.0-or-later. Keep this in sync with
 // src-tauri/deny.toml (same policy, different tool per ecosystem).

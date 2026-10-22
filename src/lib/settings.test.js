@@ -42,13 +42,13 @@ describe("loadSettings", () => {
   });
 
   it("falls back to defaults on corrupt JSON (M5)", () => {
-    const storage = fakeStorage({ "tauri-md-editor.settings": "{not json" });
+    const storage = fakeStorage({ "markdown-blathy.settings": "{not json" });
     expect(loadSettings(storage)).toEqual(DEFAULT_SETTINGS);
   });
 
   it("merges a partial stored options object onto the defaults", () => {
     const storage = fakeStorage({
-      "tauri-md-editor.settings": JSON.stringify({
+      "markdown-blathy.settings": JSON.stringify({
         options: { paper: "a5" },
       }),
     });
@@ -60,7 +60,7 @@ describe("loadSettings", () => {
 
   it("falls back to default margins when stored margins are incomplete", () => {
     const storage = fakeStorage({
-      "tauri-md-editor.settings": JSON.stringify({
+      "markdown-blathy.settings": JSON.stringify({
         options: { margins: { topMm: 10 } },
       }),
     });
@@ -71,10 +71,10 @@ describe("loadSettings", () => {
 });
 
 describe("saveSettings", () => {
-  it("writes JSON under the tauri-md-editor.settings key", () => {
+  it("writes JSON under the markdown-blathy.settings key", () => {
     const storage = fakeStorage();
     saveSettings(DEFAULT_SETTINGS, storage);
-    const raw = storage.getItem("tauri-md-editor.settings");
+    const raw = storage.getItem("markdown-blathy.settings");
     expect(JSON.parse(raw)).toEqual(DEFAULT_SETTINGS);
   });
 });

@@ -16,7 +16,7 @@ describe("index.html boot loader", () => {
   });
 
   it("carries the start-up message", () => {
-    expect(html).toContain("Markdown Editor is starting");
+    expect(html).toContain("MarkdownBláthy is starting");
   });
 
   it("shares the tilted-note rotation with the app stylesheet (the quirk)", () => {

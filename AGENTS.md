@@ -4,7 +4,7 @@ Context for AI agents working on this repository.
 
 ## Overview
 
-Desktop Markdown editor with Typst-powered live preview and PDF export.
+MarkdownBláthy is a desktop Markdown editor with Typst-powered live preview and PDF export.
 See **README.md** for a quick overview and **CONTRIBUTING.md** for build/check commands.
 
 ## Key paths

@@ -105,6 +105,6 @@ describe("safeFileName", () => {
 
 describe("windowTitle", () => {
   it("suffixes the document title with the app name", () => {
-    expect(windowTitle("Sample")).toBe("Sample - Markdown to PDF");
+    expect(windowTitle("Sample")).toBe("Sample - MarkdownBláthy");
   });
 });

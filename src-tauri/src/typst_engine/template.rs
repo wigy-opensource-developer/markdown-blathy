@@ -520,7 +520,7 @@ mod tests {
     #[test]
     fn resolve_template_reads_user_template() {
         let path = std::env::temp_dir().join(format!(
-            "tauri-md-editor-template-test-{}.typ",
+            "markdown-blathy-template-test-{}.typ",
             std::process::id()
         ));
         let user = "#set text(font: \"Ubuntu\")";
@@ -549,7 +549,7 @@ mod tests {
     #[test]
     fn resolve_template_reports_missing_path() {
         let options = RenderOptions {
-            template_path: Some("/nonexistent/tauri-md-editor/does-not-exist.typ".to_string()),
+            template_path: Some("/nonexistent/markdown-blathy/does-not-exist.typ".to_string()),
             ..default_options()
         };
         let err = resolve_template(&options).unwrap_err();

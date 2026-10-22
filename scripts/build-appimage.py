@@ -3,9 +3,11 @@
 
 Usage: ./scripts/build-appimage.py [--dry-run] [--force] [--skip-download] [--output <dir>]
 
-Requirements: cargo, npm.  appimagetool is downloaded automatically
-(no FUSE needed — the AppImage is extracted on first use) or can be
-skipped with --skip-download to produce an AppDir for manual packaging.
+Requirements: cargo, npm.  The Tauri CLI is the version installed by
+``npm ci`` (``package.json``); no ``cargo install tauri-cli`` is needed.
+appimagetool is downloaded automatically (no FUSE needed — the AppImage is
+extracted on first use) or can be skipped with --skip-download to produce an
+AppDir for manual packaging.
 
 By default the build is skipped when the binary is newer than the
 sources.  Pass --force to rebuild unconditionally (CI).
@@ -48,9 +50,9 @@ def run(args: list[str], **kwargs) -> subprocess.CompletedProcess:
 # configuration (derived from tauri.conf.json + Cargo.toml)
 # ---------------------------------------------------------------------------
 
-APP_NAME = "tauri-md-editor"
-APP_TITLE = "Markdown to PDF"
-APP_COMMENT = "Markdown editor with Typst-powered live preview and PDF export"
+APP_NAME = "markdown-blathy"
+APP_TITLE = "MarkdownBláthy"
+APP_COMMENT = "Markdown, transformed — Markdown editor with Typst-powered live preview and PDF export"
 APP_CATEGORIES = "Office;WordProcessor;"
 BINARY_NAME = APP_NAME
 
@@ -169,19 +171,25 @@ def rebuild_needed(binary: Path, force: bool) -> bool:
 
 
 def build_binary(force: bool) -> Path:
-    """Build the production binary via Tauri CLI (handles production cfg).
+    """Build the production binary via the npm-installed Tauri CLI.
 
-    Uses ``cargo tauri build`` which sets the correct production mode
-    (``tauri://localhost`` custom protocol) — plain ``cargo build --release``
-    can leave the binary in dev mode.  The binary lands at the same well-known
-    location regardless: src-tauri/target/release/<name>.
+    The build must go through the Tauri CLI (it sets the production mode,
+    ``tauri://localhost`` custom protocol; a plain ``cargo build --release``
+    can leave the binary in dev mode).  CI installs the CLI from
+    ``package.json`` via ``npm ci``, so invoke the npm script rather than the
+    ``cargo tauri`` subcommand — the latter requires a separate
+    ``cargo install tauri-cli`` and fails in CI with "no such command: tauri".
+    The binary lands at the well-known location: src-tauri/target/release/<name>.
     """
     binary = RUST_DIR / "target" / "release" / BINARY_NAME
 
     if rebuild_needed(binary, force):
-        info("building production binary (cargo tauri build)")
+        info("building production binary (npm run tauri -- build --bundles deb)")
         # Tauri's beforeBuildCommand (npm run build) covers the frontend.
-        run(["cargo", "tauri", "build", "--bundles", "deb"], cwd=str(RUST_DIR))
+        run(
+            ["npm", "run", "tauri", "--", "build", "--bundles", "deb"],
+            cwd=str(ROOT),
+        )
     else:
         info("binary is current; skipping build (use --force to rebuild)")
 
@@ -296,7 +304,7 @@ def validate_appdir(appdir: Path) -> bool:
 # ---------------------------------------------------------------------------
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Build an AppImage for tauri-md-editor")
+    parser = argparse.ArgumentParser(description="Build an AppImage for MarkdownBláthy")
     parser.add_argument("--dry-run", action="store_true",
                         help="Assemble the AppDir but skip packaging")
     parser.add_argument("--force", action="store_true",

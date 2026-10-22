@@ -31,7 +31,8 @@ jobs:
             libsoup-3.0-dev \
             libjavascriptcoregtk-4.1-dev \
             libayatana-appindicator3-dev \
-            librsvg2-dev
+            librsvg2-dev \
+            file
 
       # ---- Rust toolchain ----------------------------------------------------
       - name: install Rust toolchain
@@ -60,6 +61,8 @@ jobs:
         run: npm ci
 
       # ---- build AppImage ----------------------------------------------------
+      # build-appimage.py invokes the npm-installed Tauri CLI
+      # (npm run tauri -- build --bundles deb), so no cargo-tauri install.
       - name: build AppImage
         run: python3 scripts/build-appimage.py
 
@@ -67,6 +70,6 @@ jobs:
       - name: upload AppImage artifact
         uses: actions/upload-artifact@v7
         with:
-          name: tauri-md-editor-x86_64.AppImage
-          path: target/appimage/tauri-md-editor-*.AppImage
+          name: markdown-blathy-x86_64.AppImage
+          path: target/appimage/markdown-blathy-*.AppImage
           if-no-files-found: error
