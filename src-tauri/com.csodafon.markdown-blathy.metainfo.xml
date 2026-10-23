@@ -1,0 +1,77 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>com.csodafon.markdown-blathy</id>
+  <name>MarkdownBláthy</name>
+  <summary>Markdown editor with Typst-powered live preview and PDF export</summary>
+
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>GPL-3.0-or-later</project_license>
+
+  <developer id="com.csodafon">
+    <name>wigy-opensource-developer</name>
+  </developer>
+
+  <description>
+    <p>
+      MarkdownBláthy is a desktop Markdown editor with live preview and
+      on-demand PDF export. The preview and the PDF are produced by the same
+      Typst compilation pipeline, so what you see is what you get.
+    </p>
+    <p>
+      Write in Markdown with CommonMark, GitHub Flavored Markdown, or a Custom
+      flavor that adds footnotes, LaTeX-style math, task lists, and more. The
+      split-screen layout shows the rendered pages on the right as you type.
+    </p>
+    <p>
+      Export to PDF with one click, restyle everything with a custom Typst
+      template, and keep your settings between sessions.
+    </p>
+    <p>
+      The name commemorates Ottó Titusz Bláthy who among his other inventions
+      became the co-inventor of the efficient alternating current transformer.
+    </p>
+  </description>
+
+  <url type="homepage">https://github.com/wigy-opensource-developer/tauri-md-editor</url>
+
+  <keywords>
+    <keyword>markdown</keyword>
+    <keyword>editor</keyword>
+    <keyword>typst</keyword>
+    <keyword>pdf</keyword>
+    <keyword>preview</keyword>
+    <keyword>wysiwyg</keyword>
+    <keyword>latex</keyword>
+    <keyword>math</keyword>
+  </keywords>
+
+  <categories>
+    <category>Office</category>
+    <category>WordProcessor</category>
+  </categories>
+
+  <screenshots>
+    <screenshot type="default">
+      <image>https://raw.githubusercontent.com/wigy-opensource-developer/tauri-md-editor/v0.1.0/docs/screenshots/main-screen.png</image>
+      <caption>The main editing window with the live preview</caption>
+    </screenshot>
+    <screenshot>
+      <image>https://raw.githubusercontent.com/wigy-opensource-developer/tauri-md-editor/v0.1.0/docs/screenshots/document-options.png</image>
+      <caption>Document settings: title, author, flavor, and language</caption>
+    </screenshot>
+    <screenshot>
+      <image>https://raw.githubusercontent.com/wigy-opensource-developer/tauri-md-editor/v0.1.0/docs/screenshots/page-settings.png</image>
+      <caption>Page settings: paper size, margins, and template</caption>
+    </screenshot>
+  </screenshots>
+
+  <releases>
+    <release version="0.1.0" date="2026-10-23">
+      <description>
+        <p>Initial release.</p>
+      </description>
+    </release>
+  </releases>
+
+  <launchable type="desktop-id">com.csodafon.markdown-blathy.desktop</launchable>
+</component>

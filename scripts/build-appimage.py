@@ -51,6 +51,7 @@ def run(args: list[str], **kwargs) -> subprocess.CompletedProcess:
 # ---------------------------------------------------------------------------
 
 APP_NAME = "markdown-blathy"
+APP_ID = "com.csodafon.markdown-blathy"
 APP_TITLE = "MarkdownBláthy"
 APP_COMMENT = "Markdown, transformed — Markdown editor with Typst-powered live preview and PDF export"
 APP_CATEGORIES = "Office;WordProcessor;"
@@ -59,6 +60,7 @@ BINARY_NAME = APP_NAME
 ROOT = Path(__file__).resolve().parent.parent
 RUST_DIR = ROOT / "src-tauri"
 ICON_SRC = RUST_DIR / "icons" / "icon.png"
+METADATA_SRC = RUST_DIR / f"{APP_ID}.metainfo.xml"
 TOOLS_DIR = ROOT / ".local" / "tools"
 
 
@@ -214,6 +216,7 @@ def create_appdir(binary: Path, out_dir: Path) -> Path:
 
     (appdir / "usr" / "bin").mkdir(parents=True)
     (appdir / "usr" / "share" / "applications").mkdir(parents=True)
+    (appdir / "usr" / "share" / "metainfo").mkdir(parents=True)
     icon_dir = appdir / "usr" / "share" / "icons" / "hicolor" / "256x256" / "apps"
     icon_dir.mkdir(parents=True)
 
@@ -244,8 +247,15 @@ def create_appdir(binary: Path, out_dir: Path) -> Path:
     # Root-level copy that appimagetool looks for.
     shutil.copy2(icon_dir / f"{APP_NAME}.png", appdir / f"{APP_NAME}.png")
 
+    # AppStream metainfo - appimagetool reads it for the AppImage metadata.
+    if METADATA_SRC.is_file():
+        shutil.copy2(METADATA_SRC,
+                     appdir / "usr" / "share" / "metainfo" / f"{APP_ID}.metainfo.xml")
+    else:
+        die(f"metainfo not found: {METADATA_SRC}")
+
     # .desktop file
-    desktop_path = appdir / "usr" / "share" / "applications" / f"{APP_NAME}.desktop"
+    desktop_path = appdir / "usr" / "share" / "applications" / f"{APP_ID}.desktop"
     desktop_path.write_text(
         "[Desktop Entry]\n"
         "Type=Application\n"
@@ -258,7 +268,7 @@ def create_appdir(binary: Path, out_dir: Path) -> Path:
         f"X-AppImage-Version={version}\n"
     )
     # Symlink at root — relative so it works inside the squashfs.
-    root_link = appdir / f"{APP_NAME}.desktop"
+    root_link = appdir / f"{APP_ID}.desktop"
     if root_link.exists(follow_symlinks=False):
         root_link.unlink()
     # appimagetool prefers root .desktop to *not* be a symlink (it reads
@@ -277,15 +287,16 @@ def validate_appdir(appdir: Path) -> bool:
     info("validating AppDir")
     ok = True
 
-    for name in ["AppRun", f"{APP_NAME}.desktop", f"{APP_NAME}.png",
-                 f"usr/bin/{BINARY_NAME}"]:
+    for name in ["AppRun", f"{APP_ID}.desktop", f"{APP_NAME}.png",
+                 f"usr/bin/{BINARY_NAME}",
+                 f"usr/share/metainfo/{APP_ID}.metainfo.xml"]:
         if (appdir / name).exists():
             print(f"  \u2713 {name}")
         else:
             print(f"  \u2717 missing: {name}")
             ok = False
 
-    desktop = appdir / f"{APP_NAME}.desktop"
+    desktop = appdir / f"{APP_ID}.desktop"
     if desktop.is_file():
         content = desktop.read_text()
         if "Type=Application" in content:

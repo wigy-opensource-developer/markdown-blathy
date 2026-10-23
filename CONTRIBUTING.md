@@ -62,7 +62,8 @@ M8 task 2), so they must be in the tagged commit.
 ### Tooling
 
 - **git-cliff** — changelog from the conventional-commit history
-  (`cargo install git-cliff --locked`, or your package manager).
+  (`cargo install git-cliff --locked`, or your package manager). Configured by
+  `cliff.toml` in the repo root (v-prefixed tag pattern, header marker).
 - **Screenshot capture** — WebdriverIO with `@wdio/tauri-service` (default
   embedded provider via `tauri-plugin-wdio-webdriver`; `tauri-driver` +
   `webkit2gtk-driver` works on Linux too), plus `xvfb`, `openbox`/`mutter`,
@@ -106,11 +107,20 @@ until the tag is pushed.
 git-cliff --unreleased --tag "$VERSION" --prepend CHANGELOG.md
 ```
 
-This prepends the commits since the last tag as the new version's section.
-The repo has no tags yet, so the first run covers the whole history: recent
-commits follow conventional commits (`feat:`, `fix(scope):`, `refactor:`,
-`chore:`, `doc:`), while the earliest free-form messages match no parser and
-need hand-curation for that first section. Add the matching
+`--prepend` is **append-only**: it prepends the new version's section and
+leaves every existing line untouched, so past release sections you have
+hand-edited are never overwritten. (The contrast is `--output`, which
+rewrites the whole file — do not use it for routine releases.) The
+`cliff.toml` `header_marker` lets git-cliff replace a templated header on
+later runs without disturbing the body.
+
+The repo has no tags yet, so the first run covers the whole history. For that
+first run only, `CHANGELOG.md` does not exist yet and `--prepend` cannot
+create it — use `--output CHANGELOG.md` once, then switch to `--prepend` for
+every later release. Commits follow conventional commits (`feat:`,
+`fix(scope):`, `refactor:`, `chore:`, `doc:`); any commit git-cliff reports as
+skipped (e.g. a subject with a parenthetical it misreads as a body) must be
+added to the section by hand. Add the matching
 `<release version="…" date="…">` entry to the metainfo as well.
 
 ### 4. Bump the version
