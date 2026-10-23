@@ -27,6 +27,9 @@ export default function App() {
   const [pages, setPages] = useState([]);
   const [warnings, setWarnings] = useState([]);
   const [error, setError] = useState(null);
+  // Bundled template ids for the Page settings selector; seeded with the
+  // known trio and refreshed from `list_templates` (graceful on failure).
+  const [templates, setTemplates] = useState(["light", "dark", "obsidian"]);
   // The current document's path on disk; null while untitled (§8.4). State,
   // not a ref, so the derived title updates when it changes.
   const [filePath, setFilePath] = useState(null);
@@ -45,9 +48,10 @@ export default function App() {
   // The document the *next render* will use. Normally synced from state on
   // every render — but a freshly opened file is written here before calling
   // `requestPreviewNow`, because the immediate render runs before React has
-  // committed the new `markdown`.
-  const docRef = useRef({ markdown: SAMPLE_DOC, options });
-  docRef.current = { markdown, options };
+  // committed the new `markdown`. `documentPath` lets the backend resolve
+  // document-relative images.
+  const docRef = useRef({ markdown: SAMPLE_DOC, options, documentPath: null });
+  docRef.current = { markdown, options, documentPath: filePath };
 
   // The effective document settings from the last render (§6.2): Rust parses
   // the front matter and returns it, so the frontend never parses YAML
@@ -104,9 +108,9 @@ export default function App() {
     freeze.started();
     renderStatus.current.start();
     const seqId = ++seq.current;
-    const { markdown: doc, options: opts } = docRef.current;
+    const { markdown: doc, options: opts, documentPath: docPath } = docRef.current;
     try {
-      const result = await api.renderPreview(doc, opts, seqId);
+      const result = await api.renderPreview(doc, opts, seqId, docPath);
       if (isStaleResponse(result.seq, seq.current)) return; // stale — drop (a newer render owns the note now)
       freeze.finish(result); // commit now, or stash while settings are open
     } catch (err) {
@@ -177,6 +181,17 @@ export default function App() {
       .catch(() => {});
   }, []);
 
+  // Refresh the bundled template list for the Page settings selector; the
+  // seed above keeps the selector usable if the command is unavailable.
+  useEffect(() => {
+    api
+      .listTemplates()
+      .then((ids) => {
+        if (Array.isArray(ids) && ids.length > 0) setTemplates(ids);
+      })
+      .catch(() => {});
+  }, []);
+
   // Keep the OS window title in sync with the document title (§8.4) so
   // multiple instances are distinguishable in the window manager.
   useEffect(() => {
@@ -231,7 +246,7 @@ export default function App() {
   const handleNew = useCallback(() => {
     setFilePath(null);
     setMarkdown(SAMPLE_DOC);
-    requestPreviewNow({ markdown: SAMPLE_DOC });
+    requestPreviewNow({ markdown: SAMPLE_DOC, documentPath: null });
   }, [requestPreviewNow]);
 
   const handleOpen = useCallback(
@@ -242,7 +257,7 @@ export default function App() {
         setFilePath(res.path);
         setMarkdown(res.content);
         setDirectory(parentDirectory(res.path));
-        requestPreviewNow({ markdown: res.content });
+        requestPreviewNow({ markdown: res.content, documentPath: res.path });
       }),
     [runFileAction, directory, requestPreviewNow]
   );
@@ -308,7 +323,13 @@ export default function App() {
   const handleExport = useCallback(
     () =>
       runFileAction(async () => {
-        const res = await api.exportPdf(markdown, options, safeFileName(title), directory);
+        const res = await api.exportPdf(
+          markdown,
+          options,
+          safeFileName(title),
+          directory,
+          filePath
+        );
         if (api.isCanceled(res)) return;
         // The PDF is written and opened in the system viewer by the backend.
       }),
@@ -329,6 +350,7 @@ export default function App() {
     <div className={settingsOpen ? "app settings-open" : "app"}>
       <Toolbar
         options={options}
+        templates={templates}
         onOptionChange={changeOption}
         onNew={handleNew}
         onOpen={handleOpen}

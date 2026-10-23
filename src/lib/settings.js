@@ -17,6 +17,7 @@ export const DEFAULT_SETTINGS = {
     marginPreset: "normal",
     margins: { topMm: 25, bottomMm: 25, leftMm: 20, rightMm: 20 },
     textAlign: "left",
+    templateName: null,
     templatePath: null,
   },
   editorFontSize: 16,
@@ -41,9 +42,9 @@ export function saveSettings(settings, storage) {
 }
 
 // Option fields where `null` is a real value rather than Select deselect
-// noise: `templatePath: null` means "the embedded default template" (clearing
-// the custom template, §8.4).
-const NULLABLE_OPTION_FIELDS = new Set(["templatePath"]);
+// noise: `templateName: null` means "the default light template" and
+// `templatePath: null` means "no custom template" (clearing it, §8.4).
+const NULLABLE_OPTION_FIELDS = new Set(["templateName", "templatePath"]);
 
 /** Merge a partial patch into the render options, dropping null values for
  *  fields that cannot be empty. Mantine Select fires `onChange(null)` when
@@ -60,12 +61,13 @@ export function applyOptionsPatch(options, patch) {
 }
 
 /** The options patch that restores the page-setup defaults: paper, margin
- *  preset, alignment and the embedded template. The Page settings popover's
+ *  preset, alignment and the default template. The Page settings popover's
  *  "Restore defaults" action applies it through the same `changeOption` path
  *  as any other patch (§8.6). */
 export function pageSetupDefaultsPatch() {
-  const { paper, marginPreset, textAlign, templatePath } = DEFAULT_SETTINGS.options;
-  return { paper, marginPreset, textAlign, templatePath };
+  const { paper, marginPreset, textAlign, templateName, templatePath } =
+    DEFAULT_SETTINGS.options;
+  return { paper, marginPreset, textAlign, templateName, templatePath };
 }
 
 /** Merge parsed settings onto the defaults, dropping anything malformed. */

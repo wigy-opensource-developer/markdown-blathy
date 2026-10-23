@@ -13,6 +13,7 @@ const OPTIONS = {
   marginPreset: "narrow",
   margins: { topMm: 15, bottomMm: 15, leftMm: 10, rightMm: 10 },
   textAlign: "justified",
+  templateName: null,
   templatePath: null,
 };
 
@@ -21,6 +22,7 @@ const render = (props) =>
     <MantineProvider>
       <PageSettingsForm
         options={OPTIONS}
+        templates={["light", "dark", "obsidian"]}
         onOptionChange={() => {}}
         onPickTemplate={() => {}}
         onClearTemplate={() => {}}
@@ -41,17 +43,23 @@ describe("PageSettingsForm", () => {
     expect(html).toContain('value="Justified"');
   });
 
-  it("shows the embedded default and no reset when no custom template is active", () => {
+  it("shows the default light template and no reset when no custom template is active", () => {
     const html = render();
-    expect(html).toContain("Embedded default");
+    expect(html).toContain('value="Light"');
     expect(html).not.toContain("Reset custom template");
   });
 
-  it("shows the template basename and a reset control when one is active", () => {
+  it("shows the selected bundled template", () => {
+    const html = render({ options: { ...OPTIONS, templateName: "obsidian" } });
+    expect(html).toContain('value="Obsidian"');
+    expect(html).not.toContain("Reset custom template");
+  });
+
+  it("shows the template basename and a reset control when a custom one is active", () => {
     const html = render({
       options: { ...OPTIONS, templatePath: "/home/u/dark.typ" },
     });
-    expect(html).toContain("dark.typ");
+    expect(html).toContain("Custom: dark.typ");
     expect(html).toContain("Reset custom template");
   });
 

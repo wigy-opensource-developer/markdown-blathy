@@ -21,7 +21,13 @@ import {
   Tooltip,
 } from "@mantine/core";
 import { IconPageBreak } from "@tabler/icons-react";
-import { ALIGNS, MARGIN_PRESETS, PAPERS } from "../lib/presets.js";
+import {
+  ALIGNS,
+  DEFAULT_TEMPLATE_NAME,
+  MARGIN_PRESETS,
+  PAPERS,
+  templateLabel,
+} from "../lib/presets.js";
 import { pageSetupDefaultsPatch } from "../lib/settings.js";
 import { fileBasename } from "../lib/title.js";
 
@@ -31,16 +37,31 @@ const PAGE_SELECTS = [
   { label: "Align", data: ALIGNS, field: "textAlign" },
 ];
 
+/** The `__custom__` Select value stands for an active custom template file. */
+const CUSTOM_TEMPLATE = "__custom__";
+
 /** The popover body, mounted while open. Controlled: `options` is the single
  *  source of truth, so the selects always show the effective settings and a
- *  change re-renders the preview at once. */
+ *  change re-renders the preview at once. `templates` is the bundled template
+ *  id list from `list_templates`. */
 export function PageSettingsForm({
   options,
+  templates = [],
   onOptionChange,
   onPickTemplate,
   onClearTemplate,
 }) {
-  const template = options.templatePath;
+  const customTemplate = options.templatePath;
+  const templateData = [
+    ...templates.map((id) => ({ value: id, label: templateLabel(id) })),
+    ...(customTemplate
+      ? [{ value: CUSTOM_TEMPLATE, label: `Custom: ${fileBasename(customTemplate)}` }]
+      : []),
+  ];
+  const templateValue = customTemplate
+    ? CUSTOM_TEMPLATE
+    : options.templateName ?? DEFAULT_TEMPLATE_NAME;
+
   return (
     <Stack gap="sm">
       <Text size="xs" c="dimmed">
@@ -59,15 +80,29 @@ export function PageSettingsForm({
       ))}
 
       <Divider label="Template" labelPosition="left" />
+      <Select
+        label="Template"
+        size="sm"
+        data={templateData}
+        value={templateValue}
+        allowDeselect={false}
+        comboboxProps={{ withinPortal: false }}
+        onChange={(v) => {
+          // Picking the active custom entry again is a no-op; the × button
+          // clears it back to the bundled default.
+          if (v === CUSTOM_TEMPLATE) return;
+          onOptionChange({ templateName: v, templatePath: null });
+        }}
+      />
       <Group justify="space-between" gap="xs" wrap="nowrap">
-        <Text size="sm" truncate style={{ minWidth: 0 }} title={template ?? undefined}>
-          {template ? fileBasename(template) : "Embedded default"}
+        <Text size="xs" c="dimmed" style={{ minWidth: 0 }}>
+          Bundled themes ship with the app; a custom file overrides them.
         </Text>
         <Group gap={4} wrap="nowrap">
           <Button size="compact-xs" variant="light" onClick={onPickTemplate}>
             Choose…
           </Button>
-          {template && (
+          {customTemplate && (
             <Button
               size="compact-xs"
               variant="subtle"
@@ -94,11 +129,17 @@ export function PageSettingsForm({
   );
 }
 
-function PageSettings({ options, onOptionChange, onPickTemplate, onClearTemplate }) {
+/** The badge shown on the Page button when a non-default template is active
+ *  (a bundled theme other than light, or a custom file). */
+function activeTemplateBadge(options) {
+  if (options.templatePath) return fileBasename(options.templatePath);
+  const name = options.templateName ?? DEFAULT_TEMPLATE_NAME;
+  return name === DEFAULT_TEMPLATE_NAME ? null : templateLabel(name);
+}
+
+function PageSettings({ options, templates, onOptionChange, onPickTemplate, onClearTemplate }) {
   const [opened, setOpened] = useState(false);
-  const templateName = options.templatePath
-    ? fileBasename(options.templatePath)
-    : null;
+  const templateName = activeTemplateBadge(options);
 
   return (
     <Popover
@@ -110,7 +151,7 @@ function PageSettings({ options, onOptionChange, onPickTemplate, onClearTemplate
       closeOnEscape
     >
       <Popover.Target>
-        {/* The dot marks a custom template; its tooltip names it without
+        {/* The dot marks a non-default template; its tooltip names it without
             opening the popover. Mantine cannot wrap the Popover target in a
             Tooltip, but a Tooltip nested on the inner dot is fine. */}
         <Button
@@ -119,11 +160,11 @@ function PageSettings({ options, onOptionChange, onPickTemplate, onClearTemplate
           leftSection={<IconPageBreak size={16} />}
           rightSection={
             templateName ? (
-              <Tooltip label={`Custom template: ${templateName}`}>
+              <Tooltip label={`Template: ${templateName}`}>
                 <span
                   className="template-dot"
                   role="img"
-                  aria-label={`Custom template: ${templateName}`}
+                  aria-label={`Template: ${templateName}`}
                 />
               </Tooltip>
             ) : null
@@ -136,6 +177,7 @@ function PageSettings({ options, onOptionChange, onPickTemplate, onClearTemplate
       <Popover.Dropdown className="app-popover">
         <PageSettingsForm
           options={options}
+          templates={templates}
           onOptionChange={onOptionChange}
           onPickTemplate={onPickTemplate}
           onClearTemplate={onClearTemplate}

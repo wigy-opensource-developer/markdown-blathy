@@ -55,6 +55,6 @@ describe("Toolbar", () => {
     expect(render()).not.toContain("template-dot");
     const html = render({ options: { templatePath: "/home/u/dark.typ" } });
     expect(html).toContain("template-dot");
-    expect(html).toContain("Custom template: dark.typ");
+    expect(html).toContain("Template: dark.typ");
   });
 });

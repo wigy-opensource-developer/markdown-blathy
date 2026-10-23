@@ -18,6 +18,7 @@ import {
   exportPdf,
   getInitialDirectory,
   isCanceled,
+  listTemplates,
   openExternal,
   openMarkdown,
   renderPreview,
@@ -34,6 +35,7 @@ const OPTIONS = {
   marginPreset: "normal",
   margins: { topMm: 25, bottomMm: 25, leftMm: 20, rightMm: 20 },
   textAlign: "left",
+  templateName: null,
   templatePath: null,
 };
 
@@ -41,7 +43,24 @@ describe("renderPreview", () => {
   it("invokes render_preview with the camelCase payload and echoes seq", () => {
     renderPreview("# Hi", OPTIONS, 7);
     expect(invoke).toHaveBeenCalledWith("render_preview", {
-      payload: { markdown: "# Hi", options: renderOptionsPayload(OPTIONS), seq: 7 },
+      payload: {
+        markdown: "# Hi",
+        options: renderOptionsPayload(OPTIONS),
+        seq: 7,
+        documentPath: null,
+      },
+    });
+  });
+
+  it("forwards the document path for document-relative images", () => {
+    renderPreview("# Hi", OPTIONS, 8, "/home/u/docs/report.md");
+    expect(invoke).toHaveBeenCalledWith("render_preview", {
+      payload: {
+        markdown: "# Hi",
+        options: renderOptionsPayload(OPTIONS),
+        seq: 8,
+        documentPath: "/home/u/docs/report.md",
+      },
     });
   });
 });
@@ -75,7 +94,26 @@ describe("exportPdf", () => {
   it("invokes export_pdf with the render payload, title and directory", () => {
     exportPdf("# Hi", OPTIONS, "My Doc", "/home/u/Documents");
     expect(invoke).toHaveBeenCalledWith("export_pdf", {
-      payload: { markdown: "# Hi", options: renderOptionsPayload(OPTIONS), seq: 0 },
+      payload: {
+        markdown: "# Hi",
+        options: renderOptionsPayload(OPTIONS),
+        seq: 0,
+        documentPath: null,
+      },
+      title: "My Doc",
+      directory: "/home/u/Documents",
+    });
+  });
+
+  it("forwards the document path for document-relative images", () => {
+    exportPdf("# Hi", OPTIONS, "My Doc", "/home/u/Documents", "/home/u/docs/report.md");
+    expect(invoke).toHaveBeenCalledWith("export_pdf", {
+      payload: {
+        markdown: "# Hi",
+        options: renderOptionsPayload(OPTIONS),
+        seq: 0,
+        documentPath: "/home/u/docs/report.md",
+      },
       title: "My Doc",
       directory: "/home/u/Documents",
     });
@@ -125,6 +163,13 @@ describe("validateTemplate", () => {
       path: "/home/u/custom.typ",
       options: renderOptionsPayload(OPTIONS),
     });
+  });
+});
+
+describe("listTemplates", () => {
+  it("invokes list_templates with no arguments", () => {
+    listTemplates();
+    expect(invoke).toHaveBeenCalledWith("list_templates");
   });
 });
 

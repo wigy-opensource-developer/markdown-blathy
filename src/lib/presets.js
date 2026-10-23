@@ -25,6 +25,21 @@ export const ALIGNS = [
   { value: "justified", label: "Justified" },
 ];
 
+/** The bundled template used when `templateName` is unset. */
+export const DEFAULT_TEMPLATE_NAME = "light";
+
+/** Display labels for the bundled templates; unknown ids fall back to the id. */
+export const TEMPLATE_LABELS = {
+  light: "Light",
+  dark: "Dark",
+  obsidian: "Obsidian",
+};
+
+/** Human label for a bundled template id. */
+export function templateLabel(id) {
+  return TEMPLATE_LABELS[id] ?? id;
+}
+
 // Toggleable Markdown extensions (§6.1). `key` matches the `FeatureFlags`
 // field names (snake_case, same as the `ext_*` front-matter keys) that Rust
 // serializes into the render result's `doc.features`.
@@ -76,6 +91,7 @@ export function renderOptionsPayload(options) {
     paper: options.paper,
     margins: options.margins,
     textAlign: options.textAlign,
+    templateName: options.templateName ?? null,
     templatePath: options.templatePath ?? null,
   };
 }

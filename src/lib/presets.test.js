@@ -95,6 +95,7 @@ describe("renderOptionsPayload", () => {
     marginPreset: "normal",
     margins: { topMm: 25, bottomMm: 25, leftMm: 20, rightMm: 20 },
     textAlign: "left",
+    templateName: null,
     templatePath: null,
   };
 
@@ -107,16 +108,18 @@ describe("renderOptionsPayload", () => {
       "flavor",
       "margins",
       "paper",
+      "templateName",
       "templatePath",
       "textAlign",
     ]);
   });
 
-  it("normalizes a missing templatePath to null", () => {
-    const { templatePath } = options;
+  it("normalizes a missing templateName and templatePath to null", () => {
+    const { templateName, templatePath } = options;
     const { marginPreset, ...rest } = options;
     expect(renderOptionsPayload(rest)).toEqual({
       ...rest,
+      templateName,
       templatePath,
     });
   });

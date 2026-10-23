@@ -33,6 +33,7 @@ describe("loadSettings", () => {
         marginPreset: "narrow",
         margins: { topMm: 15, bottomMm: 15, leftMm: 10, rightMm: 10 },
         textAlign: "justified",
+        templateName: null,
         templatePath: null,
       },
       editorFontSize: 18,
@@ -85,12 +86,14 @@ describe("pageSetupDefaultsPatch", () => {
       paper: DEFAULT_SETTINGS.options.paper,
       marginPreset: DEFAULT_SETTINGS.options.marginPreset,
       textAlign: DEFAULT_SETTINGS.options.textAlign,
+      templateName: DEFAULT_SETTINGS.options.templateName,
       templatePath: DEFAULT_SETTINGS.options.templatePath,
     });
   });
 
   it("clears a custom template — null is a real value (§8.4)", () => {
     expect(pageSetupDefaultsPatch().templatePath).toBeNull();
+    expect(pageSetupDefaultsPatch().templateName).toBeNull();
   });
 });
 
@@ -102,9 +105,17 @@ describe("applyOptionsPatch", () => {
     expect(next.flavor).toBe("custom");
   });
 
-  it("keeps a null templatePath — clearing the custom template is legitimate (§8.4)", () => {
-    const options = { ...DEFAULT_SETTINGS.options, templatePath: "/tmp/dark.typ" };
-    const next = applyOptionsPatch(options, { templatePath: null });
+  it("keeps a null templateName/templatePath — clearing the template is legitimate (§8.4)", () => {
+    const options = {
+      ...DEFAULT_SETTINGS.options,
+      templateName: "dark",
+      templatePath: "/tmp/dark.typ",
+    };
+    const next = applyOptionsPatch(options, {
+      templateName: null,
+      templatePath: null,
+    });
+    expect(next.templateName).toBeNull();
     expect(next.templatePath).toBeNull();
   });
 

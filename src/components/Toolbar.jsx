@@ -16,6 +16,7 @@ import PageSettings from "./PageSettings.jsx";
 
 function Toolbar({
   options,
+  templates,
   onOptionChange,
   onNew,
   onOpen,
@@ -58,6 +59,7 @@ function Toolbar({
 
       <PageSettings
         options={options}
+        templates={templates}
         onOptionChange={onOptionChange}
         onPickTemplate={onPickTemplate}
         onClearTemplate={onClearTemplate}

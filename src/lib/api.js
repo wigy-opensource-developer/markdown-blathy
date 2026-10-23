@@ -4,13 +4,15 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { renderOptionsPayload } from "./presets.js";
 
 /** Live preview: markdown + options → per-page SVG strings. The `seq` is
- *  echoed back for the stale-response guard (§7.5). */
-export const renderPreview = (markdown, options, seq) =>
+ *  echoed back for the stale-response guard (§7.5). `documentPath` lets the
+ *  backend resolve document-relative images against the document's folder. */
+export const renderPreview = (markdown, options, seq, documentPath = null) =>
   invoke("render_preview", {
     payload: {
       markdown,
       options: renderOptionsPayload(options),
       seq,
+      documentPath,
     },
   });
 
@@ -18,12 +20,13 @@ export const renderPreview = (markdown, options, seq) =>
  *  `<title>.pdf` in `directory`) → PDF on disk, opened in the system viewer.
  *  Resolves with `{ path }` or `{ canceled: true }` (§7.4). `seq` guards
  *  preview staleness and is unused here. */
-export const exportPdf = (markdown, options, title, directory) =>
+export const exportPdf = (markdown, options, title, directory, documentPath = null) =>
   invoke("export_pdf", {
     payload: {
       markdown,
       options: renderOptionsPayload(options),
       seq: 0,
+      documentPath,
     },
     title,
     directory,
@@ -71,6 +74,11 @@ export const validateTemplate = (path, options) =>
     path,
     options: renderOptionsPayload(options),
   });
+
+/** List the bundled template ids (e.g. `light`, `dark`, `obsidian`), ordered
+ *  with the default `light` first. The frontend maps ids to display labels
+ *  via `templateLabel()`. */
+export const listTemplates = () => invoke("list_templates");
 
 /** True when a command result means the user dismissed a dialog — the UI
  *  treats these as silent no-ops (§9). */
