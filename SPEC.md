@@ -167,7 +167,7 @@ to turn this off.
 | **M5 — Settings & polish** | localStorage settings, template override + validation | ✅ Done |
 | **M6 — Engine cache & fonts** | Reusable engine + system/template-side fonts | ✅ Done |
 | **M7 — Logging & extended syntax** | `tracing` + SVG internal links + heading IDs + new constructs | ✅ Done |
-| **M8 — Packaging & release** | Tag-triggered .deb/.rpm/AppImage builds with a draft release, bundle + AppImage metadata, Windows icon | 🚧 Next |
+| **M8 — Packaging & release** | Tag-triggered .deb/.rpm/AppImage builds with a draft release, bundle + AppImage metadata, Windows icon | ✅ Done |
 
 See **IMPLEMENTATION.md** for acceptance criteria and test plans per milestone.
 

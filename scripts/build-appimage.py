@@ -225,6 +225,17 @@ def create_appdir(binary: Path, out_dir: Path) -> Path:
     shutil.copy2(binary, dest_bin)
     dest_bin.chmod(0o755)
 
+    # bundled resources (templates + their fonts/images). Tauri resolves the
+    # resource dir as `<exe_dir>/../lib/<name>` — under the AppImage env that
+    # is `$APPDIR/usr/lib/<name>` — so mirror that layout here.
+    resources_src = RUST_DIR / "templates"
+    resources_dst = appdir / "usr" / "lib" / APP_NAME
+    if resources_src.is_dir():
+        resources_dst.mkdir(parents=True, exist_ok=True)
+        shutil.copytree(resources_src, resources_dst / "templates", dirs_exist_ok=True)
+    else:
+        die(f"templates not found: {resources_src}")
+
     # AppRun
     apprun = appdir / "AppRun"
     apprun.write_text(
@@ -289,7 +300,8 @@ def validate_appdir(appdir: Path) -> bool:
 
     for name in ["AppRun", f"{APP_ID}.desktop", f"{APP_NAME}.png",
                  f"usr/bin/{BINARY_NAME}",
-                 f"usr/share/metainfo/{APP_ID}.metainfo.xml"]:
+                 f"usr/share/metainfo/{APP_ID}.metainfo.xml",
+                 f"usr/lib/{APP_NAME}/templates/light/main.typ"]:
         if (appdir / name).exists():
             print(f"  \u2713 {name}")
         else:
