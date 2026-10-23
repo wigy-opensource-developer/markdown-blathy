@@ -62,11 +62,17 @@ impl fmt::Display for EngineError {
 
 impl Error for EngineError {}
 
-/// Font loading options (M6, §6.3): what to load beyond the embedded DejaVu
-/// Sans. Used when an engine is (re)built — the M6 cache does that once per
-/// template change, so the system-font scan is not repeated per render.
-/// Serializable so the prewarm hint (`crate::prewarm`) can remember them
-/// across launches.
+/// Engine build options (M6, §6.3): what fonts to load beyond the embedded
+/// DejaVu Sans, and the file-system roots the Typst world resolves binary
+/// files (images) from. Used when an engine is (re)built — the M6 cache does
+/// that once per template/options change, so the system-font scan is not
+/// repeated per render. Serializable so the prewarm hint (`crate::prewarm`)
+/// can remember them across launches.
+///
+/// The name says "fonts" for historical reasons (it started as font-only
+/// options); `asset_roots` later grew onto it because it already flowed
+/// through `prepare_render` → cache → `build_engine` and into the prewarm
+/// hint, so images piggyback on the same path.
 #[derive(Debug, Clone, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct FontOptions {
     /// Scan the system's font directories (needed for families like
@@ -79,6 +85,12 @@ pub struct FontOptions {
     /// the embedded DejaVu Sans and the `extra_dirs`). A small font book keeps
     /// per-render compiles fast — a 700-face book makes them ~5× slower.
     pub families: Vec<String>,
+    /// Directories the world's file resolver is rooted at, in priority order
+    /// (first root wins on name collisions). Document-relative images resolve
+    /// against the document's folder; template-relative images (e.g. a
+    /// bundled theme's `assets/bg.svg`) resolve against the template's
+    /// folder. Each root is a `FileSystemResolver` that cannot escape it.
+    pub asset_roots: Vec<PathBuf>,
 }
 
 /// Font loading for a template whose source has already been read. Used by
@@ -96,6 +108,7 @@ pub fn font_options_for_source(path: &str, source: &str) -> FontOptions {
         system_fonts: families.is_empty(),
         extra_dirs: dir.into_iter().collect(),
         families,
+        asset_roots: Vec::new(),
     }
 }
 
@@ -161,6 +174,13 @@ pub fn build_engine(
         search_system = true;
     }
     let mut builder = TypstEngine::builder().main_file(source).fonts(all_fonts);
+    // File-system roots for binary assets (images), highest priority first.
+    // The main file is the in-memory composed source (`/main.typ`), so a
+    // relative `image("x.svg")` resolves to `<root>/x.svg`. Each root is a
+    // FileSystemResolver that refuses `..` escapes (§6.4).
+    for root in &fonts.asset_roots {
+        builder = builder.with_file_system_resolver(root);
+    }
     if search_system {
         let mut options = typst_as_lib::typst_kit_options::TypstKitFontOptions::default();
         if !fonts.system_fonts {
@@ -535,6 +555,54 @@ mod tests {
         assert_eq!(&bytes[..4], b"%PDF", "PDF magic header");
     }
 
+    /// The file resolver roots in `FontOptions.asset_roots` let a template
+    /// reference images relative to its own folder (§6.4). Without the root
+    /// the same `image("corner.svg")` must fail to resolve — proving the
+    /// test exercises the resolver, not a silent fallback.
+    #[test]
+    fn asset_roots_resolve_relative_images() {
+        let dir = std::env::temp_dir().join(format!(
+            "markdown-blathy-assets-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("corner.svg"),
+            r##"<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20"><rect width="20" height="20" fill="#7c3aed"/></svg>"##,
+        )
+        .unwrap();
+
+        let source = "#set page(width: 100pt, height: 100pt)\n#image(\"corner.svg\", width: 20pt)";
+        let mut inputs = Dict::new();
+        inputs.insert("title".into(), Value::None);
+        inputs.insert("author".into(), Value::None);
+        inputs.insert("body".into(), "".into_value());
+
+        let fonts = FontOptions {
+            asset_roots: vec![dir.clone()],
+            ..FontOptions::default()
+        };
+        let engine = build_engine(source, &fonts).expect("engine must build");
+        let outcome = compile_preview_with_inputs(&engine, &inputs).expect("image must resolve");
+        assert!(!outcome.pages.is_empty());
+        assert!(
+            outcome.warnings.is_empty(),
+            "a resolved SVG must not warn: {:?}",
+            outcome.warnings
+        );
+
+        // Without the root the image cannot resolve.
+        let engine = build_engine(source, &FontOptions::default()).expect("engine must build");
+        let err = compile_preview_with_inputs(&engine, &inputs).unwrap_err();
+        assert!(
+            err.to_string().to_ascii_lowercase().contains("corner"),
+            "missing image error should name the file: {err}"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// Deferred issue (§13): the Align toolbar control (left/center/justified)
     /// rendered identically — the `set align(…)` / `set par(justify: …)`
     /// rules sat inside empty `if` blocks, and Typst scopes a `set` rule to
@@ -806,6 +874,7 @@ mod tests {
             system_fonts: false,
             extra_dirs: Vec::new(),
             families: vec![family.clone()],
+            asset_roots: Vec::new(),
         };
 
         let (engine, inputs) =
@@ -846,6 +915,7 @@ mod tests {
                 system_fonts: true,
                 extra_dirs: Vec::new(),
                 families: Vec::new(),
+                asset_roots: Vec::new(),
             },
         );
         let outcome =
@@ -881,6 +951,7 @@ mod tests {
             system_fonts: true,
             extra_dirs: Vec::new(),
             families: Vec::new(),
+            asset_roots: Vec::new(),
         };
         let render = |template: &str| {
             let source = build_static_source(template, &gfm_options()).unwrap();
@@ -967,6 +1038,7 @@ mod tests {
             system_fonts: true,
             extra_dirs: Vec::new(),
             families: Vec::new(),
+            asset_roots: Vec::new(),
         };
         let render = |template: &str| {
             let static_source = build_static_source(template, &gfm_options()).unwrap();

@@ -404,7 +404,7 @@ pub async fn validate_template(
             .lock()
             .map_err(|_| "engine cache lock poisoned".to_string())?;
         let engine = template::build_and_probe(&static_source, &fonts)?;
-        cache.prime(&static_source, engine);
+        cache.prime(&static_source, &fonts, engine);
         Ok::<(), String>(())
     })
     .await

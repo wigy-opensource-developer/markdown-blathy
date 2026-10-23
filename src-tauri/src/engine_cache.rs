@@ -11,14 +11,17 @@ use typst_as_lib::{TypstEngine, TypstTemplateMainFile};
 
 use crate::typst_engine::engine::{self, FontOptions};
 
-/// The M6 engine cache (§7.5): one compiled engine per static source.
+/// The M6 engine cache (§7.5): one compiled engine per (static source,
+/// engine options) pair.
 ///
 /// Rebuilding an engine is the expensive part — the font scan runs at build
 /// time — so the engine is reused across renders and recreated only when the
-/// static source (the resolved template plus the toolbar options) changes.
-/// The markdown body never touches it: it travels as `sys.inputs` per render.
+/// static source (the resolved template plus the toolbar options) or the
+/// engine options (fonts + asset roots) change. The markdown body never
+/// touches it: it travels as `sys.inputs` per render.
 pub struct TemplateEngineCache {
     key: String,
+    fonts: FontOptions,
     engine: Option<TypstEngine<TypstTemplateMainFile>>,
 }
 
@@ -26,20 +29,24 @@ impl TemplateEngineCache {
     pub fn new() -> Self {
         Self {
             key: String::new(),
+            fonts: FontOptions::default(),
             engine: None,
         }
     }
 
-    /// The engine for `static_source`, rebuilt (fonts re-scanned) only when
-    /// the source changed since the last call.
+    /// The engine for `static_source` + `fonts`, rebuilt (fonts re-scanned)
+    /// only when either changed since the last call. `fonts` carries the
+    /// asset roots the file resolver was built with, so two documents in
+    /// different directories — or a template whose assets moved — do not
+    /// share a stale engine.
     pub fn engine_for(
         &mut self,
         static_source: &str,
         fonts: &FontOptions,
     ) -> Result<&TypstEngine<TypstTemplateMainFile>, String> {
-        if self.key != static_source {
-            // Each line should correspond to an actual template/options change,
-            // never to steady-state typing.
+        if self.key != static_source || &self.fonts != fonts {
+            // Each line should correspond to an actual template/options
+            // change, never to steady-state typing.
             debug!(
                 prev_len = self.key.len(),
                 new_len = static_source.len(),
@@ -48,16 +55,24 @@ impl TemplateEngineCache {
             self.engine =
                 Some(engine::build_engine(static_source, fonts).map_err(|e| e.to_string())?);
             self.key = static_source.to_string();
+            self.fonts = fonts.clone();
         }
         Ok(self.engine.as_ref().expect("engine built just above"))
     }
 
-    /// Store a ready-built engine under its static source. Used by template
-    /// validation (§7.4): validation already scans the fonts and builds an
-    /// engine, so it hands it to the cache and the next render — which uses
-    /// the same static source — finds it ready instead of re-scanning.
-    pub fn prime(&mut self, static_source: &str, engine: TypstEngine<TypstTemplateMainFile>) {
+    /// Store a ready-built engine under its static source + fonts. Used by
+    /// template validation (§7.4): validation already scans the fonts and
+    /// builds an engine, so it hands it to the cache and the next render —
+    /// which uses the same source + fonts — finds it ready instead of
+    /// re-scanning.
+    pub fn prime(
+        &mut self,
+        static_source: &str,
+        fonts: &FontOptions,
+        engine: TypstEngine<TypstTemplateMainFile>,
+    ) {
         self.key = static_source.to_string();
+        self.fonts = fonts.clone();
         self.engine = Some(engine);
     }
 }
@@ -117,6 +132,28 @@ mod tests {
         );
     }
 
+    /// The engine cache must key on the engine options too, not just the
+    /// static source: two documents in different directories share the same
+    /// template source but resolve images against different roots. Reusing the
+    /// first document's engine for the second would serve its image resolver.
+    #[test]
+    fn cache_rebuilds_when_asset_roots_change() {
+        let mut cache = TemplateEngineCache::new();
+        let source = "image(\"bg.svg\")";
+        let mut roots_a = FontOptions::default();
+        roots_a.asset_roots.push("/tmp/docs-a".into());
+        let mut roots_b = FontOptions::default();
+        roots_b.asset_roots.push("/tmp/docs-b".into());
+
+        let engine = cache.engine_for(source, &roots_a).expect("must build");
+        assert_eq!(main_source(engine), source);
+
+        // Same source, different root — must rebuild, not serve the stale
+        // engine built for docs-a.
+        let engine = cache.engine_for(source, &roots_b).expect("must rebuild");
+        assert_eq!(main_source(engine), source);
+    }
+
     /// M6: validation primes the cache with a ready-built engine (§7.4); a
     /// subsequent render for the same static source is served that engine
     /// instead of re-scanning fonts.
@@ -126,7 +163,7 @@ mod tests {
         let fonts = FontOptions::default();
 
         let prebuilt = engine::build_engine("theme source", &fonts).expect("must build");
-        cache.prime("theme source", prebuilt);
+        cache.prime("theme source", &fonts, prebuilt);
         let served = cache
             .engine_for("theme source", &fonts)
             .expect("must reuse");
