@@ -36,6 +36,9 @@
     "active": true,
     "targets": "all",
     "category": "Productivity",
+    "resources": [
+      "templates/**/*"
+    ],
     "shortDescription": "Markdown editor with Typst-powered live preview and PDF export",
     "longDescription": "MarkdownBláthy is a desktop Markdown editor with live preview and on-demand PDF export. The preview and the PDF are produced by the same Typst compilation pipeline, so what you see is what you get. The name commemorates Ottó Titusz Bláthy who among his other inventions became the co-inventor of the efficient alternating current transformer.",
     "copyright": "Copyright © 2026 wigy-opensource-developer",

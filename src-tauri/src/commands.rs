@@ -4,7 +4,7 @@
 //! `files/`) which have no `tauri` imports; these functions are
 //! serialization-only shims plus the system dialogs.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use serde::{Deserialize, Serialize};
@@ -29,6 +29,10 @@ pub struct RenderPayload {
     pub options: RenderOptions,
     /// Monotonically increasing request id for the stale-response guard (§7.5).
     pub seq: u64,
+    /// Absolute path of the document on disk, so document-relative images
+    /// resolve against its folder (§6.4). None for the untitled sample.
+    #[serde(default)]
+    pub document_path: Option<String>,
 }
 
 /// Per-page SVG strings plus warnings and the effective document settings,
@@ -93,6 +97,15 @@ fn is_false(b: &bool) -> bool {
     !b
 }
 
+/// The directory holding the bundled templates (one subdirectory per
+/// template, each with a `main.typ`). Resolved from the Tauri resource dir;
+/// in dev (`cargo run`/`tauri dev`) the resources are not bundled, so fall
+/// back to the in-tree `src-tauri/templates/` next to the manifest.
+fn templates_dir(app: &AppHandle) -> Option<PathBuf> {
+    use tauri::Manager as _;
+    crate::files::templates_dir(app.path().resource_dir().ok())
+}
+
 /// The UI shows converter warnings (e.g. duplicate heading IDs) and engine
 /// warnings (e.g. missing fonts) together (§3): converter first, engine after.
 fn merged_warnings(mut converter: Vec<String>, engine: Vec<String>) -> Vec<String> {
@@ -142,7 +155,12 @@ pub async fn render_preview(
     payload: RenderPayload,
 ) -> Result<PreviewOutcome, String> {
     let t0 = std::time::Instant::now();
-    let prepared = template::prepare_render(&payload.markdown, &payload.options)?;
+    let prepared = template::prepare_render(
+        &payload.markdown,
+        &payload.options,
+        templates_dir(&app).as_deref(),
+        payload.document_path.as_deref().map(Path::new),
+    )?;
     let t1 = std::time::Instant::now();
 
     let outcome = with_cached_engine(&state, &prepared, "Preview task", |engine, inputs| {
@@ -210,7 +228,12 @@ pub async fn export_pdf(
     title: String,
     directory: Option<String>,
 ) -> Result<FileOutcome, String> {
-    let prepared = template::prepare_render(&payload.markdown, &payload.options)?;
+    let prepared = template::prepare_render(
+        &payload.markdown,
+        &payload.options,
+        templates_dir(&app).as_deref(),
+        payload.document_path.as_deref().map(Path::new),
+    )?;
 
     // `FileOutcome` has no warnings channel (§8.4), so converter warnings
     // are logged rather than surfaced in the UI on export.
@@ -411,6 +434,34 @@ pub async fn validate_template(
     .map_err(|e| format!("Validation task failed: {e}"))?
     .map_err(|e| format!("Template at {path} rejected: {e}"))?;
     Ok(serde_json::json!({ "valid": true }))
+}
+
+/// List the bundled template ids (one subdirectory per template, each with a
+/// `main.typ`), ordered with the default `light` first. The frontend maps the
+/// ids to display labels and shows them in the template selector (§8.6).
+#[tauri::command]
+#[instrument]
+pub fn list_templates(app: AppHandle) -> Result<Vec<String>, String> {
+    let dir =
+        templates_dir(&app).ok_or_else(|| "Bundled templates are not available".to_string())?;
+    let mut names = Vec::new();
+    for entry in std::fs::read_dir(&dir)
+        .map_err(|e| format!("Failed to list templates at {}: {e}", dir.display()))?
+    {
+        let entry = entry.map_err(|e| format!("Failed to read template entry: {e}"))?;
+        if entry.path().join("main.typ").is_file() {
+            if let Some(name) = entry.file_name().to_str() {
+                names.push(name.to_string());
+            }
+        }
+    }
+    names.sort();
+    // `light` is the default, so it leads the selector regardless of sort order.
+    if let Some(pos) = names.iter().position(|n| n == "light") {
+        let light = names.remove(pos);
+        names.insert(0, light);
+    }
+    Ok(names)
 }
 
 /// `Some(&str)` for a non-empty string, else `None` — used to skip

@@ -275,7 +275,13 @@ pub struct RenderOptions {
     pub paper: Paper,
     pub margins: Margins,
     pub text_align: TextAlign,
-    /// Absolute path to a user template; None = embedded default.
+    /// Bundled template id (a subdirectory of the bundled `templates/`
+    /// resource dir, e.g. `light`/`dark`/`obsidian`). `None` = the default
+    /// `light` template. Ignored when `template_path` is set.
+    #[serde(default)]
+    pub template_name: Option<String>,
+    /// Absolute path to a user template; None = use `template_name` (or the
+    /// embedded default).
     pub template_path: Option<String>,
     /// Heading ID generation settings (§6.2). Defaults to enabling all 6 levels.
     #[serde(default)]
@@ -294,7 +300,7 @@ impl RenderOptions {
         // prewarm is best-effort; `frontend_defaults_shape_is_the_fresh_install_state`
         // guards the values themselves.
         serde_json::from_str(
-            r#"{"flavor":"custom","paper":"a4","margins":{"topMm":25,"bottomMm":25,"leftMm":20,"rightMm":20},"textAlign":"left","templatePath":null}"#,
+            r#"{"flavor":"custom","paper":"a4","margins":{"topMm":25,"bottomMm":25,"leftMm":20,"rightMm":20},"textAlign":"left","templateName":null,"templatePath":null}"#,
         )
         .expect("frontend default options must parse as RenderOptions")
     }
@@ -411,6 +417,7 @@ mod tests {
             }
         );
         assert_eq!(o.text_align, TextAlign::Left);
+        assert_eq!(o.template_name, None);
         assert_eq!(o.template_path, None);
         assert_eq!(o.heading_ids, HeadingIds::default());
     }
@@ -427,14 +434,17 @@ mod tests {
                 right_mm: 15.0,
             },
             text_align: TextAlign::Justified,
+            template_name: Some("dark".into()),
             template_path: Some("/tmp/t.typ".into()),
             heading_ids: HeadingIds::default(),
         };
         let json = serde_json::to_string(&options).unwrap();
         assert!(json.contains("\"textAlign\":\"justified\""), "{json}");
         assert!(json.contains("\"paper\":\"letter\""), "{json}");
+        assert!(json.contains("\"templateName\":\"dark\""), "{json}");
         let back: RenderOptions = serde_json::from_str(&json).unwrap();
         assert_eq!(back.paper, Paper::Letter);
+        assert_eq!(back.template_name.as_deref(), Some("dark"));
         assert_eq!(back.template_path.as_deref(), Some("/tmp/t.typ"));
     }
 

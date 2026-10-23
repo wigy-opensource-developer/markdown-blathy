@@ -52,12 +52,19 @@ pub fn run() {
                 .app_data_dir()
                 .ok()
                 .map(|dir| prewarm::hint_path(&dir));
+            // Resolved here (outside spawn_blocking) because `app` is not Send.
+            let templates_dir = crate::files::templates_dir(app.path().resource_dir().ok());
             tauri::async_runtime::spawn_blocking(move || {
                 let (source, fonts) = match hint_file.as_deref().and_then(prewarm::load_hint) {
                     Some(hint) => (hint.static_source, hint.fonts),
                     None => {
                         let options = options::RenderOptions::frontend_defaults();
-                        match typst_engine::template::prepare_render("", &options) {
+                        match typst_engine::template::prepare_render(
+                            "",
+                            &options,
+                            templates_dir.as_deref(),
+                            None,
+                        ) {
                             Ok(prepared) => (prepared.static_source, prepared.fonts),
                             Err(e) => {
                                 tracing::debug!("engine prewarm: prepare failed: {e}");
@@ -85,6 +92,7 @@ pub fn run() {
             commands::open_external,
             commands::update_front_matter,
             commands::validate_template,
+            commands::list_templates,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

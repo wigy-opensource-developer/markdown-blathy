@@ -9,6 +9,7 @@
 //! the markdown body is passed per render via `render_inputs`.
 
 use std::fmt::Write;
+use std::path::Path;
 
 use crate::markdown::convert::{md_to_typst, DocMeta};
 use crate::options::RenderOptions;
@@ -216,15 +217,35 @@ pub fn referenced_font_families(source: &str) -> Vec<String> {
     families
 }
 
-/// Resolve the template to compile (§7.4): read the user template at
-/// `options.template_path` — or fall back to the embedded `DEFAULT_TEMPLATE` —
-/// and derive the font options for it from the same single read.
+/// Engine options for a bundled template (§6.3): its own folder is both a
+/// font directory and an image root, and only the families the template
+/// references are loaded from the system (subset, fast). The prelude already
+/// pins the body/mono/math faces to the embedded DejaVu, so a bundled
+/// template that sets no fonts needs no full system-font scan.
+fn bundled_font_options(template_dir: &Path, source: &str) -> FontOptions {
+    FontOptions {
+        system_fonts: false,
+        extra_dirs: vec![template_dir.to_path_buf()],
+        families: referenced_font_families(source),
+        asset_roots: vec![template_dir.to_path_buf()],
+    }
+}
+
+/// Resolve the template to compile (§7.4): a custom user template at
+/// `options.template_path`, a bundled template (a subdirectory of the bundled
+/// `templates/` resource dir) named by `options.template_name` — falling back
+/// to the embedded default light template — and derive the engine options
+/// (fonts + asset roots) from the same single read.
 ///
-/// A user template is composed AFTER the prelude (§6.3), so its definitions
-/// shadow the default helpers while everything it leaves out keeps the
-/// prelude implementation. The error message names the offending path so the
-/// UI can surface it (§9).
-pub fn resolve_template(options: &RenderOptions) -> Result<(String, FontOptions), String> {
+/// A template is composed AFTER the prelude (§6.3), so its definitions shadow
+/// the default helpers while everything it leaves out keeps the prelude
+/// implementation. Custom user templates are composed after the default light
+/// `article` too, so one that only restyles still has an `article` to call.
+/// The error message names the offending path so the UI can surface it (§9).
+pub fn resolve_template(
+    options: &RenderOptions,
+    templates_dir: Option<&Path>,
+) -> Result<(String, FontOptions), String> {
     match &options.template_path {
         Some(path) => {
             let user = std::fs::read_to_string(path)
@@ -233,7 +254,34 @@ pub fn resolve_template(options: &RenderOptions) -> Result<(String, FontOptions)
             let fonts = crate::typst_engine::engine::font_options_for_source(path, &user);
             Ok((source, fonts))
         }
-        None => Ok((DEFAULT_TEMPLATE.to_owned(), FontOptions::default())),
+        None => {
+            let name = options.template_name.as_deref().unwrap_or("light");
+            match templates_dir {
+                Some(dir) => {
+                    let template_dir = dir.join(name);
+                    let main = template_dir.join("main.typ");
+                    let template_source = match std::fs::read_to_string(&main) {
+                        Ok(source) => source,
+                        Err(e) if name == "light" => DEFAULT_ARTICLE.to_owned(),
+                        Err(e) => {
+                            return Err(format!(
+                                "Failed to read bundled template at {}: {e}",
+                                main.display()
+                            ))
+                        }
+                    };
+                    let source = format!("{PRELUDE}\n\n{template_source}");
+                    let fonts = bundled_font_options(&template_dir, &template_source);
+                    Ok((source, fonts))
+                }
+                None if name == "light" => {
+                    Ok((DEFAULT_TEMPLATE.to_owned(), FontOptions::default()))
+                }
+                None => Err(format!(
+                    "Bundled template '{name}' is not available (no template directory)"
+                )),
+            }
+        }
     }
 }
 
@@ -255,10 +303,23 @@ pub struct PreparedRender {
 /// Prepare a render: resolve the template (one file read), bake the toolbar
 /// options into the static source and convert the markdown into `sys.inputs`.
 ///
+/// `templates_dir` is the bundled template directory (from the Tauri resource
+/// dir or the source tree in dev); `document_path` lets document-relative
+/// images resolve against the document's own folder. Its parent directory is
+/// prepended to the asset roots, ahead of the template's folder.
+///
 /// This is the single setup path for both preview and export — the command
 /// layer calls it instead of repeating the resolve/build/convert/fonts dance.
-pub fn prepare_render(markdown: &str, options: &RenderOptions) -> Result<PreparedRender, String> {
-    let (template_source, fonts) = resolve_template(options)?;
+pub fn prepare_render(
+    markdown: &str,
+    options: &RenderOptions,
+    templates_dir: Option<&Path>,
+    document_path: Option<&Path>,
+) -> Result<PreparedRender, String> {
+    let (template_source, mut fonts) = resolve_template(options, templates_dir)?;
+    if let Some(dir) = document_path.and_then(|p| p.parent()) {
+        fonts.asset_roots.insert(0, dir.to_path_buf());
+    }
     let (inputs, doc, warnings) = render_inputs(markdown, options)?;
     Ok(PreparedRender {
         static_source: build_static_source(&template_source, options)?,
@@ -325,13 +386,20 @@ pub fn build_and_probe(
 mod tests {
     use super::{
         build_and_probe, build_static_source, compose, prepare_render, referenced_font_families,
-        render_inputs, resolve_template, TemplateArgs, DEFAULT_TEMPLATE,
+        render_inputs, resolve_template, TemplateArgs, DEFAULT_TEMPLATE, PRELUDE,
     };
     use crate::options::{Flavor, HeadingIds, Margins, Paper, RenderOptions, TextAlign};
     use crate::typst_engine::engine::FontOptions;
+    use std::path::PathBuf;
     use typst::foundations::{Dict, IntoValue, Value};
 
     const TMPL: &str = "#let article(paper: \"a4\", margin-x: 20mm, margin-y: 25mm, text-align: \"left\", title: none, author: none, body) = { body }";
+
+    /// The bundled templates live next to the crate in `src-tauri/templates/`;
+    /// tests read them from there (the same files shipped as resources).
+    fn test_templates_dir() -> PathBuf {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("templates")
+    }
 
     /// Default render options for tests: CommonMark on A4 with the standard
     /// 20/20/20/20 mm margins, left alignment and no custom template. Tests
@@ -347,6 +415,7 @@ mod tests {
                 right_mm: 20.0,
             },
             text_align: TextAlign::Left,
+            template_name: None,
             template_path: None,
             heading_ids: HeadingIds::default(),
         }
@@ -521,7 +590,8 @@ mod tests {
     #[test]
     fn resolve_template_returns_default_without_path() {
         let options = default_options();
-        let (source, fonts) = resolve_template(&options).expect("default must resolve");
+        let (source, fonts) =
+            resolve_template(&options, Some(&test_templates_dir())).expect("default must resolve");
         assert!(
             source.contains("#let article"),
             "default template must define `article`"
@@ -529,6 +599,63 @@ mod tests {
         assert_eq!(source, DEFAULT_TEMPLATE);
         assert_eq!(fonts.families, Vec::<String>::new(), "no families to load");
         assert!(!fonts.system_fonts, "default template needs no system scan");
+    }
+
+    /// A bundled template is read from `templates/<name>/main.typ` and
+    /// composed after the prelude; its own folder is both an image root and a
+    /// font directory (§6.3).
+    #[test]
+    fn resolve_template_reads_bundled_template() {
+        let options = RenderOptions {
+            template_name: Some("dark".into()),
+            ..default_options()
+        };
+        let (source, fonts) = resolve_template(&options, Some(&test_templates_dir()))
+            .expect("bundled dark template must resolve");
+        assert!(
+            source.starts_with(PRELUDE),
+            "bundled template must be composed after the prelude"
+        );
+        assert!(
+            source.contains("fill: rgb(\"#0d1117\")"),
+            "dark template content must be present"
+        );
+        let dark_dir = test_templates_dir().join("dark");
+        assert_eq!(fonts.asset_roots, vec![dark_dir.clone()]);
+        assert_eq!(fonts.extra_dirs, vec![dark_dir]);
+        assert!(
+            !fonts.system_fonts,
+            "bundled templates keep the prelude fonts"
+        );
+    }
+
+    /// An unknown bundled template name names the missing path (§9).
+    #[test]
+    fn resolve_template_reports_unknown_bundled_template() {
+        let options = RenderOptions {
+            template_name: Some("nope".into()),
+            ..default_options()
+        };
+        let err = resolve_template(&options, Some(&test_templates_dir())).unwrap_err();
+        assert!(
+            err.contains("nope"),
+            "error should name the template: {err}"
+        );
+    }
+
+    /// Without a template directory the default light template still resolves
+    /// from the embedded fallback; a non-default bundled name cannot.
+    #[test]
+    fn resolve_template_falls_back_to_embedded_without_dir() {
+        let (source, fonts) = resolve_template(&default_options(), None).expect("light resolves");
+        assert_eq!(source, DEFAULT_TEMPLATE);
+        assert!(fonts.asset_roots.is_empty());
+
+        let options = RenderOptions {
+            template_name: Some("dark".into()),
+            ..default_options()
+        };
+        assert!(resolve_template(&options, None).is_err());
     }
 
     #[test]
@@ -543,7 +670,7 @@ mod tests {
             template_path: Some(path.to_string_lossy().into_owned()),
             ..default_options()
         };
-        let (source, fonts) = resolve_template(&options).expect("user template must resolve");
+        let (source, fonts) = resolve_template(&options, None).expect("user template must resolve");
         // The user template is composed AFTER the prelude so its definitions
         // shadow the defaults (§6.3).
         assert!(
@@ -566,7 +693,7 @@ mod tests {
             template_path: Some("/nonexistent/markdown-blathy/does-not-exist.typ".to_string()),
             ..default_options()
         };
-        let err = resolve_template(&options).unwrap_err();
+        let err = resolve_template(&options, None).unwrap_err();
         assert!(
             err.contains("does-not-exist.typ"),
             "error should mention the offending path: {err}"
@@ -582,7 +709,8 @@ mod tests {
             flavor: Flavor::Github,
             ..default_options()
         };
-        let prepared = prepare_render("# Hi", &options).expect("must prepare");
+        let prepared = prepare_render("# Hi", &options, Some(&test_templates_dir()), None)
+            .expect("must prepare");
         // Static source carries the toolbar options and the sys.inputs reads…
         assert!(
             prepared.static_source.contains("paper: \"a4\""),

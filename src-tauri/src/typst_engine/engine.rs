@@ -103,12 +103,16 @@ pub fn font_options_for_source(path: &str, source: &str) -> FontOptions {
         .filter(|p| !p.as_os_str().is_empty())
         .map(|p| p.to_path_buf());
     let families = crate::typst_engine::template::referenced_font_families(source);
+    // The template's own folder is both a font directory (extra_dirs) and an
+    // image root (asset_roots), so a theme can ship fonts and background
+    // images next to its `.typ` file.
+    let dirs: Vec<PathBuf> = dir.into_iter().collect();
     FontOptions {
         // When no families are detected, keep the conservative full scan.
         system_fonts: families.is_empty(),
-        extra_dirs: dir.into_iter().collect(),
+        extra_dirs: dirs.clone(),
         families,
-        asset_roots: Vec::new(),
+        asset_roots: dirs,
     }
 }
 
@@ -338,7 +342,7 @@ mod tests {
     };
     use crate::options::{Flavor, HeadingIds, Margins, Paper, RenderOptions, TextAlign};
     use crate::typst_engine::template::{
-        build_static_source, compose, render_inputs, TemplateArgs, DEFAULT_TEMPLATE,
+        build_static_source, compose, render_inputs, TemplateArgs, DEFAULT_TEMPLATE, PRELUDE,
     };
     use typst::foundations::{Dict, IntoValue, Value};
     use typst_as_lib::{TypstEngine, TypstTemplateMainFile};
@@ -370,6 +374,7 @@ mod tests {
                 right_mm: 20.0,
             },
             text_align: TextAlign::Left,
+            template_name: None,
             template_path: None,
             heading_ids: HeadingIds::default(),
         }
@@ -561,10 +566,8 @@ mod tests {
     /// test exercises the resolver, not a silent fallback.
     #[test]
     fn asset_roots_resolve_relative_images() {
-        let dir = std::env::temp_dir().join(format!(
-            "markdown-blathy-assets-{}",
-            std::process::id()
-        ));
+        let dir =
+            std::env::temp_dir().join(format!("markdown-blathy-assets-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(
@@ -1059,15 +1062,16 @@ mod tests {
         );
     }
 
-    /// The reference dark theme (`examples/dark.typ`) must compile through
+    /// The bundled dark theme (`templates/dark/main.typ`) must compile through
     /// the full pipeline *without warnings*: it is the worked example for
     /// theme designers, so its glyph choices (`#sym.checkmark`, `#sym.circle`,
     /// the en dash) and its helper overrides must keep rendering with the
     /// embedded DejaVu Sans and the current prelude.
     #[test]
     fn dark_theme_example_compiles_without_warnings() {
-        let theme_path = format!("{}/../examples/dark.typ", env!("CARGO_MANIFEST_DIR"));
-        let theme = std::fs::read_to_string(&theme_path).expect("examples/dark.typ must exist");
+        let theme_path = format!("{}/templates/dark/main.typ", env!("CARGO_MANIFEST_DIR"));
+        let theme =
+            std::fs::read_to_string(&theme_path).expect("templates/dark/main.typ must exist");
         let template = format!("{DEFAULT_TEMPLATE}\n\n{theme}");
         let markdown = [
             "---",
@@ -1155,8 +1159,9 @@ mod tests {
     /// color and no black.
     #[test]
     fn dark_theme_footnote_separator_is_visible() {
-        let theme_path = format!("{}/../examples/dark.typ", env!("CARGO_MANIFEST_DIR"));
-        let theme = std::fs::read_to_string(&theme_path).expect("examples/dark.typ must exist");
+        let theme_path = format!("{}/templates/dark/main.typ", env!("CARGO_MANIFEST_DIR"));
+        let theme =
+            std::fs::read_to_string(&theme_path).expect("templates/dark/main.typ must exist");
         let template = format!("{DEFAULT_TEMPLATE}\n\n{theme}");
         let markdown = "Body text.[^1]\n\n[^1]: the note";
         let outcome = compile_custom_theme(&template, markdown);
@@ -1180,14 +1185,58 @@ mod tests {
     /// themed fill.
     #[test]
     fn dark_theme_highlight_uses_a_dark_accent_fill() {
-        let theme_path = format!("{}/../examples/dark.typ", env!("CARGO_MANIFEST_DIR"));
-        let theme = std::fs::read_to_string(&theme_path).expect("examples/dark.typ must exist");
+        let theme_path = format!("{}/templates/dark/main.typ", env!("CARGO_MANIFEST_DIR"));
+        let theme =
+            std::fs::read_to_string(&theme_path).expect("templates/dark/main.typ must exist");
         let template = format!("{DEFAULT_TEMPLATE}\n\n{theme}");
         let outcome = compile_custom_theme(&template, "==marked== text");
         let svg = &outcome.pages[0];
         assert!(
             svg.contains("fill=\"#552926\""),
             "the themed highlight fill must be drawn: {:?}",
+            svg
+        );
+    }
+
+    /// The bundled obsidian theme must compile through the full pipeline
+    /// without warnings, and its lower-right corner SVG (`assets/corner.svg`)
+    /// must actually be resolved from the template's asset root and drawn —
+    /// the page SVG carries the pink graph node. This pins the template
+    /// relative-image path end to end.
+    #[test]
+    fn obsidian_theme_compiles_and_draws_its_corner_image() {
+        let theme_path = format!("{}/templates/obsidian/main.typ", env!("CARGO_MANIFEST_DIR"));
+        let theme =
+            std::fs::read_to_string(&theme_path).expect("templates/obsidian/main.typ must exist");
+        let template = format!("{PRELUDE}\n\n{theme}");
+        let markdown = "# A linked note\n\nSome *connected* thoughts.\n\n- [ ] todo\n- [x] done";
+        let fonts = FontOptions {
+            asset_roots: vec![format!("{}/templates/obsidian", env!("CARGO_MANIFEST_DIR")).into()],
+            extra_dirs: vec![format!("{}/templates/obsidian", env!("CARGO_MANIFEST_DIR")).into()],
+            ..FontOptions::default()
+        };
+        let static_source = build_static_source(&template, &custom_options()).unwrap();
+        let (inputs, ..) = render_inputs(markdown, &custom_options()).unwrap();
+        let engine = build_engine(&static_source, &fonts).expect("engine");
+        let outcome = compile_preview_with_inputs(&engine, &inputs).expect("obsidian must compile");
+        assert!(!outcome.pages.is_empty());
+        assert!(
+            outcome.warnings.is_empty(),
+            "obsidian theme must render without warnings: {:?}",
+            outcome.warnings
+        );
+        let svg = &outcome.pages[0];
+        // The page fill proves the obsidian `article` ran; the embedded data
+        // URI proves the corner SVG was resolved from the template's asset
+        // root and rasterized into the preview as a vector image.
+        assert!(
+            svg.contains("fill=\"#191724\""),
+            "the obsidian page fill must be drawn: {:?}",
+            svg
+        );
+        assert!(
+            svg.contains("<image") && svg.contains("data:image/svg+xml;base64,"),
+            "the corner SVG must be resolved and embedded: {:?}",
             svg
         );
     }
