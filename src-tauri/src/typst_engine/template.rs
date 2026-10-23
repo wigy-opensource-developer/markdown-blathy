@@ -15,15 +15,29 @@ use crate::options::RenderOptions;
 use crate::typst_engine::engine::FontOptions;
 use typst::foundations::{Dict, IntoValue};
 
-/// The embedded default template (`templates/default.typ`).
-///
-/// This is the PRELUDE (§6.3): default implementations of every helper the
+/// The shared PRELUDE (§6.3): default implementations of every helper the
 /// converter emits (`task-list`/`task-done`/`task-todo`/`task-plain`,
 /// `blockquote`, `thematic-break`, `inline-code`, `code-block`,
-/// `markdown-table`, `ordered-list`, `title-block`) plus a default `article`.
-/// User templates are composed *after* it, so Typst shadowing lets them
-/// override any of these while falling back to the defaults for the rest.
-pub const DEFAULT_TEMPLATE: &str = include_str!("templates/default.typ");
+/// `markdown-table`, `ordered-list`, `title-block`, `markdown-toc`, …).
+/// Templates are composed *after* it, so Typst shadowing lets them override
+/// any of these while falling back to the defaults for the rest. The prelude
+/// deliberately does NOT define `article` — the selected template does.
+pub const PRELUDE: &str = include_str!("../../templates/prelude.typ");
+
+/// The default light template's `article` (`templates/light/main.typ`).
+/// Embedded so the app keeps working when the bundled resources are missing
+/// (unit tests, dev) and as the base `article` for custom user templates,
+/// which may not define one of their own.
+pub const DEFAULT_ARTICLE: &str = include_str!("../../templates/light/main.typ");
+
+/// The full embedded default template: prelude + light `article`. Used as the
+/// fallback when the bundled template directory is unavailable and as the
+/// base prepended to custom user templates (§7.4).
+pub const DEFAULT_TEMPLATE: &str = concat!(
+    include_str!("../../templates/prelude.typ"),
+    "\n\n",
+    include_str!("../../templates/light/main.typ")
+);
 
 /// Arguments for the template's `article` invocation (§6.3).
 ///
