@@ -4,10 +4,15 @@ name: macOS
 # (`workflow_dispatch`) or as a job of the tag-triggered Release workflow
 # (`workflow_call`).
 #
-# NOTE: the bundle is UNSIGNED and NOT notarized, so Gatekeeper warns on first
-# launch (right-click → Open). Adding `APPLE_CERTIFICATE`, `APPLE_ID`,
-# `APPLE_PASSWORD` and `APPLE_TEAM_ID` repository secrets makes Tauri sign and
-# notarize automatically — no other change is needed here.
+# NOTE: signing is OPTIONAL. With no Apple secrets the bundle is unsigned
+# (Gatekeeper warns on first launch; right-click → Open, or
+# `xattr -dr com.apple.quarantine`), which is enough for testing. Setting
+# `APPLE_CERTIFICATE` (+ password) or `APPLE_SIGNING_IDENTITY` switches signing
+# on; adding `APPLE_ID`, `APPLE_PASSWORD` and `APPLE_TEAM_ID` also notarizes.
+#
+# The variables must be *absent*, not empty, when unsigned: Tauri checks
+# whether they are present and would otherwise try to import an empty
+# certificate ("SecKeychainItemImport: One or more parameters … not valid").
 
 on:
   workflow_dispatch:
@@ -24,6 +29,11 @@ jobs:
   build:
     if: github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/master'
     runs-on: macos-14
+    env:
+      # `if:` cannot read secrets directly, so reduce "is signing configured?"
+      # to a plain boolean here.
+      SIGNING_CONFIGURED: >-
+        ${{ secrets.APPLE_CERTIFICATE != '' || secrets.APPLE_SIGNING_IDENTITY != '' }}
     steps:
       - uses: actions/checkout@v7
 
@@ -49,17 +59,38 @@ jobs:
       - name: install npm dependencies
         run: npm ci
 
+      # Export only the signing variables that actually have a value. Tauri
+      # tests for presence, so an empty APPLE_CERTIFICATE would make it try to
+      # import an empty certificate instead of skipping signing.
+      - name: configure code signing (optional)
+        if: env.SIGNING_CONFIGURED == 'true'
+        env:
+          CERT: ${{ secrets.APPLE_CERTIFICATE }}
+          CERT_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID_VALUE: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD_VALUE: ${{ secrets.APPLE_PASSWORD }}
+          TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          set -euo pipefail
+          export_value() {
+            if [ -n "$2" ]; then
+              {
+                echo "$1<<__SIGNING_EOF__"
+                printf '%s\n' "$2"
+                echo "__SIGNING_EOF__"
+              } >> "$GITHUB_ENV"
+            fi
+          }
+          export_value APPLE_CERTIFICATE "$CERT"
+          export_value APPLE_CERTIFICATE_PASSWORD "$CERT_PASSWORD"
+          export_value APPLE_SIGNING_IDENTITY "$IDENTITY"
+          export_value APPLE_ID "$APPLE_ID_VALUE"
+          export_value APPLE_PASSWORD "$APPLE_PASSWORD_VALUE"
+          export_value APPLE_TEAM_ID "$TEAM_ID"
+
       # Tauri's beforeBuildCommand (npm run build) covers the frontend.
       - name: build universal .dmg
-        env:
-          # Optional: set these secrets to sign + notarize. Tauri treats an
-          # empty value as "unsigned", so the workflow also works without them.
-          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
-          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
-          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
-          APPLE_ID: ${{ secrets.APPLE_ID }}
-          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         run: npm run tauri -- build --target universal-apple-darwin --bundles dmg
 
       - name: upload .dmg
