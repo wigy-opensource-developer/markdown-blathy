@@ -181,7 +181,7 @@
   v(0.8em)
 }
 
-// --- Table of contents: `[[_TOC_]]` → #markdown-toc(...) -------------------// --- Table of contents: `[[_TOC_]]` → #markdown-toc(...) -------------------
+// --- Table of contents: `[[_TOC_]]` → #markdown-toc(...) -------------------
 // The converter collects headings as `(level, text, slug)` tuples and passes
 // them as a list argument. This helper renders indented links — no
 // auto-numbering (the heading text carries whatever the author wrote).
