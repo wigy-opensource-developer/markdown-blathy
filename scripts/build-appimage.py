@@ -56,7 +56,6 @@ APP_ID = "com.csodafon.markdown-blathy"
 APP_TITLE = "MarkdownBláthy"
 APP_COMMENT = "Markdown, transformed — Markdown editor with Typst-powered live preview and PDF export"
 APP_CATEGORIES = "Office;WordProcessor;"
-BINARY_NAME = APP_NAME
 
 ROOT = Path(__file__).resolve().parent.parent
 RUST_DIR = ROOT / "src-tauri"
@@ -106,6 +105,22 @@ def app_product_name() -> str:
     conf = RUST_DIR / "tauri.conf.json"
     with open(conf, encoding="utf-8") as f:
         return json.load(f)["productName"]
+
+
+def app_main_binary_name() -> str:
+    """Read mainBinaryName from tauri.conf.json (falling back to productName,
+    then the crate name). Tauri-cli renames the cargo output to this name, so
+    the binary and the resource dir share one directory component."""
+    conf = RUST_DIR / "tauri.conf.json"
+    with open(conf, encoding="utf-8") as f:
+        cfg = json.load(f)
+    return cfg.get("mainBinaryName") or cfg.get("productName") or APP_NAME
+
+
+# The binary filename inside bundles. tauri-cli renames the cargo artifact to
+# `mainBinaryName`; keeping this aligned means the script finds the same binary
+# the deb/rpm bundlers install.
+BINARY_NAME = app_main_binary_name()
 
 
 # ---------------------------------------------------------------------------
