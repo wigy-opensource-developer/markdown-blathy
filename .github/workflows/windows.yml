@@ -1,0 +1,58 @@
+name: Windows
+
+# Builds the NSIS installer and the MSI, either from the Actions tab
+# (`workflow_dispatch`) or as a job of the tag-triggered Release workflow
+# (`workflow_call`).
+#
+# NOTE: the installers are UNSIGNED`, so SmartScreen warns on first run. Add a
+# code-signing certificate (`TAURI_SIGNING_*`/`WINDOWS_CERTIFICATE` secrets and
+# the matching `bundle.windows` config) to sign them.
+
+on:
+  workflow_dispatch:
+  workflow_call:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: windows-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    if: github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/master'
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: setup Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: install npm dependencies
+        run: npm ci
+
+      # Tauri's beforeBuildCommand (npm run build) covers the frontend. WiX
+      # (MSI) and NSIS are downloaded by the bundler on demand.
+      - name: build NSIS and MSI
+        run: npm run tauri -- build --bundles nsis,msi
+
+      - name: upload Windows installers
+        uses: actions/upload-artifact@v7
+        with:
+          name: windows
+          path: |
+            src-tauri/target/release/bundle/nsis/*.exe
+            src-tauri/target/release/bundle/msi/*.msi
+          if-no-files-found: error

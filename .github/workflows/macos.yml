@@ -1,0 +1,68 @@
+name: macOS
+
+# Builds a universal (Apple Silicon + Intel) .dmg, either from the Actions tab
+# (`workflow_dispatch`) or as a job of the tag-triggered Release workflow
+# (`workflow_call`).
+#
+# NOTE: the bundle is UNSIGNED and NOT notarized, so Gatekeeper warns on first
+# launch (right-click → Open). Adding `APPLE_CERTIFICATE`, `APPLE_ID`,
+# `APPLE_PASSWORD` and `APPLE_TEAM_ID` repository secrets makes Tauri sign and
+# notarize automatically — no other change is needed here.
+
+on:
+  workflow_dispatch:
+  workflow_call:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: macos-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    if: github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/master'
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          # A universal binary needs both slices.
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+
+      - name: rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: setup Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: install npm dependencies
+        run: npm ci
+
+      # Tauri's beforeBuildCommand (npm run build) covers the frontend.
+      - name: build universal .dmg
+        env:
+          # Optional: set these secrets to sign + notarize. Tauri treats an
+          # empty value as "unsigned", so the workflow also works without them.
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: npm run tauri -- build --target universal-apple-darwin --bundles dmg
+
+      - name: upload .dmg
+        uses: actions/upload-artifact@v7
+        with:
+          name: macos-dmg
+          path: src-tauri/target/universal-apple-darwin/release/bundle/dmg/*.dmg
+          if-no-files-found: error

@@ -1,0 +1,30 @@
+name: Linux Tauri deps
+description: >-
+  Install the GTK/WebKitGTK development packages the Tauri Linux build needs.
+  Shared by the deb, rpm and AppImage workflows so the package list lives in
+  one place.
+
+inputs:
+  extra:
+    description: Extra space-separated apt packages (e.g. "imagemagick file").
+    required: false
+    default: ""
+
+runs:
+  using: composite
+  steps:
+    - name: install Linux system dependencies
+      shell: bash
+      # Pin the image in the calling workflow: ubuntu-latest is migrating to
+      # Ubuntu 26.04; stay on a known-good LTS until verified.
+      run: |
+        sudo apt-get update -qq
+        sudo apt-get install -y -qq \
+          libwebkit2gtk-4.1-dev \
+          libgtk-3-dev \
+          libsoup-3.0-dev \
+          libjavascriptcoregtk-4.1-dev \
+          libayatana-appindicator3-dev \
+          librsvg2-dev \
+          file \
+          ${{ inputs.extra }}

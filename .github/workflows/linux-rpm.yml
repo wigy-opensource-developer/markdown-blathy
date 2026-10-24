@@ -1,0 +1,53 @@
+name: Linux .rpm
+
+# Builds the RPM package on its own, either from the Actions tab
+# (`workflow_dispatch`) or as a job of the tag-triggered Release workflow
+# (`workflow_call`). Tauri's bundler creates the RPM in pure Rust, so no
+# rpmbuild/rpm tooling is needed on the runner.
+
+on:
+  workflow_dispatch:
+  workflow_call:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: linux-rpm-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    if: github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/master'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: ./.github/actions/linux-deps
+
+      - name: install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: setup Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: install npm dependencies
+        run: npm ci
+
+      - name: build .rpm
+        run: npm run tauri -- build --bundles rpm
+
+      - name: upload .rpm
+        uses: actions/upload-artifact@v7
+        with:
+          name: linux-rpm
+          path: src-tauri/target/release/bundle/rpm/*.rpm
+          if-no-files-found: error

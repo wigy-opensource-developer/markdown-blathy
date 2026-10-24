@@ -364,7 +364,10 @@ pub async fn save_markdown(
 #[tauri::command]
 #[instrument]
 pub fn get_initial_directory() -> String {
-    files::initial_directory(std::env::var_os("XDG_DATA_HOME"), std::env::var_os("HOME"))
+    // `$HOME` on POSIX, `%USERPROFILE%` on Windows; the dialog falls back to
+    // the OS default when neither is set.
+    let home = files::home_directory(std::env::var_os("HOME"), std::env::var_os("USERPROFILE"));
+    files::initial_directory(std::env::var_os("XDG_DATA_HOME"), home)
         .to_string_lossy()
         .into_owned()
 }

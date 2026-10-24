@@ -1,0 +1,58 @@
+name: Linux .deb
+
+# Builds the Debian package on its own, either from the Actions tab
+# (`workflow_dispatch`) or as a job of the tag-triggered Release workflow
+# (`workflow_call`). Keeping it separate means the release has one job per
+# artifact and each can be re-run independently.
+
+on:
+  workflow_dispatch:
+  workflow_call:
+
+permissions:
+  contents: read
+
+# A per-workflow group: if every called workflow shared one group, the jobs of
+# a tag-triggered release would cancel each other.
+concurrency:
+  group: linux-deb-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    # Manual runs are restricted to the default branch; a release call runs on
+    # the tag it was triggered by.
+    if: github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/master'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: ./.github/actions/linux-deps
+
+      - name: install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: setup Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: install npm dependencies
+        run: npm ci
+
+      # Tauri's beforeBuildCommand (npm run build) covers the frontend.
+      - name: build .deb
+        run: npm run tauri -- build --bundles deb
+
+      - name: upload .deb
+        uses: actions/upload-artifact@v7
+        with:
+          name: linux-deb
+          path: src-tauri/target/release/bundle/deb/*.deb
+          if-no-files-found: error

@@ -1,0 +1,68 @@
+name: Linux AppImage
+
+# Builds the AppImage on its own, either from the Actions tab
+# (`workflow_dispatch`) or as a job of the tag-triggered Release workflow
+# (`workflow_call`). `scripts/build-appimage.py` assembles the AppDir (binary,
+# icon, metainfo, .desktop and the bundled templates under
+# usr/lib/<productName>/) and packages it with appimagetool.
+
+on:
+  workflow_dispatch:
+  workflow_call:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: linux-appimage-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    # Manual runs are restricted to the default branch (prevents a PR branch
+    # from being dispatched); a release call runs on its tag.
+    if: github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/master'
+    # Pin the image: ubuntu-latest is migrating to Ubuntu 26.04. Building on
+    # 24.04 also keeps the glibc baseline lower.
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+
+      # imagemagick resizes the icon; `file` is used by appimagetool.
+      - uses: ./.github/actions/linux-deps
+        with:
+          extra: imagemagick
+
+      - name: install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      # appimagetool's --appimage-extract-and-run extracts the AppImage to a
+      # temp dir, but the extracted binary still needs libfuse at runtime.
+      - name: install libfuse2
+        run: sudo apt-get install -y -qq libfuse2t64 || sudo apt-get install -y -qq libfuse2
+
+      - name: setup Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: install npm dependencies
+        run: npm ci
+
+      # The script builds the production binary (npm run tauri -- build
+      # --no-bundle), assembles the AppDir and runs appimagetool.
+      - name: build AppImage
+        run: python3 scripts/build-appimage.py
+
+      - name: upload AppImage
+        uses: actions/upload-artifact@v7
+        with:
+          name: linux-appimage
+          path: target/appimage/markdown-blathy-*.AppImage
+          if-no-files-found: error

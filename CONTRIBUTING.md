@@ -143,10 +143,19 @@ git push --follow-tags
 
 ### 6. Review the draft release
 
-The tag-triggered workflow (SPEC §5, M8 task 3) builds `.deb`, `.rpm` and
-the AppImage and opens an **unpublished** GitHub release with the artifacts
-and git-cliff release notes for the tag. Review the notes and assets, then
-publish manually — nothing is public until you do.
+The tag-triggered workflow (SPEC §5, M8 task 3) builds `.deb`, `.rpm`,
+the AppImage, the macOS `.dmg` and the Windows installers — each in its own
+reusable workflow — and opens an **unpublished** GitHub release with the
+artifacts and git-cliff release notes for the tag. Review the notes and
+assets, then publish manually — nothing is public until you do.
+
+The macOS and Windows bundles are unsigned by default (Gatekeeper/SmartScreen
+warn on first launch). Adding the `APPLE_*` secrets (macOS) or a code-signing
+certificate (Windows) makes Tauri sign them without further workflow changes.
+
+Any single artifact can be rebuilt without cutting a release: run its workflow
+from the Actions tab (`Linux .deb`, `Linux .rpm`, `Linux AppImage`, `macOS`,
+`Windows`).
 
 ## Specification
 

@@ -17,6 +17,14 @@ pub fn initial_directory(xdg_data_home: Option<OsString>, home: Option<OsString>
     xdg.or(home).map(PathBuf::from).unwrap_or_default()
 }
 
+/// The user's home directory: `$HOME` (POSIX) or `%USERPROFILE%` (Windows).
+/// Values are injected so the fallback order is testable without touching the
+/// process environment.
+pub fn home_directory(home: Option<OsString>, user_profile: Option<OsString>) -> Option<OsString> {
+    home.filter(|p| !p.is_empty())
+        .or_else(|| user_profile.filter(|p| !p.is_empty()))
+}
+
 /// Write `content` to `path` atomically: write to a temporary sibling file in
 /// the same directory, then rename over the target. `rename` is atomic on
 /// POSIX and replaces the destination on the same volume on Windows, so a
@@ -142,5 +150,32 @@ mod tests {
     fn initial_directory_is_empty_when_neither_var_is_set() {
         let dir = initial_directory(None, None);
         assert_eq!(dir, PathBuf::new());
+    }
+
+    #[test]
+    fn home_directory_prefers_home() {
+        assert_eq!(
+            home_directory(Some("/home/u".into()), Some("C:\\Users\\u".into())),
+            Some("/home/u".into())
+        );
+    }
+
+    #[test]
+    fn home_directory_falls_back_to_userprofile() {
+        // Windows: HOME is usually unset; USERPROFILE carries the home path.
+        assert_eq!(
+            home_directory(None, Some("C:\\Users\\u".into())),
+            Some("C:\\Users\\u".into())
+        );
+        assert_eq!(
+            home_directory(Some("".into()), Some("C:\\Users\\u".into())),
+            Some("C:\\Users\\u".into())
+        );
+    }
+
+    #[test]
+    fn home_directory_is_none_when_both_are_missing_or_empty() {
+        assert_eq!(home_directory(None, None), None);
+        assert_eq!(home_directory(Some("".into()), Some("".into())), None);
     }
 }

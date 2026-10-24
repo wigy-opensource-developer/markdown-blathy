@@ -228,20 +228,21 @@ def build_binary(force: bool) -> Path:
     """Build the production binary via the npm-installed Tauri CLI.
 
     The build must go through the Tauri CLI (it sets the production mode,
-    ``tauri://localhost`` custom protocol; a plain ``cargo build --release``
-    can leave the binary in dev mode).  CI installs the CLI from
-    ``package.json`` via ``npm ci``, so invoke the npm script rather than the
-    ``cargo tauri`` subcommand — the latter requires a separate
-    ``cargo install tauri-cli`` and fails in CI with "no such command: tauri".
-    The binary lands at the well-known location: src-tauri/target/release/<name>.
+    ``tauri://localhost`` custom protocol and runs ``beforeBuildCommand``; a
+    plain ``cargo build --release`` can leave the binary in dev mode).  CI
+    installs the CLI from ``package.json`` via ``npm ci``, so invoke the npm
+    script rather than the ``cargo tauri`` subcommand — the latter requires a
+    separate ``cargo install tauri-cli`` and fails in CI with "no such
+    command: tauri".  ``--no-bundle`` skips packaging entirely (the AppImage
+    is assembled by this script), so no disposable .deb is produced.
+    The binary lands at: src-tauri/target/release/<mainBinaryName>.
     """
     binary = RUST_DIR / "target" / "release" / BINARY_NAME
 
     if rebuild_needed(binary, force):
-        info("building production binary (npm run tauri -- build --bundles deb)")
-        # Tauri's beforeBuildCommand (npm run build) covers the frontend.
+        info("building production binary (npm run tauri -- build --no-bundle)")
         run(
-            ["npm", "run", "tauri", "--", "build", "--bundles", "deb"],
+            ["npm", "run", "tauri", "--", "build", "--no-bundle"],
             cwd=str(ROOT),
         )
     else:
