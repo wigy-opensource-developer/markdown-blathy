@@ -31,7 +31,7 @@ User-visible behaviour:
 1. Split-screen window: **Markdown editor** (left) and **live preview** (right).
 2. The preview updates automatically while typing (debounced), rendering pages with print margins, exactly as they will appear in the PDF.
 3. A toolbar offers, on the left, New / Open / Save Markdown files and a **Document** settings popover (title, author, auto-heading level, language/hyphenation, and the Markdown extensions/flavor); on the right, a **Page settings** popover (paper size, margins, text alignment and the Typst template — global preferences, applied live) and **Export PDF** (system save dialog). A custom template is marked by a dot on the Page button. Flavor is a per-document setting (front matter), not a page-setup select; the default is Custom (every extension on).
-4. The default document style is provided by an embedded Typst template; users may supply their own `.typ` template.
+4. The document style is provided by a bundled Typst template (light / dark / obsidian), selectable from the Page settings popover; users may also supply their own `.typ` template. Templates share a helper prelude and are composed on top of it — see `src-tauri/templates/README.md` for the contract.
 5. Compile warnings (e.g. unknown fonts) are surfaced in the UI, not swallowed.
 
 ## 2. Non-goals (v1)

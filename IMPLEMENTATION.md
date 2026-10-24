@@ -15,9 +15,14 @@ src-tauri/src/
 └── typst_engine/
     ├── mod.rs
     ├── template.rs      # prelude embedding, compose(), build_static_source, render_inputs
-    ├── engine.rs        # TypstEngine build, compile → SVG pages / PDF
-    └── templates/
-        └── default.typ  # embedded prelude (default helpers + article)
+    └── engine.rs        # TypstEngine build, compile → SVG pages / PDF
+
+src-tauri/templates/     # bundled templates (bundled as Tauri resources)
+├── README.md            # the prelude ↔ template contract
+├── prelude.typ          # shared helper defaults (NOT a template)
+├── light/main.typ       # default light theme
+├── dark/main.typ
+└── obsidian/main.typ (+ assets/corner.svg)
 ```
 
 **Design rule:** `markdown/` and `typst_engine/` must not import `tauri`. The `#[tauri::command]` functions are thin, serialization-only wrappers.
@@ -59,7 +64,7 @@ Returns `(inputs, converter_warnings)`. The `inputs` dict contains `title`, `aut
 pub fn compose(template_source: &str, args: &TemplateArgs) -> String
 ```
 
-Assembles `{template_source}\n\n#article(paper: "a4", margin-x: 20mm, margin-y: 25mm, text-align: "left", title: none, author: none)[\n{body}\n]`. The `{:?}` formatter on `paper`/`text_align` yields a valid Typst string literal for ASCII values. `title`/`author` are `none` or a debug-quoted string literal. The body is placed inside a content block — never interpolated into template source.
+Assembles `{template_source}\n\n#article(paper: "a4", margin-x: 20mm, margin-y: 25mm, text-align: "left", title: sys.inputs.title, author: sys.inputs.author)[\n#eval(sys.inputs.body, mode: "markup", scope: (<helpers>))\n]`. The `{:?}` formatter on `paper`/`text_align` yields a valid Typst string literal for ASCII values. `title`/`author`/`body` travel per render via `sys.inputs`, so the static source never contains the markdown body; the body is `eval`'d in markup mode inside a content block — never interpolated into template source.
 
 ### `PreviewOutcome`
 
@@ -220,7 +225,7 @@ pub fn comrak_options(flags: &FeatureFlags) -> comrak::Options<'static> {
 
 ### Prelude contract
 
-The embedded `default.typ` provides default implementations of every helper the converter emits. A user template is composed **after** the prelude (`{prelude}\n\n{user}`), so Typst shadowing applies — any function the user redefines wins, everything else falls back to the prelude default.
+The embedded `prelude.typ` provides default implementations of every helper the converter emits. A bundled template (one `templates/<name>/main.typ`) is composed **after** the prelude (`{prelude}\n\n{template}`); a custom user template is composed after the prelude **and** the light template (`{prelude}\n\n{light}\n\n{user}`), so a custom template that does not define `article` still falls back to the light `default-article`. Typst shadowing applies — any function the template redefines wins, everything else falls back to the prelude default.
 
 **Helpers:** `task-list`/`task-done`/`task-todo`/`task-plain`, `blockquote`, `thematic-break`, `inline-code`, `code-block`, `markdown-table`, `ordered-list`, `internal-link`, `title-block`, `mark`, `superscript`, `subscript`, `definition-list`, `markdown-toc`, `figure-image`.
 
@@ -379,11 +384,11 @@ Duplicate heading IDs, and any future non-fatal warnings, are collected in `Conv
 
 ### Template system is a prelude, not a full replacement
 
-`default.typ` provides default implementations of every helper the converter emits. A user template is composed **after** the prelude, so Typst shadowing gives "default unless redefined" — a template that only restyles (or defines nothing) is valid. This is simpler than requiring a full template rewrite and more flexible for theme authors.
+`prelude.typ` provides default implementations of every helper the converter emits. A template is composed **after** the prelude, so Typst shadowing gives "default unless redefined" — a template that only restyles (or defines nothing) is valid. This is simpler than requiring a full template rewrite and more flexible for theme authors. The full contract is documented in `templates/README.md`.
 
 ### Engine cache holds one engine per static source
 
-The static source is the resolved template (prelude + user, or default) plus toolbar options — it never contains the markdown body, which travels as `sys.inputs` per render. One `TypstEngine` per static source lives in `tauri::State<Arc<Mutex<TemplateEngineCache>>>`. The engine is rebuilt (re-running the font scan) only when the template or toolbar options change.
+The static source is the resolved template (prelude + bundled/custom template) plus toolbar options — it never contains the markdown body, which travels as `sys.inputs` per render. One `TypstEngine` per static source + engine options lives in `tauri::State<Arc<Mutex<TemplateEngineCache>>>`. The engine is rebuilt (re-running the font scan) only when the template, toolbar options, or asset roots change.
 
 ### `comemo_evict_max_age(Some(30))` to keep cache warm
 
