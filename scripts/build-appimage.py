@@ -14,6 +14,7 @@ sources.  Pass --force to rebuild unconditionally (CI).
 """
 
 import argparse
+import json
 import os
 import shutil
 import subprocess
@@ -93,6 +94,18 @@ def app_version() -> str:
     with open(cargo, "rb") as f:
         data = tomllib.load(f)
     return data["package"]["version"]
+
+
+def app_product_name() -> str:
+    """Read productName from tauri.conf.json.
+
+    Tauri's `resource_dir()` resolves to `usr/lib/<productName>` in bundles
+    (NOT the crate/binary name), so the AppDir must mirror that layout or the
+    app cannot find its bundled templates on a machine without the source tree.
+    """
+    conf = RUST_DIR / "tauri.conf.json"
+    with open(conf, encoding="utf-8") as f:
+        return json.load(f)["productName"]
 
 
 # ---------------------------------------------------------------------------
@@ -250,10 +263,11 @@ def create_appdir(binary: Path, out_dir: Path) -> Path:
     dest_bin.chmod(0o755)
 
     # bundled resources (templates + their fonts/images). Tauri resolves the
-    # resource dir as `<exe_dir>/../lib/<name>` — under the AppImage env that
-    # is `$APPDIR/usr/lib/<name>` — so mirror that layout here.
+    # resource dir as `<exe_dir>/../lib/<productName>` — under the AppImage
+    # env that is `$APPDIR/usr/lib/<productName>` — so mirror that layout here.
+    # (productName, not the crate name: resource_dir uses PackageInfo.name.)
     resources_src = RUST_DIR / "templates"
-    resources_dst = appdir / "usr" / "lib" / APP_NAME
+    resources_dst = appdir / "usr" / "lib" / app_product_name()
     if resources_src.is_dir():
         resources_dst.mkdir(parents=True, exist_ok=True)
         shutil.copytree(resources_src, resources_dst / "templates", dirs_exist_ok=True)
@@ -325,7 +339,7 @@ def validate_appdir(appdir: Path) -> bool:
     for name in ["AppRun", f"{APP_ID}.desktop", f"{APP_NAME}.png",
                  f"usr/bin/{BINARY_NAME}",
                  f"usr/share/metainfo/{APP_ID}.metainfo.xml",
-                 f"usr/lib/{APP_NAME}/templates/light/main.typ"]:
+                 f"usr/lib/{app_product_name()}/templates/light/main.typ"]:
         if (appdir / name).exists():
             print(f"  \u2713 {name}")
         else:
