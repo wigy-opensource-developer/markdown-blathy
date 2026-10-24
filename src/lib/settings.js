@@ -21,6 +21,9 @@ export const DEFAULT_SETTINGS = {
     templatePath: null,
   },
   editorFontSize: 16,
+  // UI appearance preference (§8.6): "light" | "system" | "dark". Skins the
+  // app chrome only — never the document or the exported PDF.
+  theme: "system",
 };
 
 /** Read settings, falling back to the defaults on corrupt/missing data (§8.6).
@@ -83,7 +86,11 @@ function mergeSettings(parsed) {
   if (!hasMargins(options.margins)) {
     options.margins = defaults.options.margins;
   }
-  return { ...defaults, ...parsed, options };
+  // An unknown/legacy theme value falls back to following the system.
+  const theme = ["light", "system", "dark"].includes(parsed.theme)
+    ? parsed.theme
+    : defaults.theme;
+  return { ...defaults, ...parsed, options, theme };
 }
 
 /** True when `margins` is a complete 4-field millimetre object. */

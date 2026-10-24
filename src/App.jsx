@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useDebouncedCallback } from "@mantine/hooks";
+import { MantineProvider } from "@mantine/core";
 import { open } from "@tauri-apps/plugin-dialog";
 import * as api from "./lib/api.js";
 import { marginsForPreset } from "./lib/presets.js";
@@ -8,6 +9,8 @@ import { createRenderStatus } from "./lib/renderStatus.js";
 import { isStaleResponse } from "./lib/seq.js";
 import { applyDocSettingsPatch } from "./lib/docSettings.js";
 import { applyOptionsPatch, loadSettings, saveSettings } from "./lib/settings.js";
+import { mantineTheme } from "./lib/mantineTheme.js";
+import { resolveColorScheme } from "./lib/uiTheme.js";
 import { SAMPLE_DOC } from "./lib/sample.js";
 import { docTitle, parentDirectory, safeFileName, windowTitle } from "./lib/title.js";
 import Toolbar from "./components/Toolbar.jsx";
@@ -22,7 +25,13 @@ export default function App() {
   // through `changeOption`. `marginPreset` is UI-only and stripped when the
   // payload is built (see lib/api.js); the rest mirrors RenderOptions (§6.1).
   const [settings, setSettings] = useState(() => loadSettings(window.localStorage));
-  const { options, editorFontSize } = settings;
+  const { options, editorFontSize, theme } = settings;
+  // The OS color scheme, tracked live so "system" follows changes at runtime.
+  const [systemDark, setSystemDark] = useState(
+    () => window.matchMedia?.("(prefers-color-scheme: dark)").matches ?? false
+  );
+  // The concrete Mantine color scheme for the UI chrome only.
+  const colorScheme = resolveColorScheme(theme, systemDark);
   const [markdown, setMarkdown] = useState(SAMPLE_DOC);
   const [pages, setPages] = useState([]);
   const [warnings, setWarnings] = useState([]);
@@ -192,6 +201,15 @@ export default function App() {
       .catch(() => {});
   }, []);
 
+  // Follow the OS light/dark preference while the theme is set to "system".
+  useEffect(() => {
+    if (!window.matchMedia) return;
+    const media = window.matchMedia("(prefers-color-scheme: dark)");
+    const onChange = (event) => setSystemDark(event.matches);
+    media.addEventListener("change", onChange);
+    return () => media.removeEventListener("change", onChange);
+  }, []);
+
   // Keep the OS window title in sync with the document title (§8.4) so
   // multiple instances are distinguishable in the window manager.
   useEffect(() => {
@@ -301,6 +319,19 @@ export default function App() {
     changeOption({ templatePath: null });
   }, [changeOption]);
 
+  // The UI appearance preference (§8.6): persisted like any other setting,
+  // but it never touches the render options or the document/page — it only
+  // switches the Mantine color scheme (light / system / dark).
+  const handleThemeChange = useCallback(
+    (nextTheme) => {
+      if (!nextTheme) return; // Mantine Select deselect guard
+      const next = { ...settings, theme: nextTheme };
+      setSettings(next);
+      saveSettings(next, window.localStorage);
+    },
+    [settings]
+  );
+
   // Document settings popover (§6.2): apply a front-matter patch through the
   // Rust editor, which preserves unmanaged keys, then re-render the result.
   // Requesting while the popover is still open defers the render to its close
@@ -347,40 +378,45 @@ export default function App() {
   );
 
   return (
-    <div className={settingsOpen ? "app settings-open" : "app"}>
-      <Toolbar
-        options={options}
-        templates={templates}
-        onOptionChange={changeOption}
-        onNew={handleNew}
-        onOpen={handleOpen}
-        onSave={handleSave}
-        onPickTemplate={handlePickTemplate}
-        onClearTemplate={handleClearTemplate}
-        onExport={handleExport}
-        docMeta={docMeta}
-        onApplySettings={handleApplySettings}
-        onSettingsOpenChange={handleSettingsOpenChange}
-      />
-      <main id="panes" inert={settingsOpen}>
-        <section id="editor-pane">
-          <Editor
-            value={markdown}
-            onChange={handleEditorChange}
-            onSave={handleSave}
-            fontSize={editorFontSize}
-          />
-        </section>
-        <section id="preview-pane" data-rendering={renderBusy ? "true" : undefined}>
-          <Preview pages={pages} busy={renderBusy} onExternalLink={handleExternalLink} />
-        </section>
-      </main>
-      <StatusBar
-        pageCount={pages.length}
-        warnings={warnings}
-        inert={settingsOpen}
-      />
-      <ErrorBanner message={error} onClose={dismissError} />
-    </div>
+    <MantineProvider theme={mantineTheme} forceColorScheme={colorScheme}>
+      <div className={settingsOpen ? "app settings-open" : "app"}>
+        <Toolbar
+          options={options}
+          templates={templates}
+          theme={theme}
+          onThemeChange={handleThemeChange}
+          onOptionChange={changeOption}
+          onNew={handleNew}
+          onOpen={handleOpen}
+          onSave={handleSave}
+          onPickTemplate={handlePickTemplate}
+          onClearTemplate={handleClearTemplate}
+          onExport={handleExport}
+          docMeta={docMeta}
+          onApplySettings={handleApplySettings}
+          onSettingsOpenChange={handleSettingsOpenChange}
+        />
+        <main id="panes" inert={settingsOpen}>
+          <section id="editor-pane">
+            <Editor
+              value={markdown}
+              onChange={handleEditorChange}
+              onSave={handleSave}
+              fontSize={editorFontSize}
+              dark={colorScheme === "dark"}
+            />
+          </section>
+          <section id="preview-pane" data-rendering={renderBusy ? "true" : undefined}>
+            <Preview pages={pages} busy={renderBusy} onExternalLink={handleExternalLink} />
+          </section>
+        </main>
+        <StatusBar
+          pageCount={pages.length}
+          warnings={warnings}
+          inert={settingsOpen}
+        />
+        <ErrorBanner message={error} onClose={dismissError} />
+      </div>
+    </MantineProvider>
   );
 }

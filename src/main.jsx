@@ -14,29 +14,24 @@ import "@fontsource-variable/archivo-narrow/wght.css";
 // Mantine styles (must be imported once, before component styles).
 import "@mantine/core/styles.css";
 
-import { createTheme, MantineProvider } from "@mantine/core";
 import App from "./App.jsx";
+import { loadSettings } from "./lib/settings.js";
+import { resolveColorScheme } from "./lib/uiTheme.js";
 import "./styles.css";
 
-const theme = createTheme({
-  fontFamily: "Archivo Narrow Variable, system-ui, sans-serif",
-  headings: { fontFamily: "Archivo Narrow Variable, system-ui, sans-serif" },
-  // Archivo Narrow is a condensed face, so it reads smaller than its px size
-  // suggests; a noticeably larger scale than the Mantine defaults keeps the
-  // toolbar/labels legible.
-  fontSizes: {
-    xs: "15px",
-    sm: "17px",
-    md: "19px",
-    lg: "21px",
-    xl: "23px",
-  },
-});
+// Apply the persisted color scheme before the first paint so a dark preference
+// never flashes light. App re-asserts (and keeps in sync for "system") via
+// MantineProvider's forceColorScheme; this pre-paint attribute only covers the
+// first frame and the boot note.
+const storedTheme = loadSettings(window.localStorage).theme;
+const prefersDark = window.matchMedia("(prefers-color-scheme: dark)").matches;
+document.documentElement.setAttribute(
+  "data-mantine-color-scheme",
+  resolveColorScheme(storedTheme, prefersDark)
+);
 
 ReactDOM.createRoot(document.getElementById("root")).render(
   <React.StrictMode>
-    <MantineProvider theme={theme} defaultColorScheme="light">
-      <App />
-    </MantineProvider>
+    <App />
   </React.StrictMode>
 );

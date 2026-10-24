@@ -13,6 +13,8 @@ const render = (props) =>
     <MantineProvider>
       <Toolbar
         options={{ templatePath: null }}
+        theme="system"
+        onThemeChange={() => {}}
         onOptionChange={() => {}}
         onNew={() => {}}
         onOpen={() => {}}
@@ -49,6 +51,12 @@ describe("Toolbar", () => {
     expect(html).toContain("Page…");
     expect(html).not.toContain("Template…");
     expect(html).not.toContain("Custom template");
+  });
+
+  it("shows the light/system/dark theme selector", () => {
+    const html = render();
+    expect(html).toContain('aria-label="Color theme"');
+    expect(html).toContain('value="System"');
   });
 
   it("marks the Page button only while a custom template is active", () => {

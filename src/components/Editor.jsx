@@ -9,7 +9,7 @@ import { markdown } from "@codemirror/lang-markdown";
 import { keymap } from "@codemirror/view";
 import { defaultKeymap, history, historyKeymap } from "@codemirror/commands";
 
-function Editor({ value, onChange, onSave, fontSize = 16 }) {
+function Editor({ value, onChange, onSave, fontSize = 16, dark = false }) {
   const extensions = useMemo(
     () => [
       history(),
@@ -32,6 +32,7 @@ function Editor({ value, onChange, onSave, fontSize = 16 }) {
       style={{ "--editor-font-size": `${fontSize}px` }}
       extensions={extensions}
       basicSetup={{ foldGutter: false }}
+      theme={dark ? "dark" : "light"}
     />
   );
 }

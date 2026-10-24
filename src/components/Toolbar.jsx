@@ -4,19 +4,23 @@
 // Page popover (§8.4, §8.6 of SPEC.md), so the toolbar only carries the small
 // custom-template dot on its button.
 import { memo } from "react";
-import { Button, Group, Tooltip } from "@mantine/core";
+import { Button, Group, Select, Tooltip } from "@mantine/core";
 import {
   IconDeviceFloppy,
   IconFilePlus,
   IconFileTypePdf,
   IconFolderOpen,
+  IconMoon,
 } from "@tabler/icons-react";
+import { UI_THEMES } from "../lib/uiTheme.js";
 import DocumentSettings from "./DocumentSettings.jsx";
 import PageSettings from "./PageSettings.jsx";
 
 function Toolbar({
   options,
   templates,
+  theme,
+  onThemeChange,
   onOptionChange,
   onNew,
   onOpen,
@@ -56,6 +60,20 @@ function Toolbar({
       </Group>
 
       <div className="spacer" />
+
+      {/* UI appearance (light / system / dark) — skins the app chrome only,
+          never the document or the exported PDF (§8.6). */}
+      <Select
+        aria-label="Color theme"
+        size="compact-sm"
+        w={128}
+        data={UI_THEMES}
+        value={theme}
+        allowDeselect={false}
+        leftSection={<IconMoon size={14} />}
+        comboboxProps={{ withinPortal: false }}
+        onChange={onThemeChange}
+      />
 
       <PageSettings
         options={options}

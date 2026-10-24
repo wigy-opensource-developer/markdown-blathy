@@ -37,6 +37,7 @@ describe("loadSettings", () => {
         templatePath: null,
       },
       editorFontSize: 18,
+      theme: "dark",
     };
     saveSettings(next, storage);
     expect(loadSettings(storage)).toEqual(next);
@@ -57,6 +58,14 @@ describe("loadSettings", () => {
     expect(settings.options.paper).toBe("a5");
     expect(settings.options.flavor).toBe(DEFAULT_SETTINGS.options.flavor);
     expect(settings.editorFontSize).toBe(DEFAULT_SETTINGS.editorFontSize);
+    expect(settings.theme).toBe(DEFAULT_SETTINGS.theme);
+  });
+
+  it("falls back to the system theme for an unknown theme value", () => {
+    const storage = fakeStorage({
+      "markdown-blathy.settings": JSON.stringify({ theme: "sepia" }),
+    });
+    expect(loadSettings(storage).theme).toBe("system");
   });
 
   it("falls back to default margins when stored margins are incomplete", () => {

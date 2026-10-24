@@ -25,6 +25,30 @@ body {
   text-rendering: optimizeLegibility;
 }
 
+/* App-chrome colors that Mantine does not own. Light values live on :root;
+   the `[data-mantine-color-scheme="dark"]` overrides kick in when the UI
+   theme resolves to dark. The document preview page itself stays white — the
+   page is "paper", not chrome (§8.6). */
+:root {
+  --preview-bg: #525659;
+  --preview-hint: #e2e2e2;
+  --warning-color: #b45309;
+  --warning-list-color: #92400e;
+  --error-bg: #fdecea;
+  --error-border: #f5c6cb;
+  --error-text: #8a1c1c;
+}
+
+[data-mantine-color-scheme="dark"] {
+  --preview-bg: #2e2e33;
+  --preview-hint: #c1c1c1;
+  --warning-color: #fbbf24;
+  --warning-list-color: #fcd34d;
+  --error-bg: #3b1d1d;
+  --error-border: #7f1d1d;
+  --error-text: #fecaca;
+}
+
 .app {
   display: flex;
   flex-direction: column;
@@ -93,7 +117,7 @@ body {
 #preview-pane {
   flex: 1;
   min-width: 0;
-  background: #525659;
+  background: var(--preview-bg);
   /* Positioning context for the "Rendering…" note: scrolling moved to
      #preview so the note stays centered in the visible pane while a long
      document scrolls under it. */
@@ -180,7 +204,7 @@ body {
 }
 
 .preview-hint {
-  color: #e2e2e2;
+  color: var(--preview-hint);
   text-align: center;
   margin-top: 40px;
 }
@@ -203,7 +227,7 @@ body {
   border: none;
   background: transparent;
   padding: 0;
-  color: #b45309;
+  color: var(--warning-color);
   font-size: 15px;
   font-family: inherit;
   cursor: pointer;
@@ -223,7 +247,7 @@ body {
 #warning-list {
   margin: 6px 0 2px;
   padding-left: 18px;
-  color: #92400e;
+  color: var(--warning-list-color);
   font-size: 13px;
   line-height: 1.5;
   max-height: 120px;
@@ -242,10 +266,10 @@ body {
   gap: 12px;
   max-width: 70vw;
   padding: 10px 14px;
-  background: #fdecea;
-  border: 1px solid #f5c6cb;
+  background: var(--error-bg);
+  border: 1px solid var(--error-border);
   border-radius: 6px;
-  color: #8a1c1c;
+  color: var(--error-text);
   box-shadow: 0 4px 12px rgba(0, 0, 0, 0.2);
 }
 
