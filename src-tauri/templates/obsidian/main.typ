@@ -27,12 +27,13 @@
     fill: rgb("#191724"),
     // The "linked notes" motif lives in the page background, so it repeats on
     // every page without disturbing the text flow. `bottom + right` pins it
-    // to the lower-right corner; dx/dy pull it a little inside the edge.
+    // to the lower-right corner; the small negative dx/dy keep it just inside
+    // the edge, and the SVG itself fades to transparent away from the corner.
     background: place(
       bottom + right,
-      dx: 10pt,
-      dy: 10pt,
-      image("assets/corner.svg", width: 22pt),
+      dx: -4pt,
+      dy: -4pt,
+      image("assets/corner.svg", width: 60pt),
     ),
   )
   set text(fill: rgb("#e0def4"))

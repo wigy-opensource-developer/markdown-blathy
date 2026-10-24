@@ -1239,6 +1239,11 @@ mod tests {
             "the corner SVG must be resolved and embedded: {:?}",
             svg
         );
+        assert!(
+            svg.contains("width=\"60\""),
+            "the corner graph should be ~10% of the A4 page width: {:?}",
+            svg
+        );
     }
 
     /// Regression: the prelude `markdown-table` must lay cells out in columns.
