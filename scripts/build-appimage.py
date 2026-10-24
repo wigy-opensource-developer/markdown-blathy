@@ -59,6 +59,29 @@ BINARY_NAME = APP_NAME
 
 ROOT = Path(__file__).resolve().parent.parent
 RUST_DIR = ROOT / "src-tauri"
+
+# Everything whose mtime must be compared against the release binary to decide
+# whether `npm run appimage` has to rebuild. The previous heuristic watched
+# only src-tauri/src + Cargo.toml, so a change to the React frontend (src/),
+# the bundled templates, the embedded fonts, or the Tauri config reused a
+# stale binary. Directories are walked recursively.
+SOURCES = [
+    RUST_DIR / "src",
+    RUST_DIR / "templates",
+    RUST_DIR / "fonts",
+    RUST_DIR / "capabilities",
+    RUST_DIR / "icons",
+    RUST_DIR / "Cargo.toml",
+    RUST_DIR / "Cargo.lock",
+    RUST_DIR / "tauri.conf.json",
+    RUST_DIR / "build.rs",
+    ROOT / "src",
+    ROOT / "index.html",
+    ROOT / "vite.config.js",
+    ROOT / "package.json",
+    ROOT / "package-lock.json",
+]
+
 ICON_SRC = RUST_DIR / "icons" / "icon.png"
 METADATA_SRC = RUST_DIR / f"{APP_ID}.metainfo.xml"
 TOOLS_DIR = ROOT / ".local" / "tools"
@@ -157,16 +180,17 @@ def rebuild_needed(binary: Path, force: bool) -> bool:
     if not binary.exists() or not os.access(binary, os.X_OK):
         return True
 
-    # Check if any Rust source or Cargo.toml is newer than the binary.
-    src_dir = RUST_DIR / "src"
-    cargo_toml = RUST_DIR / "Cargo.toml"
-    for base in [src_dir, cargo_toml]:
+    # Any watched source newer than the binary forces a rebuild.
+    binary_mtime = binary.stat().st_mtime
+    for base in SOURCES:
+        if not base.exists():
+            continue
         if base.is_file():
-            if base.stat().st_mtime > binary.stat().st_mtime:
+            if base.stat().st_mtime > binary_mtime:
                 return True
-        elif base.is_dir():
+        else:
             for f in base.rglob("*"):
-                if f.is_file() and f.stat().st_mtime > binary.stat().st_mtime:
+                if f.is_file() and f.stat().st_mtime > binary_mtime:
                     return True
 
     return False
