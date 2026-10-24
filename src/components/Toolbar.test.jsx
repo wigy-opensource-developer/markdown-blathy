@@ -53,10 +53,10 @@ describe("Toolbar", () => {
     expect(html).not.toContain("Custom template");
   });
 
-  it("shows the light/system/dark theme selector", () => {
+  it("shows the theme icon button labelled with the current theme", () => {
     const html = render();
-    expect(html).toContain('aria-label="Color theme"');
-    expect(html).toContain('value="System"');
+    expect(html).toContain('aria-label="Color theme: System"');
+    expect(html).toContain("<svg"); // the sun/moon icon
   });
 
   it("marks the Page button only while a custom template is active", () => {
