@@ -1,9 +1,16 @@
 // UI appearance control (light / system / dark) for the toolbar (§8.6 of
-// SPEC.md). A single icon button reflecting the current scheme opens a menu
-// whose entries pair the theme icon with its label — the label alone ("System")
-// does not signal "UI theming" to most users until the menu is open.
-import { ActionIcon, Menu } from "@mantine/core";
-import { IconMoon, IconSun, IconSunMoon } from "@tabler/icons-react";
+// SPEC.md). Rendered as the same subtle Button as its neighbours (New / Open /
+// Save / Page / Export) so the padding, height and blue tint match; the
+// chevron marks it as a menu. The current scheme is shown by the icon, while
+// the menu entries pair each icon with its label — a bare "System" would not
+// tell most users this is UI theming.
+import { Button, Menu } from "@mantine/core";
+import {
+  IconChevronDown,
+  IconMoon,
+  IconSun,
+  IconSunMoon,
+} from "@tabler/icons-react";
 import { UI_THEMES } from "../lib/uiTheme.js";
 
 const THEME_ICONS = {
@@ -20,14 +27,17 @@ function ThemeMenu({ theme, onThemeChange }) {
   return (
     <Menu position="bottom-end" withArrow>
       <Menu.Target>
-        <ActionIcon
+        {/* Matches the toolbar's subtle buttons; no Tooltip wrapper because
+            Mantine cannot wrap a floating Menu target in a Tooltip. */}
+        <Button
           variant="subtle"
-          color="gray"
-          size="lg"
+          size="compact-md"
+          px="xs"
           aria-label={`Color theme: ${currentLabel}`}
-        >
-          <CurrentIcon size={18} />
-        </ActionIcon>
+          title={`Color theme: ${currentLabel}`}
+          leftSection={<CurrentIcon size={16} />}
+          rightSection={<IconChevronDown size={12} />}
+        />
       </Menu.Target>
       <Menu.Dropdown>
         {UI_THEMES.map(({ value, label }) => {

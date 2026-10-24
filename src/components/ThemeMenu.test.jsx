@@ -23,4 +23,20 @@ describe("ThemeMenu", () => {
   it("renders an icon (svg) for the collapsed control", () => {
     expect(render()).toContain("<svg");
   });
+
+  it("matches the toolbar's subtle compact buttons", () => {
+    const html = render();
+    expect(html).toContain('data-variant="subtle"');
+    expect(html).toContain('data-size="compact-md"');
+    // The surrounding subtle buttons inherit the primary (blue) tint; a
+    // gray/default ActionIcon was the odd one out.
+    expect(html).toContain("mantine-color-blue-light-color");
+  });
+
+  it("shows an icon plus a chevron so it reads as a dropdown", () => {
+    const html = render();
+    // Two sections: the theme icon on the left, the chevron on the right.
+    expect(html.match(/mantine-Button-section/g)?.length).toBe(2);
+    expect(html).toContain('aria-haspopup="menu"');
+  });
 });
