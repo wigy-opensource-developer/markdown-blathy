@@ -3,7 +3,10 @@
 ## Prerequisites
 
 - Node.js ≥ 22 (LTS; v24 recommended, and used by CI)
-- Rust stable
+- Rust — pinned by `rust-toolchain.toml` (currently 1.99.1); rustup installs
+  it automatically on first `cargo` invocation in the repo. CI and the release
+  workflows use the same version, so a green `./check.sh` means the same thing
+  locally and in CI. Bump the pin and the workflows together.
 - `cargo-deny` (`cargo install cargo-deny --locked`, or via your package manager)
 - **Linux:** Tauri's native development headers —
   `libwebkit2gtk-4.1-dev libgtk-3-dev libsoup-3.0-dev

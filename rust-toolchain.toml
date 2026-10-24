@@ -1,0 +1,14 @@
+# Pinned Rust toolchain — the single source of truth for local builds, the
+# `./check.sh` quality gate and CI.
+#
+# Why pin: CI used `dtolnay/rust-toolchain@stable`, which moves. rustc 1.99
+# added an `unused_variables` case that 1.93 did not report, so a green local
+# gate still failed CI. Pinning means a green gate is reproducible, and
+# compiler upgrades are a deliberate commit (bump this file and the workflows).
+#
+# The GitHub workflows pass the same version to dtolnay/rust-toolchain — keep
+# them in sync when bumping.
+[toolchain]
+channel = "1.99.1"
+components = ["rustfmt", "clippy"]
+profile = "minimal"

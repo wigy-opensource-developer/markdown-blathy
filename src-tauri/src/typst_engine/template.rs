@@ -262,7 +262,10 @@ pub fn resolve_template(
                     let main = template_dir.join("main.typ");
                     let template_source = match std::fs::read_to_string(&main) {
                         Ok(source) => source,
-                        Err(e) if name == "light" => DEFAULT_ARTICLE.to_owned(),
+                        // The default light theme is also embedded, so a missing
+                        // file only means the bundled resources are unavailable;
+                        // fall back silently and keep rendering.
+                        Err(_) if name == "light" => DEFAULT_ARTICLE.to_owned(),
                         Err(e) => {
                             return Err(format!(
                                 "Failed to read bundled template at {}: {e}",

@@ -47,6 +47,11 @@ jobs:
           # Full history so git-cliff can see every commit since the last tag.
           fetch-depth: 0
 
+      # The repo pins a toolchain in rust-toolchain.toml; install it explicitly
+      # so `cargo install` below does not trigger a surprise auto-install.
+      - name: install Rust toolchain
+        uses: dtolnay/rust-toolchain@1.99.1
+
       - name: install git-cliff
         run: cargo install git-cliff --locked --version 2.14.2
 

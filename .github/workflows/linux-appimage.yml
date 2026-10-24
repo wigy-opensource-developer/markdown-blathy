@@ -34,7 +34,10 @@ jobs:
           extra: imagemagick
 
       - name: install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        # Keep in sync with rust-toolchain.toml (single source for local + CI).
+        uses: dtolnay/rust-toolchain@1.99.1
+        with:
+          components: rustfmt, clippy
 
       - name: rust cache
         uses: Swatinem/rust-cache@v2
