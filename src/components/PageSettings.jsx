@@ -9,7 +9,6 @@
 // portaled dropdown counts as an outside click and would close the popover on
 // the first selection (the Document popover works around the same Mantine
 // behavior).
-import { useState } from "react";
 import {
   Button,
   Divider,
@@ -137,14 +136,23 @@ function activeTemplateBadge(options) {
   return name === DEFAULT_TEMPLATE_NAME ? null : templateLabel(name);
 }
 
-function PageSettings({ options, templates, onOptionChange, onPickTemplate, onClearTemplate }) {
-  const [opened, setOpened] = useState(false);
+function PageSettings({
+  options,
+  templates,
+  onOptionChange,
+  onPickTemplate,
+  onClearTemplate,
+  opened = false,
+  onOpenChange,
+  shortcut = "",
+  ariaShortcut,
+}) {
   const templateName = activeTemplateBadge(options);
 
   return (
     <Popover
       opened={opened}
-      onChange={setOpened}
+      onChange={onOpenChange}
       position="bottom"
       withArrow
       width={340}
@@ -169,7 +177,10 @@ function PageSettings({ options, templates, onOptionChange, onPickTemplate, onCl
               </Tooltip>
             ) : null
           }
-          onClick={() => setOpened((open) => !open)}
+          title={shortcut ? `Page settings (${shortcut})` : "Page settings"}
+          aria-keyshortcuts={ariaShortcut}
+          data-command="page.settings"
+          onClick={() => onOpenChange?.(!opened)}
         >
           Page…
         </Button>

@@ -12,19 +12,22 @@ const render = (props) =>
   renderToStaticMarkup(
     <MantineProvider>
       <Toolbar
+        platform="linux"
+        dispatch={() => true}
         options={{ templatePath: null }}
         theme="system"
         onThemeChange={() => {}}
         onOptionChange={() => {}}
-        onNew={() => {}}
-        onOpen={() => {}}
-        onSave={() => {}}
         onPickTemplate={() => {}}
         onClearTemplate={() => {}}
-        onExport={() => {}}
         docMeta={null}
         onApplySettings={() => {}}
-        onSettingsOpenChange={() => {}}
+        documentSettingsOpen={false}
+        onDocumentSettingsOpenChange={() => {}}
+        pageSettingsOpen={false}
+        onPageSettingsOpenChange={() => {}}
+        themeMenuOpen={false}
+        onThemeMenuOpenChange={() => {}}
         {...props}
       />
     </MantineProvider>
@@ -38,17 +41,37 @@ describe("Toolbar", () => {
     expect(html).not.toContain("Align");
   });
 
-  it("keeps the file actions and export", () => {
+  it("wires the file actions and export to command ids", () => {
     const html = render();
     expect(html).toContain("New");
     expect(html).toContain("Open");
     expect(html).toContain("Save");
     expect(html).toContain("Export PDF");
+    for (const id of ["file.new", "file.open", "file.save", "file.exportPdf"]) {
+      expect(html).toContain(`data-command="${id}"`);
+    }
+  });
+
+  it("exposes the registry shortcuts through aria-keyshortcuts", () => {
+    const html = render();
+    expect(html).toContain('aria-keyshortcuts="Control+N"');
+    expect(html).toContain('aria-keyshortcuts="Control+O"');
+    expect(html).toContain('aria-keyshortcuts="Control+S"');
+    expect(html).toContain('aria-keyshortcuts="Control+E"');
+    expect(html).toContain('aria-keyshortcuts="Control+,"');
+    expect(html).toContain('aria-keyshortcuts="Control+Shift+,"');
+  });
+
+  it("uses the macOS modifier in aria-keyshortcuts", () => {
+    const html = render({ platform: "mac" });
+    expect(html).toContain('aria-keyshortcuts="Meta+S"');
   });
 
   it("offers Page settings on the right and no template controls", () => {
     const html = render();
     expect(html).toContain("Page…");
+    expect(html).toContain('data-command="page.settings"');
+    expect(html).toContain('data-command="document.settings"');
     expect(html).not.toContain("Template…");
     expect(html).not.toContain("Custom template");
   });

@@ -18,7 +18,7 @@
 // The controls must also keep their own popups out of portals (hence the
 // inline SegmentedControl rather than a Select): a portaled dropdown counts
 // as an outside click and would close this Popover mid-edit.
-import { useEffect, useRef, useState } from "react";
+import { useRef } from "react";
 import {
   Button,
   Checkbox,
@@ -217,20 +217,18 @@ function DocumentSettingsForm({ docMeta, onApply, onClose }) {
   );
 }
 
-function DocumentSettings({ docMeta, onApplySettings, onOpenChange }) {
-  const [opened, setOpened] = useState(false);
-
-  // Tell the app when the popover opens/closes: it blurs and freezes the
-  // document while open, so edits here only re-render the popup; the document
-  // catches up once on close (§6.2, lib/previewFreeze.js).
-  useEffect(() => {
-    onOpenChange?.(opened);
-  }, [opened, onOpenChange]);
-
+function DocumentSettings({
+  docMeta,
+  onApplySettings,
+  opened = false,
+  onOpenChange,
+  shortcut = "",
+  ariaShortcut,
+}) {
   return (
     <Popover
       opened={opened}
-      onChange={setOpened}
+      onChange={onOpenChange}
       position="bottom"
       withArrow
       width={420}
@@ -242,7 +240,10 @@ function DocumentSettings({ docMeta, onApplySettings, onOpenChange }) {
           variant="subtle"
           size="compact-md"
           leftSection={<IconFileSettings size={16} />}
-          onClick={() => setOpened((open) => !open)}
+          title={shortcut ? `Document settings (${shortcut})` : "Document settings"}
+          aria-keyshortcuts={ariaShortcut}
+          data-command="document.settings"
+          onClick={() => onOpenChange?.(!opened)}
         >
           Document
         </Button>
@@ -253,7 +254,7 @@ function DocumentSettings({ docMeta, onApplySettings, onOpenChange }) {
           <DocumentSettingsForm
             docMeta={docMeta}
             onApply={onApplySettings}
-            onClose={() => setOpened(false)}
+            onClose={() => onOpenChange?.(false)}
           />
         )}
       </Popover.Dropdown>

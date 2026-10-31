@@ -7,6 +7,9 @@ import { marginsForPreset } from "./lib/presets.js";
 import { createPreviewFreeze } from "./lib/previewFreeze.js";
 import { createRenderStatus } from "./lib/renderStatus.js";
 import { isStaleResponse } from "./lib/seq.js";
+import { getCommand } from "./lib/commands.js";
+import { handleKeydown } from "./lib/keyboard.js";
+import { detectPlatform } from "./lib/platform.js";
 import { applyDocSettingsPatch } from "./lib/docSettings.js";
 import { applyOptionsPatch, loadSettings, saveSettings } from "./lib/settings.js";
 import { mantineTheme } from "./lib/mantineTheme.js";
@@ -74,6 +77,14 @@ export default function App() {
   // clicks, caret and screen readers stay out) and frozen (see `.settings-open`
   // in styles.css and lib/previewFreeze.js).
   const [settingsOpen, setSettingsOpen] = useState(false);
+  // Command-controlled popover/menu state: the registry opens them, their own
+  // targets toggle them, and Mantine reports outside clicks/Escape back here.
+  const [pageSettingsOpen, setPageSettingsOpen] = useState(false);
+  const [themeMenuOpen, setThemeMenuOpen] = useState(false);
+  // Bumped by file.new/file.open so the editor can take focus after the new
+  // document has committed.
+  const [editorFocusToken, setEditorFocusToken] = useState(0);
+  const platform = useMemo(() => detectPlatform(), []);
 
   // The document title: the Rust-parsed frontmatter `title` wins, then the
   // file stem, then "Sample" for the (still untitled) sample document
@@ -369,6 +380,76 @@ export default function App() {
 
   const dismissError = useCallback(() => setError(null), []);
 
+  const focusEditor = useCallback(() => {
+    setEditorFocusToken((token) => token + 1);
+  }, []);
+
+  // The command context is the registry's only view of React state/actions.
+  const commandContext = useMemo(
+    () => ({
+      error,
+      fileNew: handleNew,
+      fileOpen: handleOpen,
+      fileSave: handleSave,
+      fileExport: handleExport,
+      openDocumentSettings: () => handleSettingsOpenChange(true),
+      openPageSettings: () => setPageSettingsOpen(true),
+      openThemeMenu: () => setThemeMenuOpen(true),
+      dismissError,
+      focusEditor,
+    }),
+    [
+      error,
+      handleNew,
+      handleOpen,
+      handleSave,
+      handleExport,
+      handleSettingsOpenChange,
+      dismissError,
+      focusEditor,
+    ]
+  );
+
+  /** One dispatcher for toolbar clicks, keyboard shortcuts and future menus. */
+  const dispatch = useCallback(
+    (commandId) => {
+      const command = getCommand(commandId);
+      if (!command || (command.canRun && !command.canRun(commandContext))) {
+        return false;
+      }
+      try {
+        const result = command.run(commandContext);
+        if (result && typeof result.catch === "function") {
+          result.catch((err) => setError(String(err)));
+        }
+      } catch (err) {
+        setError(String(err));
+      }
+      return true;
+    },
+    [commandContext]
+  );
+
+  // Window-level capture-phase handling so application shortcuts work from
+  // popovers, the menu and other non-editor focus targets. The latest
+  // dispatcher/context is read through refs so this listener is attached once
+  // per platform rather than on every keystroke.
+  const dispatchRef = useRef(dispatch);
+  const contextRef = useRef(commandContext);
+  dispatchRef.current = dispatch;
+  contextRef.current = commandContext;
+  useEffect(() => {
+    const onKeyDown = (event) => {
+      handleKeydown(event, {
+        platform,
+        context: contextRef.current,
+        dispatch: dispatchRef.current,
+      });
+    };
+    window.addEventListener("keydown", onKeyDown, true);
+    return () => window.removeEventListener("keydown", onKeyDown, true);
+  }, [platform]);
+
   // Preview links are intercepted in Preview.jsx and forwarded here: http(s)
   // opens in the system browser, anything else is rejected by the backend
   // with an error (§7.4 / §9) — the webview never navigates to a link.
@@ -381,29 +462,32 @@ export default function App() {
     <MantineProvider theme={mantineTheme} forceColorScheme={colorScheme}>
       <div className={settingsOpen ? "app settings-open" : "app"}>
         <Toolbar
+          platform={platform}
+          dispatch={dispatch}
           options={options}
           templates={templates}
           theme={theme}
           onThemeChange={handleThemeChange}
           onOptionChange={changeOption}
-          onNew={handleNew}
-          onOpen={handleOpen}
-          onSave={handleSave}
           onPickTemplate={handlePickTemplate}
           onClearTemplate={handleClearTemplate}
-          onExport={handleExport}
           docMeta={docMeta}
           onApplySettings={handleApplySettings}
-          onSettingsOpenChange={handleSettingsOpenChange}
+          documentSettingsOpen={settingsOpen}
+          onDocumentSettingsOpenChange={handleSettingsOpenChange}
+          pageSettingsOpen={pageSettingsOpen}
+          onPageSettingsOpenChange={setPageSettingsOpen}
+          themeMenuOpen={themeMenuOpen}
+          onThemeMenuOpenChange={setThemeMenuOpen}
         />
         <main id="panes" inert={settingsOpen}>
           <section id="editor-pane">
             <Editor
               value={markdown}
               onChange={handleEditorChange}
-              onSave={handleSave}
               fontSize={editorFontSize}
               dark={colorScheme === "dark"}
+              focusToken={editorFocusToken}
             />
           </section>
           <section id="preview-pane" data-rendering={renderBusy ? "true" : undefined}>

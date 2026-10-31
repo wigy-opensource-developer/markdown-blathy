@@ -9,7 +9,13 @@ import ThemeMenu from "./ThemeMenu.jsx";
 const render = (props) =>
   renderToStaticMarkup(
     <MantineProvider>
-      <ThemeMenu theme="system" onThemeChange={() => {}} {...props} />
+      <ThemeMenu
+        theme="system"
+        onThemeChange={() => {}}
+        opened={false}
+        onOpenChange={() => {}}
+        {...props}
+      />
     </MantineProvider>
   );
 
@@ -22,6 +28,7 @@ describe("ThemeMenu", () => {
 
   it("renders an icon (svg) for the collapsed control", () => {
     expect(render()).toContain("<svg");
+    expect(render()).toContain('data-command="theme.menu"');
   });
 
   it("matches the toolbar's subtle compact buttons", () => {

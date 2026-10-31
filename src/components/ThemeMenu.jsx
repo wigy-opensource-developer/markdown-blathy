@@ -19,13 +19,18 @@ const THEME_ICONS = {
   dark: IconMoon,
 };
 
-function ThemeMenu({ theme, onThemeChange }) {
+function ThemeMenu({ theme, onThemeChange, opened = false, onOpenChange }) {
   const CurrentIcon = THEME_ICONS[theme] ?? IconSunMoon;
   const currentLabel =
     UI_THEMES.find((entry) => entry.value === theme)?.label ?? "System";
 
   return (
-    <Menu position="bottom-end" withArrow>
+    <Menu
+      position="bottom-end"
+      withArrow
+      opened={opened}
+      onChange={onOpenChange}
+    >
       <Menu.Target>
         {/* Matches the toolbar's subtle buttons; no Tooltip wrapper because
             Mantine cannot wrap a floating Menu target in a Tooltip. */}
@@ -33,10 +38,12 @@ function ThemeMenu({ theme, onThemeChange }) {
           variant="subtle"
           size="compact-md"
           px="xs"
+          data-command="theme.menu"
           aria-label={`Color theme: ${currentLabel}`}
           title={`Color theme: ${currentLabel}`}
           leftSection={<CurrentIcon size={16} />}
           rightSection={<IconChevronDown size={12} />}
+          onClick={() => onOpenChange?.(!opened)}
         />
       </Menu.Target>
       <Menu.Dropdown>

@@ -7,7 +7,7 @@ function ErrorBanner({ message, onClose }) {
   return (
     <div id="error-banner" role="alert">
       <span className="error-message">{message}</span>
-      <button type="button" aria-label="Dismiss" onClick={onClose}>
+      <button type="button" aria-label="Dismiss" aria-keyshortcuts="Escape" data-command="error.dismiss" onClick={onClose}>
         ×
       </button>
     </div>
