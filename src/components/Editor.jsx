@@ -31,7 +31,16 @@ function Editor({ value, onChange, onSave, fontSize = 16, dark = false }) {
       height="100%"
       style={{ "--editor-font-size": `${fontSize}px` }}
       extensions={extensions}
-      basicSetup={{ foldGutter: false }}
+      // Disable autocompletion *and* its keymap: the default completion
+      // keymap binds Alt-` on macOS. On layouts where ` is typed with
+      // Option (e.g. Hungarian), that binding consumes the character and
+      // prevents it from ever reaching the document. Markdown has no
+      // completion source here, so the extension has nothing to offer.
+      basicSetup={{
+        foldGutter: false,
+        autocompletion: false,
+        completionKeymap: false,
+      }}
       theme={dark ? "dark" : "light"}
     />
   );
