@@ -98,9 +98,10 @@ cannot reproduce Typst layout, and someone has to pick a good window state
 and content.
 
 1. Start the release binary on a virtual display with a window manager and
-   compositor (`picom`) so the window gets its native shadow. The app takes
-   no CLI file argument, so the document is the built-in sample or typed via
-   the WebDriver session.
+   compositor (`picom`) so the window gets its native shadow. Pass the
+   document to show as a positional path (`target/release/MarkdownBláthy
+   docs/demo.md`, or `markdown-blathy docs/demo.md`); with no argument the app
+   shows the built-in sample.
 2. Drive it to the state to show (open the Document or Page popover, …) and
    wait for the render.
 3. Capture the app window by id with `maim` (ImageMagick `import` works

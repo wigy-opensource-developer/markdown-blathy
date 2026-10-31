@@ -190,13 +190,39 @@ export default function App() {
     return () => refreshPreview.cancel();
   }, [requestPreviewNow, refreshPreview]);
 
+  // `markdown-blathy gui FILE` (or a desktop launcher with a path) stores the
+  // path in Rust before the webview boots. Consume it exactly once after mount
+  // and run the normal open-document state update. A load failure surfaces in
+  // the error banner; the sample document stays usable.
+  const startupLoadStarted = useRef(false);
+  useEffect(() => {
+    if (startupLoadStarted.current) return;
+    startupLoadStarted.current = true;
+    (async () => {
+      try {
+        const path = await api.takeStartupDocument();
+        if (!path) return;
+        const res = await api.openMarkdownPath(path);
+        if (api.isCanceled(res)) return;
+        setFilePath(res.path);
+        setMarkdown(res.content);
+        setDirectory(parentDirectory(res.path));
+        requestPreviewNow({ markdown: res.content, documentPath: res.path });
+      } catch (err) {
+        setError(String(err));
+      }
+    })();
+  }, [requestPreviewNow]);
+
   // Load the startup working directory ($XDG_DATA_HOME / $HOME) for the
   // dialogs; until it resolves the dialogs fall back to the OS default.
   useEffect(() => {
     api
       .getInitialDirectory()
       .then((dir) => {
-        if (dir) setDirectory(dir);
+        // Do not clobber the directory of a startup/open document that
+        // resolved while this request was in flight.
+        if (dir) setDirectory((current) => current ?? dir);
       })
       .catch(() => {});
   }, []);

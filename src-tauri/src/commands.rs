@@ -238,6 +238,31 @@ pub async fn open_markdown(
     Ok(FileOutcome::opened(&path, content))
 }
 
+/// Read an explicit Markdown path (used by a GUI launched with
+/// `markdown-blathy gui FILE`). Returns the same `FileOutcome` shape as the
+/// dialog-driven open, so the frontend can share one state-update path.
+#[tauri::command]
+#[instrument(skip(state), fields(path))]
+pub fn open_markdown_path(
+    state: State<'_, Arc<Service>>,
+    path: String,
+) -> Result<FileOutcome, String> {
+    let path = PathBuf::from(path);
+    let content = state
+        .read_document(&path)
+        .map_err(|e| format!("Failed to read file: {e}"))?;
+    info!(path = %path.display(), "markdown opened from startup path");
+    Ok(FileOutcome::opened(&path, content))
+}
+
+/// Take the consumed-once startup document path. Returns `None` when the GUI
+/// was started without a file or the frontend already consumed it.
+#[tauri::command]
+#[instrument(skip(state))]
+pub fn take_startup_document(state: State<'_, crate::startup::StartupDocument>) -> Option<String> {
+    state.take().map(|path| path.to_string_lossy().into_owned())
+}
+
 /// Save Markdown via a "Save As…" dialog: the filename defaults to
 /// `<title>.md` in `directory`, and the write is atomic (§7.4, M4).
 #[tauri::command]

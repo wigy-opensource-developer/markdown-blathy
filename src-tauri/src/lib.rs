@@ -3,6 +3,7 @@
 // dialog and process-launch adapter over `markdown_blathy_core::Service`.
 // Desktop-only: Linux + macOS.
 
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use markdown_blathy_core::service::Service;
@@ -12,6 +13,7 @@ pub mod commands;
 pub mod dialogs;
 pub mod paths;
 pub mod prewarm;
+pub mod startup;
 
 /// Reads `RUST_LOG` from the environment; defaults to `warn` when unset.
 /// Must be called once before the `tauri::Builder` is constructed.
@@ -24,10 +26,11 @@ pub fn init_logging() {
         .init();
 }
 
-pub fn run() {
+pub fn run(startup_file: Option<PathBuf>) {
     init_logging();
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
+        .manage(startup::StartupDocument::new(startup_file))
         // M6 engine cache (§7.5) lives inside the core Service: one compiled
         // engine per static source, rebuilt (and fonts re-scanned) only when
         // the template/options change. Arc so commands can hand an owned
@@ -73,6 +76,8 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             commands::render_preview,
             commands::open_markdown,
+            commands::open_markdown_path,
+            commands::take_startup_document,
             commands::save_markdown,
             commands::export_pdf,
             commands::get_initial_directory,

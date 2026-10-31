@@ -21,9 +21,11 @@ import {
   listTemplates,
   openExternal,
   openMarkdown,
+  openMarkdownPath,
   renderPreview,
   saveMarkdown,
   setWindowTitle,
+  takeStartupDocument,
   updateFrontMatter,
   validateTemplate,
 } from "./api.js";
@@ -76,6 +78,22 @@ describe("openMarkdown", () => {
   it("passes null directory before the initial directory resolves", () => {
     openMarkdown(null);
     expect(invoke).toHaveBeenCalledWith("open_markdown", { directory: null });
+  });
+});
+
+describe("openMarkdownPath", () => {
+  it("invokes open_markdown_path with the explicit path", () => {
+    openMarkdownPath("/home/u/notes.md");
+    expect(invoke).toHaveBeenCalledWith("open_markdown_path", {
+      path: "/home/u/notes.md",
+    });
+  });
+});
+
+describe("takeStartupDocument", () => {
+  it("invokes take_startup_document with no arguments", () => {
+    takeStartupDocument();
+    expect(invoke).toHaveBeenCalledWith("take_startup_document");
   });
 });
 
