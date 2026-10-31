@@ -6,9 +6,11 @@
 use std::sync::Arc;
 
 use markdown_blathy_core::service::Service;
-use markdown_blathy_core::{files, options, typst_engine::template};
+use markdown_blathy_core::{options, typst_engine::template};
 
 pub mod commands;
+pub mod dialogs;
+pub mod paths;
 pub mod prewarm;
 
 /// Reads `RUST_LOG` from the environment; defaults to `warn` when unset.
@@ -40,15 +42,11 @@ pub fn run() {
         // rebuild on the first render — same as before the prewarm existed.
         .setup(|app| {
             use tauri::Manager;
-            let templates_dir = files::templates_dir(app.path().resource_dir().ok());
+            let templates_dir = paths::templates_dir(app.handle());
             let service = Arc::new(Service::new(templates_dir));
             app.manage(service.clone());
 
-            let hint_file = app
-                .path()
-                .app_data_dir()
-                .ok()
-                .map(|dir| prewarm::hint_path(&dir));
+            let hint_file = paths::app_data_dir(app.handle()).map(|dir| prewarm::hint_path(&dir));
             // Resolved here (outside spawn_blocking) because `app` is not Send.
             tauri::async_runtime::spawn_blocking(move || {
                 let (source, fonts) = match hint_file.as_deref().and_then(prewarm::load_hint) {

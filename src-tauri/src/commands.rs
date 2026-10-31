@@ -14,8 +14,9 @@ use markdown_blathy_core::options::RenderOptions;
 use markdown_blathy_core::service::{RenderRequest, Service};
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, State};
-use tauri_plugin_dialog::DialogExt;
 use tracing::{debug, info, instrument, warn};
+
+use crate::dialogs::{pick_open_path, pick_save_path};
 
 /// Frontend → Rust payload for `render_preview` (§7.4).
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -140,8 +141,7 @@ pub async fn render_preview(
         fonts: detail.engine.fonts,
     };
     tauri::async_runtime::spawn_blocking(move || {
-        use tauri::Manager as _;
-        let Ok(dir) = app.path().app_data_dir() else {
+        let Some(dir) = crate::paths::app_data_dir(&app) else {
             return;
         };
         let _ = std::fs::create_dir_all(&dir);
@@ -209,48 +209,6 @@ pub async fn export_pdf(
     open_in_viewer(&path);
     info!(path = %path.display(), "export PDF saved");
     Ok(FileOutcome::saved(&path))
-}
-
-/// A system *open* dialog with the given filters (name + extensions),
-/// starting in `directory` when given. `None` means the user dismissed it —
-/// the caller treats that as silent (§9).
-fn pick_open_path(
-    app: &AppHandle,
-    title: &str,
-    filters: &[(&str, &[&str])],
-    directory: &Option<String>,
-) -> Result<Option<std::path::PathBuf>, String> {
-    let mut dialog = app.dialog().file().set_title(title);
-    for (name, extensions) in filters {
-        dialog = dialog.add_filter(*name, extensions);
-    }
-    if let Some(dir) = non_empty(directory) {
-        dialog = dialog.set_directory(dir);
-    }
-    dialog_path(dialog.blocking_pick_file())
-}
-
-/// A system *save* dialog: title, one filter (name + extensions) and a default
-/// file name, starting in `directory` when given. `None` means the user
-/// dismissed it — the caller treats that as silent (§9).
-fn pick_save_path(
-    app: &AppHandle,
-    title: &str,
-    filter: (&str, &[&str]),
-    file_name: String,
-    directory: &Option<String>,
-) -> Result<Option<std::path::PathBuf>, String> {
-    let (name, extensions) = filter;
-    let mut dialog = app
-        .dialog()
-        .file()
-        .set_title(title)
-        .add_filter(name, extensions)
-        .set_file_name(file_name);
-    if let Some(dir) = non_empty(directory) {
-        dialog = dialog.set_directory(dir);
-    }
-    dialog_path(dialog.blocking_save_file())
 }
 
 /// Open a Markdown file via the system dialog (starting in `directory` when
@@ -400,27 +358,6 @@ pub async fn validate_template(
 #[instrument(skip(state))]
 pub fn list_templates(state: State<'_, Arc<Service>>) -> Result<Vec<String>, String> {
     state.list_templates().map_err(|e| e.to_string())
-}
-
-/// `Some(&str)` for a non-empty string, else `None` — used to skip
-/// `set_directory` on dialogs when no working directory is known yet.
-fn non_empty(s: &Option<String>) -> Option<&str> {
-    s.as_deref().filter(|s| !s.is_empty())
-}
-
-/// Convert a blocking dialog result into a `PathBuf`, mapping the (rare)
-/// URL/error cases to a user-presentable message (§9). `None` means the user
-/// dismissed the dialog.
-fn dialog_path(
-    picked: Option<tauri_plugin_dialog::FilePath>,
-) -> Result<Option<std::path::PathBuf>, String> {
-    match picked {
-        Some(p) => p
-            .into_path()
-            .map(Some)
-            .map_err(|e| format!("Failed to resolve path: {e}")),
-        None => Ok(None),
-    }
 }
 
 /// Open a file in the platform's default viewer (M4 acceptance: "Export

@@ -31,6 +31,8 @@ src-tauri/                   # Tauri app adapter
 │   ├── main.rs              # calls markdown_blathy_lib::run()
 │   ├── lib.rs               # logging, Service setup, prewarm, commands
 │   ├── commands.rs          # #[tauri::command] serialization/dialog adapters
+│   ├── dialogs.rs           # system open/save dialog helpers
+│   ├── paths.rs             # Tauri resource/app-data path resolution
 │   └── prewarm.rs           # GUI lifecycle prewarm hint
 ├── capabilities/
 ├── icons/
