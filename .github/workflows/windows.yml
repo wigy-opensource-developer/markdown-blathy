@@ -35,7 +35,7 @@ jobs:
       - name: rust cache
         uses: Swatinem/rust-cache@v2
         with:
-          workspaces: src-tauri
+          workspaces: .
 
       - name: setup Node.js
         uses: actions/setup-node@v7
@@ -56,6 +56,6 @@ jobs:
         with:
           name: windows
           path: |
-            src-tauri/target/release/bundle/nsis/*.exe
-            src-tauri/target/release/bundle/msi/*.msi
+            target/release/bundle/nsis/*.exe
+            target/release/bundle/msi/*.msi
           if-no-files-found: error

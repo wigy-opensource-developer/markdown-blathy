@@ -1,12 +1,13 @@
 #!/usr/bin/env bash
-# Quality gate: frontend build + Rust checks.
+# Quality gate: frontend build + Rust workspace checks.
 # See SPEC.md, IMPLEMENTATION.md, and TESTING.md for project structure.
-# The Rust crate lives in src-tauri/, so cargo runs must happen there.
+# The Cargo workspace root is the repo root; the Tauri app is a member under
+# src-tauri/, and the headless core/CLI live under crates/.
 # Usage: ./check.sh
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-RUST_DIR="$ROOT/src-tauri"
+cd "$ROOT"
 
 for cmd in npm cargo cargo-deny; do
   command -v "$cmd" >/dev/null 2>&1 || {
@@ -30,16 +31,16 @@ npm run check:bundle
 echo "==> npm run check:licenses (frontend dependencies)"
 npm run check:licenses
 
-echo "==> cargo fmt --check (src-tauri)"
-(cd "$RUST_DIR" && cargo fmt --check)
+echo "==> cargo fmt --check (workspace)"
+cargo fmt --all --check
 
-echo "==> cargo clippy (src-tauri: all targets, warnings as errors)"
-(cd "$RUST_DIR" && cargo clippy --all-targets -- -D warnings)
+echo "==> cargo clippy (workspace: all targets, warnings as errors)"
+cargo clippy --workspace --all-targets -- -D warnings
 
-echo "==> cargo test (src-tauri)"
-(cd "$RUST_DIR" && cargo test)
+echo "==> cargo test (workspace)"
+cargo test --workspace
 
-echo "==> cargo deny check (src-tauri: advisories, bans, licenses, sources)"
-(cd "$RUST_DIR" && cargo deny check --hide-inclusion-graph)
+echo "==> cargo deny check (workspace: advisories, bans, licenses, sources)"
+cargo deny --config src-tauri/deny.toml check --hide-inclusion-graph
 
 echo "All checks passed."

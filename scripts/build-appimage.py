@@ -59,22 +59,26 @@ APP_CATEGORIES = "Office;WordProcessor;"
 
 ROOT = Path(__file__).resolve().parent.parent
 RUST_DIR = ROOT / "src-tauri"
+CORE_DIR = ROOT / "crates" / "markdown-blathy-core"
 
 # Everything whose mtime must be compared against the release binary to decide
 # whether `npm run appimage` has to rebuild. The previous heuristic watched
-# only src-tauri/src + Cargo.toml, so a change to the React frontend (src/),
-# the bundled templates, the embedded fonts, or the Tauri config reused a
+# only the old Rust source tree, so a change to the React frontend (src/),
+# the core templates/fonts, or the Tauri config reused a
 # stale binary. Directories are walked recursively.
 SOURCES = [
+    CORE_DIR / "src",
+    CORE_DIR / "templates",
+    CORE_DIR / "fonts",
+    CORE_DIR / "Cargo.toml",
     RUST_DIR / "src",
-    RUST_DIR / "templates",
-    RUST_DIR / "fonts",
     RUST_DIR / "capabilities",
     RUST_DIR / "icons",
     RUST_DIR / "Cargo.toml",
-    RUST_DIR / "Cargo.lock",
     RUST_DIR / "tauri.conf.json",
     RUST_DIR / "build.rs",
+    ROOT / "Cargo.toml",
+    ROOT / "Cargo.lock",
     ROOT / "src",
     ROOT / "index.html",
     ROOT / "vite.config.js",
@@ -88,11 +92,11 @@ TOOLS_DIR = ROOT / ".local" / "tools"
 
 
 def app_version() -> str:
-    """Read the version from Cargo.toml — never from the binary (needs display)."""
-    cargo = RUST_DIR / "Cargo.toml"
+    """Read the version from the workspace manifest (never from the binary)."""
+    cargo = ROOT / "Cargo.toml"
     with open(cargo, "rb") as f:
         data = tomllib.load(f)
-    return data["package"]["version"]
+    return data["workspace"]["package"]["version"]
 
 
 def app_product_name() -> str:
@@ -235,9 +239,10 @@ def build_binary(force: bool) -> Path:
     separate ``cargo install tauri-cli`` and fails in CI with "no such
     command: tauri".  ``--no-bundle`` skips packaging entirely (the AppImage
     is assembled by this script), so no disposable .deb is produced.
-    The binary lands at: src-tauri/target/release/<mainBinaryName>.
+    The workspace target dir is the repo root, so the binary lands at:
+    target/release/<mainBinaryName>.
     """
-    binary = RUST_DIR / "target" / "release" / BINARY_NAME
+    binary = ROOT / "target" / "release" / BINARY_NAME
 
     if rebuild_needed(binary, force):
         info("building production binary (npm run tauri -- build --no-bundle)")
@@ -282,7 +287,7 @@ def create_appdir(binary: Path, out_dir: Path) -> Path:
     # resource dir as `<exe_dir>/../lib/<productName>` — under the AppImage
     # env that is `$APPDIR/usr/lib/<productName>` — so mirror that layout here.
     # (productName, not the crate name: resource_dir uses PackageInfo.name.)
-    resources_src = RUST_DIR / "templates"
+    resources_src = CORE_DIR / "templates"
     resources_dst = appdir / "usr" / "lib" / app_product_name()
     if resources_src.is_dir():
         resources_dst.mkdir(parents=True, exist_ok=True)

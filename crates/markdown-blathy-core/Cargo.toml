@@ -1,0 +1,61 @@
+[package]
+name = "markdown-blathy-core"
+description = "Headless Markdown → Typst render/export core shared by the MarkdownBláthy GUI and CLI"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+# Small derive macro for the core's user-presentable error enum (§5.2).
+thiserror = "2"
+
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# URL scheme validation for the external-link policy (§7.4) — already in the
+# tree via tauri, declared directly because links.rs uses it.
+url = "2"
+
+# default-features = false: comrak's defaults pull the CLI and the
+# syntect/onig syntax-highlighting stack, which this project does not use
+# (Typst highlights code itself). Keep only the parser.
+# `attributes` enables `{#custom-id}` heading syntax.
+comrak = { version = "0.54", default-features = false, features = ["bon", "attributes"] }
+
+# String similarity for "did you mean …?" front-matter key suggestions.
+# Small, zero-dependency. Already in the tree as a build-time dep (via
+# darling); declared here because the converter uses it at runtime. MIT.
+strsim = "0.11"
+
+# LaTeX math → Typst math. Markdown authors write LaTeX; Typst is only the
+# renderer. The crate provides the parser, macro expansion, symbol maps and
+# conversion warnings used by `markdown::math`. Apache-2.0.
+tylax = { version = "0.3.8", default-features = false }
+
+# Typst 0.15 engine line — these four crates are released in lockstep and
+# must share the same minor version. typst-as-lib 0.16 is the first line
+# compatible with Typst 0.15 (0.15.x pins Typst 0.14).
+typst = "0.15"
+typst-layout = "0.15"
+typst-pdf = "0.15"
+typst-svg = "0.15"
+# typst-as-lib 0.16 wraps a Typst world. typst-kit-fonts: system-font
+# discovery via typst-kit. Used by the M6 engine cache — fonts are scanned
+# once per engine (re)build, not per render. typst-kit is also used directly
+# to subset the font book to the families a custom template actually
+# references (small book = fast compiles, §6.3).
+typst-as-lib = { version = "0.16", features = ["typst-kit-fonts"] }
+typst-kit = { version = "0.15", features = ["scan-fonts"] }
+
+# M7: structured diagnostic logging — replaces eprintln! with leveled
+# tracing output controlled by RUST_LOG (default: warn).
+tracing = "0.1"
+
+# comemo: memoization cache used by `#[comemo::track]` on LateLinkResolver.
+# Required for svg_in_bundle link resolution (footnote/heading anchors).
+comemo = "0.5"
+
+# Font-family extraction from Typst templates (§6.3): regex scan for
+# `font:` rules. Already in the tree via typst, declared directly because
+# template.rs uses it at runtime.
+regex = "1"

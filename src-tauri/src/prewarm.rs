@@ -9,14 +9,14 @@
 //! makes the prewarm match whatever the first render will actually ask for.
 //!
 //! Pure file I/O (no `tauri` imports; the command layer injects the path),
-//! mirroring `files.rs`: atomic writes, corrupt/missing hint = `None`.
+//! mirroring the core's `files.rs`: atomic writes, corrupt/missing hint = `None`.
 
 use std::io;
 use std::path::{Path, PathBuf};
 
+use markdown_blathy_core::files::write_atomically;
+use markdown_blathy_core::typst_engine::engine::FontOptions;
 use serde::{Deserialize, Serialize};
-
-use crate::typst_engine::engine::FontOptions;
 
 /// What a warmed engine needs: the composed static source (template +
 /// toolbar options) and the font-loading options it was built with.
@@ -48,7 +48,7 @@ pub fn save_hint(path: &Path, hint: &PrewarmHint) -> io::Result<()> {
     if load_hint(path).as_ref() == Some(hint) {
         return Ok(());
     }
-    crate::files::write_atomically(path, serde_json::to_vec(hint)?.as_slice())
+    write_atomically(path, serde_json::to_vec(hint)?.as_slice())
 }
 
 #[cfg(test)]

@@ -34,7 +34,7 @@ jobs:
       - name: rust cache
         uses: Swatinem/rust-cache@v2
         with:
-          workspaces: src-tauri
+          workspaces: .
 
       - name: setup Node.js
         uses: actions/setup-node@v7
@@ -52,5 +52,5 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: linux-rpm
-          path: src-tauri/target/release/bundle/rpm/*.rpm
+          path: target/release/bundle/rpm/*.rpm
           if-no-files-found: error

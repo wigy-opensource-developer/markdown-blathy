@@ -1,7 +1,8 @@
 // Option tables for the Page settings selects (§8.6 of SPEC.md).
 //
 // `value` fields are the wire values the Rust side deserializes — the serde
-// enums in `src-tauri/src/options.rs` use `rename_all = "snake_case"`, so the
+// enums in `crates/markdown-blathy-core/src/options.rs` use
+// `rename_all = "snake_case"`, so the
 // select values must be exactly `a4`/`left`/etc. Flavor is not a page-setup
 // select (it is a per-document front-matter setting), so there is no table
 // for it here.

@@ -1,17 +1,15 @@
-// Tauri shell bootstrap. Per the spec, `markdown/` and `typst_engine/` are
-// plain Rust modules (no `tauri` imports) registered as thin `#[tauri::command]`
-// wrappers in `commands.rs`. The dialog plugin is registered for the file
-// open/save/export commands that build on it (M4).
+// Tauri shell bootstrap. The render/convert/export logic lives in the
+// Tauri-free `markdown-blathy-core` crate; `commands.rs` is a serialization,
+// dialog and process-launch adapter over `markdown_blathy_core::Service`.
 // Desktop-only: Linux + macOS.
 
+use std::sync::Arc;
+
+use markdown_blathy_core::service::Service;
+use markdown_blathy_core::{files, options, typst_engine::template};
+
 pub mod commands;
-pub mod engine_cache;
-pub mod files;
-pub mod links;
-pub mod markdown;
-pub mod options;
 pub mod prewarm;
-pub mod typst_engine;
 
 /// Reads `RUST_LOG` from the environment; defaults to `warn` when unset.
 /// Must be called once before the `tauri::Builder` is constructed.
@@ -28,12 +26,11 @@ pub fn run() {
     init_logging();
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
-        // M6 engine cache (§7.5): one compiled engine per static source,
-        // rebuilt (and fonts re-scanned) only when the template/options change.
-        // Arc so commands can hand an owned handle to the blocking thread.
-        .manage(std::sync::Arc::new(std::sync::Mutex::new(
-            engine_cache::TemplateEngineCache::new(),
-        )))
+        // M6 engine cache (§7.5) lives inside the core Service: one compiled
+        // engine per static source, rebuilt (and fonts re-scanned) only when
+        // the template/options change. Arc so commands can hand an owned
+        // handle to a blocking thread.
+        //
         // §7.5 engine prewarm: build the engine the first render will want
         // while the webview boots (under the boot loader), instead of under
         // the first preview request. The remembered static source
@@ -43,28 +40,23 @@ pub fn run() {
         // rebuild on the first render — same as before the prewarm existed.
         .setup(|app| {
             use tauri::Manager;
-            let cache = app
-                .state::<std::sync::Arc<std::sync::Mutex<engine_cache::TemplateEngineCache>>>()
-                .inner()
-                .clone();
+            let templates_dir = files::templates_dir(app.path().resource_dir().ok());
+            let service = Arc::new(Service::new(templates_dir));
+            app.manage(service.clone());
+
             let hint_file = app
                 .path()
                 .app_data_dir()
                 .ok()
                 .map(|dir| prewarm::hint_path(&dir));
             // Resolved here (outside spawn_blocking) because `app` is not Send.
-            let templates_dir = crate::files::templates_dir(app.path().resource_dir().ok());
             tauri::async_runtime::spawn_blocking(move || {
                 let (source, fonts) = match hint_file.as_deref().and_then(prewarm::load_hint) {
                     Some(hint) => (hint.static_source, hint.fonts),
                     None => {
                         let options = options::RenderOptions::frontend_defaults();
-                        match typst_engine::template::prepare_render(
-                            "",
-                            &options,
-                            templates_dir.as_deref(),
-                            None,
-                        ) {
+                        match template::prepare_render("", &options, service.templates_dir(), None)
+                        {
                             Ok(prepared) => (prepared.static_source, prepared.fonts),
                             Err(e) => {
                                 tracing::debug!("engine prewarm: prepare failed: {e}");
@@ -73,12 +65,9 @@ pub fn run() {
                         }
                     }
                 };
-                match cache.lock() {
-                    Ok(mut cache) => match cache.engine_for(&source, &fonts) {
-                        Ok(_) => tracing::debug!("engine prewarmed"),
-                        Err(e) => tracing::debug!("engine prewarm: build failed: {e}"),
-                    },
-                    Err(_) => tracing::debug!("engine prewarm: cache lock poisoned"),
+                match service.warm_engine(&source, &fonts) {
+                    Ok(()) => tracing::debug!("engine prewarmed"),
+                    Err(e) => tracing::debug!("engine prewarm: build failed: {e}"),
                 }
             });
             Ok(())

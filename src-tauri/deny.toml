@@ -1,5 +1,6 @@
 # cargo-deny configuration: https://embarkstudios.github.io/cargo-deny/
-# Run with: cargo deny check   (from src-tauri/, where the crate lives)
+# Run from the workspace root: cargo deny --config src-tauri/deny.toml check
+# (`./check.sh` does this).
 
 [advisories]
 version = 2

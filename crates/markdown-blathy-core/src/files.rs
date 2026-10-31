@@ -55,8 +55,8 @@ fn temp_sibling(path: &Path) -> PathBuf {
 /// The directory holding the bundled templates (one subdirectory per
 /// template, each with a `main.typ`). `resource_dir` is the Tauri resource
 /// dir (templates are bundled under it); in dev (`cargo run`/`tauri dev`) the
-/// resources are not bundled, so fall back to the in-tree `src-tauri/templates/`
-/// next to the manifest.
+/// resources are not bundled, so fall back to the core crate's in-tree
+/// `templates/` next to the manifest.
 pub fn templates_dir(resource_dir: Option<PathBuf>) -> Option<PathBuf> {
     let source = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("templates");
     [resource_dir.map(|d| d.join("templates")), Some(source)]

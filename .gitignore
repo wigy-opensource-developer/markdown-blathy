@@ -4,11 +4,11 @@ node_modules/
 # Frontend build output
 dist/
 
-# Rust build output
-src-tauri/target/
+# Rust build output (workspace root target dir)
+/target/
 
-# AppImage output (repo root — distinct from src-tauri/target/)
-target/
+# Legacy per-crate build output from before the workspace migration
+src-tauri/target/
 
 # Project-local tools (downloaded appimagetool, etc.)
 .local/

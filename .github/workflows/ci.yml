@@ -34,7 +34,7 @@ jobs:
       - name: rust cache
         uses: Swatinem/rust-cache@v2
         with:
-          workspaces: src-tauri
+          workspaces: .
 
       # ---- cargo-deny (license/security audit) --------------------------------
       - name: install cargo-deny

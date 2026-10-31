@@ -53,7 +53,7 @@ Run the full gate from the repo root:
 npm run tauri build
 ```
 
-Output lands in `src-tauri/target/release/bundle/`.
+Output lands in `target/release/bundle/`.
 
 ## How to release a new version
 
@@ -131,7 +131,7 @@ added to the section by hand. Add the matching
 Keep these in sync:
 
 - `package.json` → `version`
-- `src-tauri/Cargo.toml` → `[package] version`
+- `Cargo.toml` → `[workspace.package] version` (inherited by the core, CLI and Tauri crates)
 - `src-tauri/tauri.conf.json` → `version`
 - the metainfo `<releases>` entry
 

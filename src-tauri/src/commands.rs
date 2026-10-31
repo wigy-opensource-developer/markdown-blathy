@@ -1,25 +1,21 @@
-//! Thin `#[tauri::command]` wrappers (§7.4 of SPEC.md).
+//! Thin `#[tauri::command]` adapters (§7.4 of SPEC.md).
 //!
-//! All real logic lives in the plain modules (`markdown/`, `typst_engine/`,
-//! `files/`) which have no `tauri` imports; these functions are
-//! serialization-only shims plus the system dialogs.
+//! All real logic lives in `markdown-blathy-core`; these functions do Tauri
+//! serialization, system dialogs and process launching only. The core is
+//! path/bytes based, so dialogs stay here and the CLI can reuse the same
+//! operations.
 
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
+use markdown_blathy_core::markdown::convert::DocMeta;
+use markdown_blathy_core::markdown::frontmatter::Patch;
+use markdown_blathy_core::options::RenderOptions;
+use markdown_blathy_core::service::{RenderRequest, Service};
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, State};
 use tauri_plugin_dialog::DialogExt;
 use tracing::{debug, info, instrument, warn};
-use typst::foundations::Dict;
-use typst_as_lib::{TypstEngine, TypstTemplateMainFile};
-
-use crate::engine_cache::TemplateEngineCache;
-use crate::files;
-use crate::markdown::convert::DocMeta;
-use crate::options::RenderOptions;
-use crate::typst_engine::engine;
-use crate::typst_engine::template;
 
 /// Frontend → Rust payload for `render_preview` (§7.4).
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -97,102 +93,51 @@ fn is_false(b: &bool) -> bool {
     !b
 }
 
-/// The directory holding the bundled templates (one subdirectory per
-/// template, each with a `main.typ`). Resolved from the Tauri resource dir;
-/// in dev (`cargo run`/`tauri dev`) the resources are not bundled, so fall
-/// back to the in-tree `src-tauri/templates/` next to the manifest.
-fn templates_dir(app: &AppHandle) -> Option<PathBuf> {
-    use tauri::Manager as _;
-    crate::files::templates_dir(app.path().resource_dir().ok())
-}
-
-/// The UI shows converter warnings (e.g. duplicate heading IDs) and engine
-/// warnings (e.g. missing fonts) together (§3): converter first, engine after.
-fn merged_warnings(mut converter: Vec<String>, engine: Vec<String>) -> Vec<String> {
-    converter.extend(engine);
-    converter
-}
-
-/// Run `work` against the cached engine for a prepared render (§7.5, M6).
-///
-/// Compilation is CPU-bound, so the cache lock, the engine lookup/rebuild and
-/// the compile itself run on `spawn_blocking`; the shared `(static_source,
-/// fonts, inputs)` triple is cloned in so the closure is `'static`. Shared by
-/// `render_preview` and `export_pdf`, which differ only in `work`.
-async fn with_cached_engine<R: Send + 'static>(
-    state: &State<'_, Arc<Mutex<TemplateEngineCache>>>,
-    prepared: &template::PreparedRender,
-    task: &'static str,
-    work: impl FnOnce(&TypstEngine<TypstTemplateMainFile>, &Dict) -> Result<R, String> + Send + 'static,
-) -> Result<R, String> {
-    let cache = state.inner().clone(); // owned Arc<Mutex<...>> for the blocking thread
-    let static_source = prepared.static_source.clone();
-    let fonts = prepared.fonts.clone();
-    let inputs = prepared.inputs.clone();
-    tauri::async_runtime::spawn_blocking(move || {
-        let mut cache = cache
-            .lock()
-            .map_err(|_| "engine cache lock poisoned".to_string())?;
-        let engine = cache.engine_for(&static_source, &fonts)?;
-        work(engine, &inputs)
-    })
-    .await
-    .map_err(|e| format!("{task} failed: {e}"))?
+/// Convert the IPC payload into the core request shape.
+fn render_request(payload: &RenderPayload) -> RenderRequest {
+    RenderRequest {
+        markdown: payload.markdown.clone(),
+        options: payload.options.clone(),
+        document_path: payload.document_path.as_deref().map(PathBuf::from),
+    }
 }
 
 /// Live preview: markdown + options → per-page SVG strings (§7.4).
 ///
-/// The static source (template + toolbar options) selects a cached engine —
-/// built once, fonts scanned once — and the markdown body is passed per
-/// render via `sys.inputs` (M6, §7.5). Compilation is CPU-bound, so it runs
-/// on `spawn_blocking`; `seq` is echoed back so the frontend can drop stale
-/// responses.
+/// The core service owns the M6 engine cache; compilation is CPU-bound, so it
+/// runs on `spawn_blocking`. `seq` is echoed back so the frontend can drop
+/// stale responses. The engine identity returned by the service is saved as
+/// the next launch's prewarm hint (§7.5).
 #[tauri::command]
 #[instrument(skip(state, app, payload), fields(seq = payload.seq, md_len = payload.markdown.len()))]
 pub async fn render_preview(
-    state: State<'_, Arc<Mutex<TemplateEngineCache>>>,
+    state: State<'_, Arc<Service>>,
     app: AppHandle,
     payload: RenderPayload,
 ) -> Result<PreviewOutcome, String> {
     let t0 = std::time::Instant::now();
-    let prepared = template::prepare_render(
-        &payload.markdown,
-        &payload.options,
-        templates_dir(&app).as_deref(),
-        payload.document_path.as_deref().map(Path::new),
-    )?;
-    let t1 = std::time::Instant::now();
+    let request = render_request(&payload);
+    let service = state.inner().clone();
 
-    let outcome = with_cached_engine(&state, &prepared, "Preview task", |engine, inputs| {
-        engine::compile_preview_with_inputs(engine, inputs).map_err(|e| e.to_string())
-    })
-    .await?;
+    let detail = tauri::async_runtime::spawn_blocking(move || service.render_detailed(&request))
+        .await
+        .map_err(|e| format!("Preview task failed: {e}"))?
+        .map_err(|e| e.to_string())?;
 
-    let t2 = std::time::Instant::now();
-    let svg_bytes: usize = outcome.pages.iter().map(|p| p.len()).sum();
-
-    // Timing breakdown at debug level (RUST_LOG=debug) — `setup` is the
-    // frontend payload handling, `render` is the cached engine compile + SVG
-    // generation. If `render` is small but the user still sees ~1s, the cost
-    // is on the frontend (IPC/DOM), not the backend.
-    debug!(
-        setup_ms = t1.duration_since(t0).as_millis(),
-        render_ms = t2.duration_since(t1).as_millis(),
-        total_ms = t2.duration_since(t0).as_millis(),
-        "render timing"
+    let svg_bytes: usize = detail.result.pages.iter().map(|page| page.len()).sum();
+    debug!(total_ms = t0.elapsed().as_millis(), "render timing (core)");
+    info!(
+        pages = detail.result.pages.len(),
+        svg_bytes, "preview rendered"
     );
-
-    // Summary at info level — return value contains full SVG pages (too large
-    // for `#[instrument] ret`).
-    info!(pages = outcome.pages.len(), svg_bytes, "preview rendered");
 
     // Prewarm hint for the next launch (§7.5): the static source just
     // rendered with is what the next launch's first render will want, so
     // setup() can build that engine under the boot loader. Saved on a
     // background thread, and a no-op while the file already holds it.
     let hint = crate::prewarm::PrewarmHint {
-        static_source: prepared.static_source.clone(),
-        fonts: prepared.fonts.clone(),
+        static_source: detail.engine.static_source,
+        fonts: detail.engine.fonts,
     };
     tauri::async_runtime::spawn_blocking(move || {
         use tauri::Manager as _;
@@ -206,9 +151,9 @@ pub async fn render_preview(
     });
 
     Ok(PreviewOutcome {
-        pages: outcome.pages,
-        warnings: merged_warnings(prepared.warnings.clone(), outcome.warnings),
-        doc: prepared.doc.clone(),
+        pages: detail.result.pages,
+        warnings: detail.result.warnings,
+        doc: detail.result.doc,
         seq: payload.seq,
     })
 }
@@ -217,34 +162,30 @@ pub async fn render_preview(
 /// in `directory`) → write the PDF atomically → open it in the system viewer
 /// (§7.4, M4).
 ///
-/// Shares the M6 engine cache with the preview, so exporting does not re-scan
-/// fonts. Compilation and the blocking save dialog run off the UI thread.
+/// Shares the core engine cache with the preview, so exporting does not
+/// re-scan fonts. Compilation and the blocking save dialog run off the UI
+/// thread.
 #[tauri::command]
 #[instrument(skip(app, state, payload), fields(title, directory))]
 pub async fn export_pdf(
     app: AppHandle,
-    state: State<'_, Arc<Mutex<TemplateEngineCache>>>,
+    state: State<'_, Arc<Service>>,
     payload: RenderPayload,
     title: String,
     directory: Option<String>,
 ) -> Result<FileOutcome, String> {
-    let prepared = template::prepare_render(
-        &payload.markdown,
-        &payload.options,
-        templates_dir(&app).as_deref(),
-        payload.document_path.as_deref().map(Path::new),
-    )?;
+    let request = render_request(&payload);
+    let service = state.inner().clone();
+    let pdf = tauri::async_runtime::spawn_blocking(move || service.render_pdf_detailed(&request))
+        .await
+        .map_err(|e| format!("Export task failed: {e}"))?
+        .map_err(|e| e.to_string())?;
 
     // `FileOutcome` has no warnings channel (§8.4), so converter warnings
     // are logged rather than surfaced in the UI on export.
-    if !prepared.warnings.is_empty() {
-        warn!(warnings = ?prepared.warnings, "converter warnings during export");
+    if !pdf.warnings.is_empty() {
+        warn!(warnings = ?pdf.warnings, "converter warnings during export");
     }
-
-    let pdf = with_cached_engine(&state, &prepared, "Export task", |engine, inputs| {
-        engine::compile_pdf_with_inputs(engine, inputs).map_err(|e| e.to_string())
-    })
-    .await?;
 
     let Some(path) = pick_save_path(
         &app,
@@ -258,7 +199,13 @@ pub async fn export_pdf(
         return Ok(FileOutcome::canceled());
     };
 
-    files::write_atomically(&path, &pdf).map_err(|e| format!("Failed to write PDF: {e}"))?;
+    let service = state.inner().clone();
+    let write_path = path.clone();
+    let bytes = pdf.bytes;
+    tauri::async_runtime::spawn_blocking(move || service.write_document(&write_path, &bytes))
+        .await
+        .map_err(|e| format!("Export write task failed: {e}"))?
+        .map_err(|e| format!("Failed to write PDF: {e}"))?;
     open_in_viewer(&path);
     info!(path = %path.display(), "export PDF saved");
     Ok(FileOutcome::saved(&path))
@@ -309,9 +256,10 @@ fn pick_save_path(
 /// Open a Markdown file via the system dialog (starting in `directory` when
 /// given) and read it (§7.4, M4).
 #[tauri::command]
-#[instrument(skip(app), fields(directory))]
+#[instrument(skip(app, state), fields(directory))]
 pub async fn open_markdown(
     app: AppHandle,
+    state: State<'_, Arc<Service>>,
     directory: Option<String>,
 ) -> Result<FileOutcome, String> {
     let Some(path) = pick_open_path(
@@ -325,8 +273,9 @@ pub async fn open_markdown(
         return Ok(FileOutcome::canceled());
     };
 
-    let content =
-        std::fs::read_to_string(&path).map_err(|e| format!("Failed to read file: {e}"))?;
+    let content = state
+        .read_document(&path)
+        .map_err(|e| format!("Failed to read file: {e}"))?;
     info!(path = %path.display(), "markdown opened");
     Ok(FileOutcome::opened(&path, content))
 }
@@ -334,9 +283,10 @@ pub async fn open_markdown(
 /// Save Markdown via a "Save As…" dialog: the filename defaults to
 /// `<title>.md` in `directory`, and the write is atomic (§7.4, M4).
 #[tauri::command]
-#[instrument(skip(app, content), fields(title, directory))]
+#[instrument(skip(app, state, content), fields(title, directory))]
 pub async fn save_markdown(
     app: AppHandle,
+    state: State<'_, Arc<Service>>,
     content: String,
     title: String,
     directory: Option<String>,
@@ -353,8 +303,14 @@ pub async fn save_markdown(
         return Ok(FileOutcome::canceled());
     };
 
-    files::write_atomically(&path, content.as_bytes())
-        .map_err(|e| format!("Failed to save: {e}"))?;
+    let service = state.inner().clone();
+    let write_path = path.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        service.write_document(&write_path, content.as_bytes())
+    })
+    .await
+    .map_err(|e| format!("Save task failed: {e}"))?
+    .map_err(|e| format!("Failed to save: {e}"))?;
     info!(path = %path.display(), "markdown saved");
     Ok(FileOutcome::saved(&path))
 }
@@ -366,8 +322,11 @@ pub async fn save_markdown(
 pub fn get_initial_directory() -> String {
     // `$HOME` on POSIX, `%USERPROFILE%` on Windows; the dialog falls back to
     // the OS default when neither is set.
-    let home = files::home_directory(std::env::var_os("HOME"), std::env::var_os("USERPROFILE"));
-    files::initial_directory(std::env::var_os("XDG_DATA_HOME"), home)
+    let home = markdown_blathy_core::files::home_directory(
+        std::env::var_os("HOME"),
+        std::env::var_os("USERPROFILE"),
+    );
+    markdown_blathy_core::files::initial_directory(std::env::var_os("XDG_DATA_HOME"), home)
         .to_string_lossy()
         .into_owned()
 }
@@ -379,7 +338,7 @@ pub fn get_initial_directory() -> String {
 #[tauri::command]
 #[instrument]
 pub fn open_external(url: String) -> Result<(), String> {
-    if !crate::links::is_browser_url(&url) {
+    if !markdown_blathy_core::links::is_browser_url(&url) {
         return Err(format!(
             "Blocked external link: only http(s) URLs can be opened in the browser — got: {url}"
         ));
@@ -393,9 +352,15 @@ pub fn open_external(url: String) -> Result<(), String> {
 /// are rewritten in canonical form and any keys this app does not manage are
 /// preserved verbatim. Synchronous and CPU-trivial, so no `spawn_blocking`.
 #[tauri::command]
-#[instrument(skip(markdown))]
-pub fn update_front_matter(markdown: String, patch: crate::markdown::frontmatter::Patch) -> String {
-    crate::markdown::frontmatter::apply_patch(&markdown, &patch)
+#[instrument(skip(state, markdown, patch))]
+pub fn update_front_matter(
+    state: State<'_, Arc<Service>>,
+    markdown: String,
+    patch: Patch,
+) -> Result<String, String> {
+    state
+        .update_front_matter(&markdown, &patch)
+        .map_err(|e| e.to_string())
 }
 
 /// Validate a custom `.typ` template by compiling a probe document (§7.4, M5).
@@ -407,35 +372,24 @@ pub fn update_front_matter(markdown: String, patch: crate::markdown::frontmatter
 ///
 /// The probe engine is built exactly as the real render will use it (current
 /// options + system fonts + the template's own folder, M6), and — since that
-/// build already paid the font scan — the engine is handed to the cache under
+/// build already paid the font scan — the service hands it to the cache under
 /// its static source. The next `render_preview` for the same template finds it
 /// ready, so the document re-renders immediately instead of re-scanning.
 #[tauri::command]
 #[instrument(skip(state), fields(path, options))]
 pub async fn validate_template(
-    state: State<'_, Arc<Mutex<TemplateEngineCache>>>,
+    state: State<'_, Arc<Service>>,
     path: String,
     options: RenderOptions,
 ) -> Result<serde_json::Value, String> {
-    let user_source = std::fs::read_to_string(&path)
-        .map_err(|e| format!("Failed to read template at {path}: {e}"))?;
-    let template_source = format!("{}\n\n{user_source}", template::DEFAULT_TEMPLATE);
-    let static_source = template::build_static_source(&template_source, &options)?;
-    // Font scan runs on the same bytes already read above — one file read.
-    let fonts = engine::font_options_for_source(&path, &user_source);
-
-    let cache = state.inner().clone();
+    let service = state.inner().clone();
+    let template_path = PathBuf::from(path);
     tauri::async_runtime::spawn_blocking(move || {
-        let mut cache = cache
-            .lock()
-            .map_err(|_| "engine cache lock poisoned".to_string())?;
-        let engine = template::build_and_probe(&static_source, &fonts)?;
-        cache.prime(&static_source, &fonts, engine);
-        Ok::<(), String>(())
+        service.validate_template(&template_path, &options)
     })
     .await
     .map_err(|e| format!("Validation task failed: {e}"))?
-    .map_err(|e| format!("Template at {path} rejected: {e}"))?;
+    .map_err(|e| e.to_string())?;
     Ok(serde_json::json!({ "valid": true }))
 }
 
@@ -443,28 +397,9 @@ pub async fn validate_template(
 /// `main.typ`), ordered with the default `light` first. The frontend maps the
 /// ids to display labels and shows them in the template selector (§8.6).
 #[tauri::command]
-#[instrument]
-pub fn list_templates(app: AppHandle) -> Result<Vec<String>, String> {
-    let dir =
-        templates_dir(&app).ok_or_else(|| "Bundled templates are not available".to_string())?;
-    let mut names = Vec::new();
-    for entry in std::fs::read_dir(&dir)
-        .map_err(|e| format!("Failed to list templates at {}: {e}", dir.display()))?
-    {
-        let entry = entry.map_err(|e| format!("Failed to read template entry: {e}"))?;
-        if entry.path().join("main.typ").is_file() {
-            if let Some(name) = entry.file_name().to_str() {
-                names.push(name.to_string());
-            }
-        }
-    }
-    names.sort();
-    // `light` is the default, so it leads the selector regardless of sort order.
-    if let Some(pos) = names.iter().position(|n| n == "light") {
-        let light = names.remove(pos);
-        names.insert(0, light);
-    }
-    Ok(names)
+#[instrument(skip(state))]
+pub fn list_templates(state: State<'_, Arc<Service>>) -> Result<Vec<String>, String> {
+    state.list_templates().map_err(|e| e.to_string())
 }
 
 /// `Some(&str)` for a non-empty string, else `None` — used to skip
@@ -500,7 +435,7 @@ fn open_in_viewer(path: &Path) {
 #[cfg(test)]
 mod tests {
     use super::{DocMeta, FileOutcome, PreviewOutcome, RenderPayload};
-    use crate::options::{FeatureFlags, Flavor, Margins, Paper, TextAlign};
+    use markdown_blathy_core::options::{FeatureFlags, Flavor, Margins, Paper, TextAlign};
 
     /// Pins the IPC contract: the exact JSON the frontend `lib/api.js` sends
     /// (§8.4) must deserialize into `RenderPayload`.
@@ -533,33 +468,6 @@ mod tests {
         );
         assert_eq!(payload.options.text_align, TextAlign::Left);
         assert!(payload.options.template_path.is_none());
-    }
-
-    /// Converter warnings come first, engine warnings after — the order the
-    /// StatusBar lists them in (§3, §9).
-    #[test]
-    fn merged_warnings_chains_converter_then_engine() {
-        let merged = super::merged_warnings(
-            vec!["duplicate heading ID".into()],
-            vec!["font warning".into()],
-        );
-        assert_eq!(
-            merged,
-            vec![
-                "duplicate heading ID".to_string(),
-                "font warning".to_string()
-            ]
-        );
-
-        // Either side may be empty.
-        assert_eq!(
-            super::merged_warnings(Vec::new(), vec!["engine".into()]),
-            vec!["engine".to_string()]
-        );
-        assert_eq!(
-            super::merged_warnings(vec!["converter".into()], Vec::new()),
-            vec!["converter".to_string()]
-        );
     }
 
     /// Pins the IPC contract: `PreviewOutcome` serializes back to the

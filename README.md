@@ -30,7 +30,7 @@ npm run tauri dev
 npm run tauri build
 ```
 
-Output lands in `src-tauri/target/release/bundle/`.
+Output lands in `target/release/bundle/`.
 
 ## Tech stack
 

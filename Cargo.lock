@@ -2726,18 +2726,21 @@ dependencies = [
 name = "markdown-blathy"
 version = "0.1.0"
 dependencies = [
+ "markdown-blathy-core",
+]
+
+[[package]]
+name = "markdown-blathy-core"
+version = "0.1.0"
+dependencies = [
  "comemo",
  "comrak",
- "open",
  "regex",
  "serde",
  "serde_json",
  "strsim",
- "tauri",
- "tauri-build",
- "tauri-plugin-dialog",
+ "thiserror 2.0.19",
  "tracing",
- "tracing-subscriber",
  "tylax",
  "typst",
  "typst-as-lib",
@@ -2746,6 +2749,21 @@ dependencies = [
  "typst-pdf",
  "typst-svg",
  "url",
+]
+
+[[package]]
+name = "markdown-blathy-tauri"
+version = "0.1.0"
+dependencies = [
+ "markdown-blathy-core",
+ "open",
+ "serde",
+ "serde_json",
+ "tauri",
+ "tauri-build",
+ "tauri-plugin-dialog",
+ "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]

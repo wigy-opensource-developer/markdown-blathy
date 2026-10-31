@@ -1,0 +1,13 @@
+[package]
+name = "markdown-blathy"
+description = "Command-line interface for MarkdownBláthy"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "markdown-blathy"
+path = "src/main.rs"
+
+[dependencies]
+markdown-blathy-core = { path = "../markdown-blathy-core" }

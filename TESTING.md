@@ -121,7 +121,7 @@ mkdir -p /tmp/runtime-root && chmod 700 /tmp/runtime-root
 env XDG_RUNTIME_DIR=/tmp/runtime-root \
   xvfb-run -a dbus-run-session -- \
   env WEBKIT_DISABLE_COMPOSITING_MODE=1 \
-  timeout 15s src-tauri/target/release/markdown-blathy
+  timeout 15s target/release/MarkdownBláthy
 ```
 
 Exit status `124` means the app stayed alive until `timeout` stopped it — the
@@ -177,7 +177,7 @@ e2e/
 ```
 
 Add a `test:e2e` npm script that builds/uses
-`src-tauri/target/release/markdown-blathy` and fails if the binary is absent.
+`target/release/MarkdownBláthy` and fails if the binary is absent.
 Use stable `data-testid` selectors, wait for observable state (SVG page count,
 window title, status text) rather than fixed sleeps, and reset localStorage
 between specs.

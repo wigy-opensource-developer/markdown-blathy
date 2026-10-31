@@ -398,7 +398,7 @@ mod tests {
 
     const TMPL: &str = "#let article(paper: \"a4\", margin-x: 20mm, margin-y: 25mm, text-align: \"left\", title: none, author: none, body) = { body }";
 
-    /// The bundled templates live next to the crate in `src-tauri/templates/`;
+    /// The bundled templates live next to the core crate in `templates/`;
     /// tests read them from there (the same files shipped as resources).
     fn test_templates_dir() -> PathBuf {
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("templates")

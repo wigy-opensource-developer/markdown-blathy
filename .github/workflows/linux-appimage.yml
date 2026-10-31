@@ -42,7 +42,7 @@ jobs:
       - name: rust cache
         uses: Swatinem/rust-cache@v2
         with:
-          workspaces: src-tauri
+          workspaces: .
 
       # appimagetool's --appimage-extract-and-run extracts the AppImage to a
       # temp dir, but the extracted binary still needs libfuse at runtime.

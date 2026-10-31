@@ -3,33 +3,46 @@
 ## 1. Module structure
 
 ```
-src-tauri/src/
-├── main.rs              # calls markdown_blathy_lib::run()
-├── lib.rs               # init_logging(), tauri::Builder, command registration
-├── commands.rs          # #[tauri::command] wrappers, TemplateEngineCache
-├── options.rs           # Flavor, Paper, TextAlign, Margins, RenderOptions
-├── markdown/
-│   ├── mod.rs
-│   ├── convert.rs       # comrak AST → Typst markup (the core)
-│   └── escape.rs        # Typst markup escaping helpers
-└── typst_engine/
-    ├── mod.rs
-    ├── template.rs      # prelude embedding, compose(), build_static_source, render_inputs
-    └── engine.rs        # TypstEngine build, compile → SVG pages / PDF
-
-src-tauri/templates/     # bundled templates (bundled as Tauri resources)
-├── README.md            # the prelude ↔ template contract
-├── prelude.typ          # shared helper defaults (NOT a template)
-├── light/main.typ       # default light theme
-├── dark/main.typ
-└── obsidian/main.typ (+ assets/corner.svg)
+Cargo.toml               # workspace root (shared version + members)
+Cargo.lock
+crates/
+├── markdown-blathy-core/    # headless: no tauri, no dialogs, no viewer
+│   ├── src/
+│   │   ├── lib.rs
+│   │   ├── service.rs       # high-level ops shared by GUI/CLI, engine cache
+│   │   ├── error.rs         # CoreError
+│   │   ├── options.rs       # Flavor, Paper, TextAlign, Margins, RenderOptions
+│   │   ├── files.rs         # atomic I/O, path helpers
+│   │   ├── links.rs         # external-link policy
+│   │   ├── engine_cache.rs  # per-static-source TypstEngine cache
+│   │   ├── markdown/        # comrak AST → Typst markup
+│   │   └── typst_engine/    # template composition, build, SVG/PDF compile
+│   ├── templates/           # bundled templates (Tauri resource source)
+│   │   ├── README.md        # the prelude ↔ template contract
+│   │   ├── prelude.typ      # shared helper defaults (NOT a template)
+│   │   ├── light/main.typ   # default light theme
+│   │   ├── dark/main.typ
+│   │   └── obsidian/main.typ (+ assets/corner.svg)
+│   └── fonts/               # embedded DejaVu faces
+└── markdown-blathy/         # CLI binary (depends on core, not on tauri)
+    └── src/main.rs
+src-tauri/                   # Tauri app adapter
+├── src/
+│   ├── main.rs              # calls markdown_blathy_lib::run()
+│   ├── lib.rs               # logging, Service setup, prewarm, commands
+│   ├── commands.rs          # #[tauri::command] serialization/dialog adapters
+│   └── prewarm.rs           # GUI lifecycle prewarm hint
+├── capabilities/
+├── icons/
+├── tauri.conf.json
+└── Cargo.toml               # package markdown-blathy-tauri
 ```
 
-**Design rule:** `markdown/` and `typst_engine/` must not import `tauri`. The `#[tauri::command]` functions are thin, serialization-only wrappers.
+**Design rule:** `markdown-blathy-core` must not import `tauri`, `tauri-plugin-dialog` or `open`. The `#[tauri::command]` functions are thin serialization/dialog adapters over `Service`.
 
 ## 2. Dependencies
 
-### Rust (`src-tauri/Cargo.toml`)
+### Rust (`crates/markdown-blathy-core/Cargo.toml`)
 
 ```toml
 comrak = { version = "0.54", default-features = false, features = ["bon", "attributes"] }
@@ -38,9 +51,11 @@ typst-layout = "0.15"       # PagedDocument type (re-exported as typst_layout::P
 typst-pdf = "0.15"
 typst-svg = "0.15"
 typst-as-lib = "0.16"       # TypstWorld wrapper (pins typst ^0.15)
-tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tracing = "0.1"             # core emits events
+thiserror = "2"             # CoreError derives
 ```
+
+The Tauri adapter (`src-tauri/Cargo.toml`) adds `tauri`, `tauri-plugin-dialog`, `open`, `serde`/`serde_json` and `tracing-subscriber`.
 
 **Version pinning rule:** `typst`, `typst-layout`, `typst-pdf`, `typst-svg` must all share the same minor version (released in lockstep). Pin exact versions in `Cargo.lock`. **MSRV:** Typst 0.15 requires Rust ≥ 1.92.
 
@@ -109,7 +124,7 @@ pub struct PreviewOutcome { pub pages: Vec<String>, pub warnings: Vec<String>, p
 ### Math dialect
 
 Markdown math is authored in TeX/LaTeX notation; Typst is only the renderer.
-`src-tauri/src/markdown/math.rs` owns the dialect boundary and is independent
+`crates/markdown-blathy-core/src/markdown/math.rs` owns the dialect boundary and is independent
 of comrak/Tauri. It wraps `tylax` (LaTeX math parser + converter):
 
 ```rust
