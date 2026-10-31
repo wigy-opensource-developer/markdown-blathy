@@ -42,6 +42,20 @@ src-tauri/                   # Tauri app adapter
 
 **Design rule:** `markdown-blathy-core` must not import `tauri`, `tauri-plugin-dialog` or `open`. The `#[tauri::command]` functions are thin serialization/dialog adapters over `Service`.
 
+### Frontend command layer
+
+```
+src/lib/
+├── commands.js      # command ids/labels/keys/canRun/run; platform key resolution
+├── platform.js      # mac/windows/linux detection
+└── keyboard.js      # window-level capture-phase dispatcher + Escape fallback
+```
+
+Toolbar buttons, keyboard shortcuts and future native menu entries all call
+`dispatch(commandId)`. `App.jsx` supplies the command context (file handlers,
+popover openers, error dismisser, editor focus) and never duplicates shortcut
+logic in individual components. CodeMirror keeps only its editing keymap.
+
 ## 2. Dependencies
 
 ### Rust (`crates/markdown-blathy-core/Cargo.toml`)
@@ -66,6 +80,27 @@ The Tauri adapter (`src-tauri/Cargo.toml`) adds `tauri`, `tauri-plugin-dialog`, 
 React 19 + Mantine 8, bundled by Vite. `@codemirror/lang-markdown` added explicitly (transitive via `@uiw/react-codemirror`). Fonts via `@fontsource` (self-hosted, no external requests). Fontsource's WOFF-1.0 fallbacks are stripped by the `woff2Only()` Vite plugin (`scripts/woff2-only.mjs`): every Tauri 2 webview (WebView2, WKWebView, WebKitGTK 2.38+) supports WOFF2, so the fallbacks are ~4 MB of never-fetched bundle; `scripts/check-bundle.mjs` (run by `check.sh`) fails the build if they reappear.
 
 ## 3. API contracts
+
+### `Service` — shared high-level operations
+
+```rust
+pub struct Service { /* engine cache + injected templates dir */ }
+
+impl Service {
+    pub fn render(&self, req: &RenderRequest) -> Result<RenderResult, CoreError>;
+    pub fn render_pdf(&self, req: &RenderRequest) -> Result<Vec<u8>, CoreError>;
+    pub fn read_document(&self, path: &Path) -> Result<String, CoreError>;
+    pub fn write_document(&self, path: &Path, content: &[u8]) -> Result<(), CoreError>;
+    pub fn update_front_matter(&self, md: &str, patch: &Patch) -> Result<String, CoreError>;
+    pub fn read_front_matter(&self, md: &str) -> Result<DocMeta, CoreError>;
+    pub fn validate_template(&self, path: &Path, options: &RenderOptions) -> Result<(), CoreError>;
+    pub fn list_templates(&self) -> Result<Vec<String>, CoreError>;
+}
+```
+
+The GUI adapter adds `seq`, dialogs, viewer launching and `canceled`; the CLI
+adds exit codes and stdout/file routing. `CoreError` derives `thiserror::Error`
+and remains user-presentable.
 
 ### `render_inputs` — per-render sys.inputs
 

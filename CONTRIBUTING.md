@@ -55,6 +55,16 @@ npm run tauri build
 
 Output lands in `target/release/bundle/`.
 
+The Linux deb/rpm bundles install both the GUI and the `markdown-blathy` CLI.
+Build the CLI before the Tauri bundle when testing packages:
+
+```bash
+cargo build -p markdown-blathy --release
+npm run tauri -- build --bundles deb
+```
+
+The AppImage, macOS and Windows packages contain only the GUI.
+
 ## How to release a new version
 
 Preparation happens **manually on the dev machine**; CI only packages the
@@ -151,6 +161,11 @@ the AppImage, the macOS `.dmg` and the Windows installers — each in its own
 reusable workflow — and opens an **unpublished** GitHub release with the
 artifacts and git-cliff release notes for the tag. Review the notes and
 assets, then publish manually — nothing is public until you do.
+
+The deb/rpm workflows build `markdown-blathy` first and include it under
+`/usr/bin`, together with the shared templates under
+`/usr/share/markdown-blathy/templates`. AppImage, macOS and Windows remain
+GUI-only by design; do not add the CLI to those packages.
 
 The macOS and Windows bundles are unsigned by default (Gatekeeper/SmartScreen
 warn on first launch). Adding the `APPLE_*` secrets (macOS) or a code-signing

@@ -16,6 +16,8 @@ The name commemorates Ottó Titusz Bláthy who among his other inventions became
 - **Heading IDs** — every heading gets an automatic anchor link; override with `{#custom-id}` syntax.
 - **Footnotes** — inline references with note blocks at the bottom; clickable markers in the preview.
 - **Settings persist** — your flavor, paper size, margins, and template are saved between sessions.
+- **CLI** — scriptable PDF export, front-matter edits, template validation and GUI launching (deb/rpm packages; see [docs/CLI.md](docs/CLI.md)).
+- **Keyboard shortcuts** — New/Open/Save/Export and settings from the focused window; see [docs/KEYBOARD.md](docs/KEYBOARD.md).
 
 ## Quick start
 
@@ -30,7 +32,22 @@ npm run tauri dev
 npm run tauri build
 ```
 
-Output lands in `target/release/bundle/`.
+Output lands in `target/release/bundle/`. The Linux deb/rpm bundles include
+both the GUI and the `markdown-blathy` CLI; the AppImage, macOS and Windows
+packages are GUI-only.
+
+Build the CLI alone with:
+
+```bash
+cargo build -p markdown-blathy --release
+```
+
+## Documentation
+
+- [Command-line interface](docs/CLI.md) — export, front matter, templates and
+  `gui` launcher behavior.
+- [Keyboard reference](docs/KEYBOARD.md) — application shortcuts.
+- [Implementation guide](IMPLEMENTATION.md) and [test plan](TESTING.md).
 
 ## Tech stack
 
