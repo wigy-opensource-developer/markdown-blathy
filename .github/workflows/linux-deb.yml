@@ -49,6 +49,12 @@ jobs:
       - name: install npm dependencies
         run: npm ci
 
+      # The deb/rpm bundles install the CLI alongside the GUI (PLAN §8.1).
+      # Build it in the workspace target dir first; the bundler's custom
+      # files map picks up target/release/markdown-blathy.
+      - name: build CLI
+        run: cargo build -p markdown-blathy --release --locked
+
       # Tauri's beforeBuildCommand (npm run build) covers the frontend.
       - name: build .deb
         run: npm run tauri -- build --bundles deb

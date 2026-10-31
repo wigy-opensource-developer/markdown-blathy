@@ -53,7 +53,17 @@
     ],
     "linux": {
       "deb": {
-        "section": "editors"
+        "section": "editors",
+        "files": {
+          "/usr/bin/markdown-blathy": "../target/release/markdown-blathy",
+          "/usr/share/markdown-blathy/templates": "../crates/markdown-blathy-core/templates"
+        }
+      },
+      "rpm": {
+        "files": {
+          "/usr/bin/markdown-blathy": "../target/release/markdown-blathy",
+          "/usr/share/markdown-blathy/templates": "../crates/markdown-blathy-core/templates"
+        }
       }
     }
   }
