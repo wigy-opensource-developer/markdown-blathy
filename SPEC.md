@@ -204,7 +204,7 @@ See **IMPLEMENTATION.md** for acceptance criteria and test plans per milestone.
    | `linux-deb.yml` | `.deb` | ubuntu-24.04 |
    | `linux-rpm.yml` | `.rpm` | ubuntu-24.04 |
    | `linux-appimage.yml` | `.AppImage` (via `scripts/build-appimage.py`) | ubuntu-24.04 |
-   | `macos.yml` | universal `.dmg` (unsigned unless signing secrets are set) | macos-14 |
+   | `macos.yml` | universal `.dmg` (unsigned unless signing secrets are set) | macos-15 |
    | `windows.yml` | NSIS `.exe` + `.msi` (unsigned unless signing secrets are set) | windows-latest |
 
    The shared GTK/WebKitGTK package list lives in

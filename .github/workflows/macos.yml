@@ -28,7 +28,11 @@ concurrency:
 jobs:
   build:
     if: github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/master'
-    runs-on: macos-14
+    # Pin the image rather than use `macos-latest`, which drifts. macOS 14 was
+    # retired on 2026-11-02 (actions/runner-images#13518), so macos-15 is the
+    # oldest arm64 image still supported; macos-26 also works. The universal
+    # build below cross-compiles the x86_64 slice, so an arm64 runner is fine.
+    runs-on: macos-15
     env:
       # `if:` cannot read secrets directly, so reduce "is signing configured?"
       # to a plain boolean here.
