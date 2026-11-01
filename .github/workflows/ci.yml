@@ -1,11 +1,17 @@
 name: CI
 
-# Runs on every push and pull request.
+# Runs on every push to a branch and on every pull request.
 # Uses ``pull_request`` (not ``pull_request_target``) so fork PRs
 # have zero access to repository secrets (§7.3).
+#
+# Tag pushes are excluded on purpose: a release tag points at a commit that
+# CI has already checked, and the tag-triggered release.yml builds the
+# artifacts, so running the gate again on the tag buys nothing. Listing
+# ``branches`` is what excludes tags — an unfiltered ``push:`` runs on both.
 
 on:
   push:
+    branches: ["**"]
   pull_request:
 
 # Cancel in-progress runs when a new commit is pushed to the same branch/PR.
