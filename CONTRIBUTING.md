@@ -91,6 +91,10 @@ M8 task 2), so they must be in the tagged commit.
 VERSION=v0.2.0   # tags are v-prefixed
 ```
 
+The release commit belongs on `master`: the manual (`workflow_dispatch`) runs
+of the per-platform workflows are restricted to `refs/heads/master`, so a tag
+cut on a side branch leaves the Actions tab rebuilding the previous version.
+
 ### 2. Refresh the screenshots
 
 Screenshots always come from the real binary — a mocked `render_preview`
@@ -149,11 +153,28 @@ Keep these in sync:
 ### 5. Commit, tag, push
 
 ```bash
+# Tags are lightweight on purpose — see the note below the block.
 git add -A
 git commit -m "chore(release): $VERSION"
-git tag -a "$VERSION" -m "$VERSION"
-git push --follow-tags
+git tag "$VERSION"
+git push origin master
+git push origin "$VERSION"
 ```
+
+Project tags are **lightweight** (`git tag v1.0.0`), not annotated and not
+signed: there is no project key, and an unsigned annotated tag only adds a
+tagger and a message, not any verifiable provenance. Two consequences to keep
+in mind:
+
+- **Push the tag by name, never with `--follow-tags`.** `--follow-tags` only
+  pushes *annotated* tags, so a lightweight tag silently stays local, the
+  `v*` tag push never happens and the release workflow never runs. `git push
+  --tags` also works but pushes every local tag — avoid it when an unreleased
+  tag exists.
+- **Plain `git describe` ignores lightweight tags** (it errors with "No
+  annotated tags can describe" and points at `--tags`). Use `git describe
+  --tags` to identify a build. git-cliff, the `v*` trigger and
+  `action-gh-release` do not care about the tag object type.
 
 ### 6. Review the draft release
 
