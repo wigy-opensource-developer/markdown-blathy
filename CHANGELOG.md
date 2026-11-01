@@ -1,4 +1,47 @@
 Changelog
+## [1.0.0] - 2026-11-01
+
+### 🚀 Features
+
+- *(engine)* Resolve images relative to document and template folders
+- *(templates)* Bundled templates, selector data, and document-relative images
+- *(ui)* Template selector lists bundled themes and sends document path
+- *(templates)* Enlarge and fade the obsidian corner graph
+- *(ui)* Light/system/dark UI theme with a toolbar selector
+- *(ui)* Icon-only theme control with labelled menu entries
+- *(cli)* Add command-line interface
+- *(ui)* Add command registry and app-wide shortcuts
+- *(gui)* Open the document passed on startup
+
+### 🐛 Bug Fixes
+
+- *(appimage)* Bundle templates in the AppDir and mark M8 complete
+- *(templates)* Deduplicate the TOC comment in prelude.typ
+- *(appimage)* Rebuild when frontend/templates/config change
+- *(appimage)* Place bundled templates in the product-name resource dir
+- *(packaging)* Align the binary name with the resource dir name
+- *(ui)* Make the theme control match the toolbar buttons
+- *(template)* Drop an unused binding and pin the Rust toolchain
+- *(deps)* Upgrade vite and vitest past the published advisories
+- *(ci)* Keep macOS signing optional
+- Backticks can be typed on macos with HU keyboard
+
+### 📚 Documentation
+
+- *(templates)* Document the prelude-template contract in templates/README.md
+- Document CLI, packaging, GUI launcher and shortcuts
+
+### 🚜 Refactor
+
+- Split default.typ into shared prelude and light template
+- Split Tauri dialog and path adapters
+
+### ⚙️ Miscellaneous Tasks
+
+- Per-platform build workflows, reusable from the release
+- Extracted Tauri-free core crate
+- *(packaging)* Ship CLI in deb and rpm bundles
+
 ## [0.1.0] - 2026-10-23
 
 ### 🚀 Features

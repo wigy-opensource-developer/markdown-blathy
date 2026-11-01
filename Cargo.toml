@@ -9,6 +9,6 @@ resolver = "2"
 # Single source of truth for the release version. The Tauri config and the
 # AppStream metainfo must be bumped together with this value.
 [workspace.package]
-version = "0.1.0"
+version = "1.0.0"
 edition = "2021"
 license = "GPL-3.0-or-later"

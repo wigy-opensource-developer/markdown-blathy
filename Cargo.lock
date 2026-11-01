@@ -2826,7 +2826,7 @@ dependencies = [
 
 [[package]]
 name = "markdown-blathy"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "clap",
  "markdown-blathy-core",
@@ -2836,7 +2836,7 @@ dependencies = [
 
 [[package]]
 name = "markdown-blathy-core"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "comemo",
  "comrak",
@@ -2858,7 +2858,7 @@ dependencies = [
 
 [[package]]
 name = "markdown-blathy-tauri"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "markdown-blathy-core",
  "open",

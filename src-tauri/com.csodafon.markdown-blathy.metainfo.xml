@@ -52,20 +52,35 @@
 
   <screenshots>
     <screenshot type="default">
-      <image>https://raw.githubusercontent.com/wigy-opensource-developer/tauri-md-editor/v0.1.0/docs/screenshots/main-screen.png</image>
+      <image>https://raw.githubusercontent.com/wigy-opensource-developer/markdown-blathy/v1.0.0/docs/screenshots/main-screen.png</image>
       <caption>The main editing window with the live preview</caption>
     </screenshot>
     <screenshot>
-      <image>https://raw.githubusercontent.com/wigy-opensource-developer/tauri-md-editor/v0.1.0/docs/screenshots/document-options.png</image>
+      <image>https://raw.githubusercontent.com/wigy-opensource-developer/markdown-blathy/v1.0.0/docs/screenshots/main-screen-dark.png</image>
+      <caption>The same document with the dark UI theme</caption>
+    </screenshot>
+    <screenshot>
+      <image>https://raw.githubusercontent.com/wigy-opensource-developer/markdown-blathy/v1.0.0/docs/screenshots/document-options.png</image>
       <caption>Document settings: title, author, flavor, and language</caption>
     </screenshot>
     <screenshot>
-      <image>https://raw.githubusercontent.com/wigy-opensource-developer/tauri-md-editor/v0.1.0/docs/screenshots/page-settings.png</image>
+      <image>https://raw.githubusercontent.com/wigy-opensource-developer/markdown-blathy/v1.0.0/docs/screenshots/page-settings.png</image>
       <caption>Page settings: paper size, margins, and template</caption>
     </screenshot>
   </screenshots>
 
   <releases>
+    <release version="1.0.0" date="2026-11-01">
+      <description>
+        <p>First stable release.</p>
+        <p>
+          Command-line interface for scriptable PDF export, front-matter edits
+          and template validation, bundled document templates with a template
+          selector, images resolved relative to the document, light/system/dark
+          UI themes, and app-wide keyboard shortcuts.
+        </p>
+      </description>
+    </release>
     <release version="0.1.0" date="2026-10-23">
       <description>
         <p>Initial release.</p>
