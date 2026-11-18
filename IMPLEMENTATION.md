@@ -33,7 +33,11 @@ src-tauri/                   # Tauri app adapter
 │   ├── commands.rs          # #[tauri::command] serialization/dialog adapters
 │   ├── dialogs.rs           # system open/save dialog helpers
 │   ├── paths.rs             # Tauri resource/app-data path resolution
-│   └── prewarm.rs           # GUI lifecycle prewarm hint
+│   ├── prewarm.rs           # GUI lifecycle prewarm hint
+│   ├── recovery.rs          # crash-recovery snapshots (one slot per document)
+│   ├── requests.rs          # app-request event + one-shot close gate
+│   ├── startup.rs           # consumed-once CLI document slot
+│   └── document.rs          # exact PathBuf of the open document
 ├── capabilities/
 ├── icons/
 ├── tauri.conf.json
@@ -74,6 +78,25 @@ a one-shot `CloseGate` so the resulting close passes through.
 Commands involved: `frontend_ready`, `open_pending_document`, `confirm_close`
 (adapter layer, `src-tauri/src/commands.rs`); the event payload and the close
 gate live in `src-tauri/src/requests.rs`.
+
+### Crash-recovery snapshots (M9 task 4)
+
+While the document is dirty the frontend calls `save_recovery_snapshot` right
+away and then every 30 s. `src-tauri/src/recovery.rs` stores one JSON slot per
+document — keyed by FNV-1a over the exact path bytes, or `untitled` — written
+atomically, so an interrupted write keeps the previous snapshot. The slot holds
+the markdown plus the exact path bytes (not the lossy display string), so a
+restored non-UTF-8 document still saves in place correctly.
+
+`take_recovery` returns the newest snapshot younger than 7 days whose content
+differs from the file on disk, and prunes identical/stale/corrupt slots.
+`restore_recovery` reads it, points `DocumentPath` at the exact file, and
+returns the text; `discard_recovery` deletes it. A snapshot is otherwise kept
+after restore — it is removed only by an explicit Discard, by `clear_recovery`
+(the unsaved-changes prompt's Discard), or by the save commands, so a second
+crash recovers the same edits. At startup the prompt is offered only while the
+editor is pristine; after a CLI open it may only offer that document's own
+snapshot (`lib/recovery.js`).
 
 ## 2. Dependencies
 
@@ -403,13 +426,15 @@ src/
 │   ├── Preview.jsx   # SVG pages from render_preview
 │   ├── StatusBar.jsx # page count / warnings / Ready (inert while a modal is open)
 │   ├── ErrorBanner.jsx
-│   └── UnsavedChangesModal.jsx # Save/Discard/Cancel prompt over the shared modal treatment
+│   ├── UnsavedChangesModal.jsx # Save/Discard/Cancel prompt over the shared modal treatment
+│   └── RecoveryPrompt.jsx      # startup Restore/Discard prompt for a crash snapshot
 ├── lib/
 │   ├── api.js        # invoke() wrappers (one per command)
 │   ├── settings.js   # localStorage-backed settings + applyOptionsPatch
 │   ├── docSettings.js # Document popover form → front-matter patch (tri-state hyphenate)
 │   ├── previewFreeze.js # modal-preview freeze: pause/owe + stash + one catch-up render on close
 │   ├── unsavedGuard.js # dirty guard: defer Close/New/Open, resume after a successful save
+│   ├── recovery.js   # autosave cadence + pristine/expected-path decision
 │   └── presets.js    # PAPERS, MARGIN_PRESETS, ALIGNS, FEATURES tables
 └── styles.css        # app-level layout only
 ```

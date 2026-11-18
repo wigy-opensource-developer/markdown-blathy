@@ -18,8 +18,14 @@ use tracing::{debug, info, instrument, warn};
 
 use crate::dialogs::{pick_open_path, pick_save_path};
 use crate::document::DocumentPath;
+use crate::recovery::{self, RecoverySnapshot, RestoredSnapshot};
 use crate::requests::{AppRequest, CloseGate, APP_REQUEST_EVENT};
 use crate::startup::StartupDocument;
+
+/// The recovery-snapshot directory inside the app-data dir (M9 task 4).
+fn recovery_dir(app: &AppHandle) -> Option<PathBuf> {
+    crate::paths::app_data_dir(app).map(|dir| dir.join("recovery"))
+}
 
 /// Frontend → Rust payload for `render_preview` (§7.4).
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -269,18 +275,20 @@ pub fn open_pending_document(
 }
 
 /// The frontend is listening for `app-request` (M9): emit the pending open
-/// request, if any. Emitting again on every call is harmless — the request is
-/// only consumed by `open_pending_document`, so a listener torn down between
-/// registration and this call cannot lose the document.
+/// request, if any, and report whether one was sent. Emitting again on every
+/// call is harmless — the request is only consumed by
+/// `open_pending_document`, so a listener torn down between registration and
+/// this call cannot lose the document.
 #[tauri::command]
 #[instrument(skip(pending))]
-pub fn frontend_ready(window: Window, pending: State<'_, StartupDocument>) -> Result<(), String> {
-    if pending.has() {
-        window
-            .emit(APP_REQUEST_EVENT, AppRequest::Open)
-            .map_err(|e| format!("Failed to notify the frontend: {e}"))?;
+pub fn frontend_ready(window: Window, pending: State<'_, StartupDocument>) -> Result<bool, String> {
+    if !pending.has() {
+        return Ok(false);
     }
-    Ok(())
+    window
+        .emit(APP_REQUEST_EVENT, AppRequest::Open)
+        .map_err(|e| format!("Failed to notify the frontend: {e}"))?;
+    Ok(true)
 }
 
 /// The frontend approved closing the window (M9, Save/Discard): arm the
@@ -329,6 +337,10 @@ pub async fn save_markdown(
     .map_err(|e| format!("Save task failed: {e}"))?
     .map_err(|e| format!("Failed to save: {e}"))?;
     document.set(&path);
+    // The edits are on disk: the recovery snapshot (if any) is obsolete.
+    if let Some(dir) = recovery_dir(&app) {
+        let _ = recovery::clear(&dir, Some(&path));
+    }
     info!(path = %path.display(), "markdown saved");
     Ok(FileOutcome::saved(&path))
 }
@@ -343,6 +355,7 @@ pub async fn save_markdown(
 #[tauri::command]
 #[instrument(skip(state, document, content), fields(len = content.len()))]
 pub async fn save_document(
+    app: AppHandle,
     state: State<'_, Arc<Service>>,
     document: State<'_, DocumentPath>,
     content: String,
@@ -359,16 +372,101 @@ pub async fn save_document(
     .await
     .map_err(|e| format!("Save task failed: {e}"))?
     .map_err(|e| format!("Failed to save: {e}"))?;
+    // The edits are on disk: the recovery snapshot (if any) is obsolete.
+    if let Some(dir) = recovery_dir(&app) {
+        let _ = recovery::clear(&dir, Some(&path));
+    }
     info!(path = %path.display(), "markdown saved in place");
     Ok(FileOutcome::saved(&path))
 }
 
-/// Forget the remembered document path (M9). Called by New so a later plain
-/// save cannot overwrite the file that was open before.
+/// Write (or replace) the recovery snapshot for the open document (M9 task
+/// 4). Called by the frontend's autosave timer while the document is dirty;
+/// the exact path comes from the backend, so non-UTF-8 filenames snapshot
+/// under the right key. Best-effort: a missing app-data directory disables
+/// recovery instead of failing the edit.
+#[tauri::command]
+#[instrument(skip(document, markdown), fields(len = markdown.len()))]
+pub fn save_recovery_snapshot(
+    app: AppHandle,
+    document: State<'_, DocumentPath>,
+    markdown: String,
+) -> Result<(), String> {
+    let Some(dir) = recovery_dir(&app) else {
+        return Ok(());
+    };
+    let path = document.get();
+    recovery::save(&dir, path.as_deref(), &markdown)
+        .map_err(|e| format!("Failed to write the recovery snapshot: {e}"))
+}
+
+/// The newest recovery snapshot worth offering, if any (M9 task 4). Never
+/// deletes the snapshot: only an explicit discard or a successful save does.
+#[tauri::command]
+#[instrument]
+pub fn take_recovery(app: AppHandle) -> Option<RecoverySnapshot> {
+    recovery_dir(&app).and_then(|dir| recovery::take(&dir))
+}
+
+/// Restore a snapshot into the editor (M9 task 4): the backend remembers the
+/// exact path for save-in-place and returns the text plus the display path.
+#[tauri::command]
+#[instrument(skip(document), fields(id))]
+pub fn restore_recovery(
+    app: AppHandle,
+    document: State<'_, DocumentPath>,
+    id: String,
+) -> Result<RestoredSnapshot, String> {
+    let Some(dir) = recovery_dir(&app) else {
+        return Err("Recovery is unavailable: no app-data directory".into());
+    };
+    let restored = recovery::restore(&dir, &id)
+        .map_err(|e| format!("Failed to read the recovery snapshot: {e}"))?
+        .ok_or_else(|| "The recovery snapshot is no longer available".to_string())?;
+    match &restored.exact {
+        Some(path) => document.set(path),
+        None => document.clear(),
+    }
+    info!(id, "recovery snapshot restored");
+    Ok(restored)
+}
+
+/// The user chose Discard in the recovery prompt (M9 task 4).
+#[tauri::command]
+#[instrument(fields(id))]
+pub fn discard_recovery(app: AppHandle, id: String) -> Result<(), String> {
+    if let Some(dir) = recovery_dir(&app) {
+        recovery::discard(&dir, &id)
+            .map_err(|e| format!("Failed to discard the recovery snapshot: {e}"))?;
+    }
+    Ok(())
+}
+
+/// Drop the snapshots for the open document and the untitled slot (M9 task
+/// 4): the user chose Discard in the unsaved-changes prompt, so those edits
+/// must not be offered again at the next launch.
 #[tauri::command]
 #[instrument(skip(document))]
-pub fn forget_document(document: State<'_, DocumentPath>) {
+pub fn clear_recovery(app: AppHandle, document: State<'_, DocumentPath>) -> Result<(), String> {
+    if let Some(dir) = recovery_dir(&app) {
+        let path = document.get();
+        recovery::clear(&dir, path.as_deref())
+            .map_err(|e| format!("Failed to clear the recovery snapshot: {e}"))?;
+    }
+    Ok(())
+}
+
+/// Forget the remembered document path (M9). Called by New so a later plain
+/// save cannot overwrite the file that was open before; the old document's
+/// recovery snapshot is dropped too, because New discards those edits.
+#[tauri::command]
+#[instrument(skip(app, document))]
+pub fn forget_document(app: AppHandle, document: State<'_, DocumentPath>) {
+    let previous = document.get();
     document.clear();
+    if let Some(dir) = recovery_dir(&app) {
+        let _ = recovery::clear(&dir, previous.as_deref());
+    }
     debug!("document path cleared");
 }
 

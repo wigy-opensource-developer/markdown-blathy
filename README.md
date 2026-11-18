@@ -17,6 +17,7 @@ The name commemorates Ottó Titusz Bláthy who among his other inventions became
 - **Heading IDs** — every heading gets an automatic anchor link; override with `{#custom-id}` syntax.
 - **Footnotes** — inline references with note blocks at the bottom; markers link to the notes in the exported PDF (preview links activate once typst grows paged anchors).
 - **Settings persist** — your flavor, paper size, margins, and template are saved between sessions.
+- **Crash recovery** — while a document has unsaved edits it is snapshotted every 30 s; after a crash the next launch offers to restore the newest version.
 - **CLI** — scriptable PDF export, front-matter edits, template validation and GUI launching (deb/rpm packages; see [docs/CLI.md](docs/CLI.md)).
 - **Keyboard shortcuts** — New/Open/Save/Export and settings from the focused window; see [docs/KEYBOARD.md](docs/KEYBOARD.md).
 

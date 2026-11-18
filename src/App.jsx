@@ -17,13 +17,15 @@ import { mantineTheme } from "./lib/mantineTheme.js";
 import { resolveColorScheme } from "./lib/uiTheme.js";
 import { SAMPLE_DOC } from "./lib/sample.js";
 import { docTitle, parentDirectory, safeFileName, windowTitle } from "./lib/title.js";
-import { createUnsavedGuard } from "./lib/unsavedGuard.js";
+import { createUnsavedGuard, CHOICE_DISCARD } from "./lib/unsavedGuard.js";
+import { AUTOSAVE_INTERVAL_MS, recoveryDecision } from "./lib/recovery.js";
 import Toolbar from "./components/Toolbar.jsx";
 import Editor from "./components/Editor.jsx";
 import Preview from "./components/Preview.jsx";
 import StatusBar from "./components/StatusBar.jsx";
 import ErrorBanner from "./components/ErrorBanner.jsx";
 import UnsavedChangesModal from "./components/UnsavedChangesModal.jsx";
+import RecoveryPrompt from "./components/RecoveryPrompt.jsx";
 
 export default function App() {
   // Settings are loaded once from localStorage (M5, §8.6) and are the single
@@ -96,6 +98,16 @@ export default function App() {
   // request; `confirmBusy` covers a Save that opens the Save As dialog.
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [confirmBusy, setConfirmBusy] = useState(false);
+  // Crash recovery (M9 task 4): the snapshot offered at startup, if any.
+  const [recovery, setRecovery] = useState(null);
+  const recoveryOpenRef = useRef(false);
+  // True until the user changes anything: only a pristine editor may be
+  // replaced by a recovery snapshot (otherwise the snapshot waits for the
+  // next launch instead of eating their work).
+  const pristineRef = useRef(true);
+  // The startup recovery check must run at most once per mount (StrictMode
+  // re-runs effects in development).
+  const recoveryCheckedRef = useRef(false);
   // Command-controlled popover/menu state: the registry opens them, their own
   // targets toggle them, and Mantine reports outside clicks/Escape back here.
   const [pageSettingsOpen, setPageSettingsOpen] = useState(false);
@@ -229,15 +241,92 @@ export default function App() {
   }
 
   /** A choice in the unsaved-changes prompt; the buttons stay disabled while
-   *  a Save runs (it may open the Save As dialog). */
+   *  a Save runs (it may open the Save As dialog). Discard also drops the
+   *  recovery snapshot: the edits are gone by the user's own choice. */
   const chooseUnsaved = useCallback(async (choice) => {
     setConfirmBusy(true);
     try {
+      if (choice === CHOICE_DISCARD) {
+        await api.clearRecovery().catch(() => {});
+      }
       await guardRef.current.choose(choice);
     } finally {
       setConfirmBusy(false);
     }
   }, []);
+
+  // The startup check and the close helper are referenced by callbacks that
+  // are declared earlier (the request listener, Open/New); they reach the
+  // latest values through these refs. Declared here, before the assignment
+  // during render.
+  const checkRecoveryRef = useRef(() => {});
+  const closeRecoveryRef = useRef(() => {});
+
+  /** Startup recovery check (M9 task 4). Runs at most once per mount and
+   *  only *offers* the snapshot — nothing is applied without a choice.
+   *  `expectedPath` comes from a CLI-opened document: only that document's
+   *  own snapshot may be offered then. */
+  const checkRecovery = useCallback(
+    async (expectedPath = null) => {
+      if (recoveryCheckedRef.current) return;
+      recoveryCheckedRef.current = true;
+      try {
+        const snapshot = await api.takeRecovery();
+        const decision = recoveryDecision({
+          snapshot,
+          pristine: pristineRef.current,
+          expectedPath,
+        });
+        if (decision !== "offer") return;
+        recoveryOpenRef.current = true;
+        setRecovery(snapshot);
+        enterModal();
+      } catch {
+        // Recovery is best-effort: an unreadable store just skips the prompt.
+      }
+    },
+    [enterModal]
+  );
+
+  const closeRecovery = useCallback(() => {
+    if (!recoveryOpenRef.current) return; // already closed
+    recoveryOpenRef.current = false;
+    setRecovery(null);
+    leaveModal();
+  }, [leaveModal]);
+
+  checkRecoveryRef.current = checkRecovery;
+  closeRecoveryRef.current = closeRecovery;
+
+  const handleRestoreRecovery = useCallback(async () => {
+    const snapshot = recovery;
+    if (!snapshot) return;
+    try {
+      const res = await api.restoreRecovery(snapshot.id);
+      setFilePath(res.path);
+      setMarkdown(res.markdown);
+      setDirty(true);
+      pristineRef.current = false;
+      if (res.path) setDirectory(parentDirectory(res.path));
+      requestPreviewNow({ markdown: res.markdown, documentPath: res.path });
+    } catch (err) {
+      setError(String(err));
+    } finally {
+      closeRecovery();
+    }
+  }, [recovery, requestPreviewNow, closeRecovery]);
+
+  const handleDiscardRecovery = useCallback(async () => {
+    const snapshot = recovery;
+    if (!snapshot) return;
+    try {
+      await api.discardRecovery(snapshot.id);
+    } catch (err) {
+      setError(String(err));
+    } finally {
+      closeRecovery();
+    }
+  }, [recovery, closeRecovery]);
 
   /** Popover opened → freeze; closed → the freeze catches up once. */
   const handleSettingsOpenChange = useCallback(
@@ -280,7 +369,10 @@ export default function App() {
           unlisten = null;
           return;
         }
-        await api.frontendReady();
+        const pending = await api.frontendReady();
+        // A CLI document opens through its own request; it runs the recovery
+        // check on completion (and only for its own snapshot).
+        if (!pending) checkRecoveryRef.current();
       } catch (err) {
         if (!cancelled) setError(String(err));
       }
@@ -333,12 +425,31 @@ export default function App() {
 
   const handleEditorChange = useCallback(
     (value) => {
+      pristineRef.current = false;
       setMarkdown(value);
       setDirty(true);
       requestPreview();
     },
     [requestPreview]
   );
+
+  // Autosave (M9 task 4): while dirty, snapshot immediately and then every
+  // 30 s. Failures are ignored — autosave must never interrupt editing; the
+  // backend drops the snapshot after a successful save.
+  useEffect(() => {
+    if (!dirty) return;
+    let cancelled = false;
+    const snapshot = () => {
+      if (cancelled) return;
+      api.saveRecoverySnapshot(docRef.current.markdown).catch(() => {});
+    };
+    snapshot();
+    const timer = setInterval(snapshot, AUTOSAVE_INTERVAL_MS);
+    return () => {
+      cancelled = true;
+      clearInterval(timer);
+    };
+  }, [dirty]);
 
   // Apply a partial options patch; switching the margin preset maps it to
   // millimetre margins. An unknown preset value keeps the current margins.
@@ -380,6 +491,9 @@ export default function App() {
   // Open a document result into the editor state (dialog or CLI request).
   const openDocument = useCallback(
     (res) => {
+      // Keep the offered snapshot for the next launch; the document the user
+      // asked for must not sit under a recovery prompt for another file.
+      closeRecoveryRef.current();
       setFilePath(res.path);
       setMarkdown(res.content);
       setDirty(false);
@@ -395,6 +509,7 @@ export default function App() {
   const doNew = useCallback(
     () =>
       runFileAction(async () => {
+        closeRecoveryRef.current();
         await api.forgetDocument();
         setFilePath(null);
         setMarkdown(SAMPLE_DOC);
@@ -423,6 +538,7 @@ export default function App() {
         const res = await api.openPendingDocument();
         if (api.isCanceled(res)) return;
         openDocument(res);
+        checkRecoveryRef.current(res.path);
       }),
     [runFileAction, openDocument]
   );
@@ -540,6 +656,7 @@ export default function App() {
       runFileAction(async () => {
         const updated = await api.updateFrontMatter(markdown, patch);
         setMarkdown(updated);
+        pristineRef.current = false;
         setDirty(true);
         // Reflect the written settings immediately: the catch-up render is
         // deferred while the popover is open and may fail on unrelated
@@ -694,6 +811,12 @@ export default function App() {
           open={confirmOpen}
           busy={confirmBusy}
           onChoose={chooseUnsaved}
+        />
+        <RecoveryPrompt
+          snapshot={recovery}
+          onRestore={handleRestoreRecovery}
+          onDiscard={handleDiscardRecovery}
+          onClose={closeRecovery}
         />
       </div>
     </MantineProvider>

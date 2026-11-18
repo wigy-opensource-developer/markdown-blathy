@@ -63,6 +63,16 @@
 | a long chemical formula in a table cell wraps inside the margin; the control (with `break-long` disabled) overflows | integration | high |
 | TOC entries keep the rendered heading markup without double escaping (`_Bold_`, not literal backslashes) | unit | medium |
 
+### `recovery.rs` (unit, M9)
+
+| Test | Type | Priority |
+|---|---|---|
+| save → take offers the snapshot for a missing file; identical-to-disk and stale slots are pruned | unit | high |
+| untitled snapshots are always offered; the newest of several slots wins | unit | high |
+| restore preserves the exact path bytes and keeps the snapshot for a second crash | unit | high |
+| discard removes one slot; clear removes the document and untitled slots | unit | high |
+| ids from the frontend cannot escape the recovery directory (traversal/invalid shapes) | unit | high |
+
 ### Frontend (Vitest, pure modules)
 
 | Test | Module | Priority |
@@ -81,6 +91,8 @@
 | FLAVORS, PAPERS, MARGIN_PRESETS, ALIGNS have expected values | presets.js | high |
 | Document patch diffs the form; hyphenate is tri-state (absent = keep, null = clear, boolean = set); feature maps compare order-insensitively | docSettings.js | high |
 | Preview freeze defers renders while the Document popover is open, stashes finished ones, and owes exactly one catch-up render on close | previewFreeze.js | high |
+| Dirty guard resumes the interrupted Close/New/Open only after a successful save; cancel/failed save keeps the request pending | unsavedGuard.js | high |
+| Recovery is offered only to a pristine editor, and only for the opened document's own snapshot | recovery.js | high |
 | stripWoffFallbacks drops WOFF-1.0 `src` alternatives (any order, quotes) and keeps woff2 | scripts/woff2-only.mjs | medium |
 
 Build guard: `npm run check:bundle` (in `./check.sh`, after the build) fails when

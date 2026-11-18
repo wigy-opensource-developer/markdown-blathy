@@ -34,6 +34,7 @@ User-visible behaviour:
 4. The document style is provided by a bundled Typst template (light / dark / obsidian), selectable from the Page settings popover; users may also supply their own `.typ` template. Templates share a helper prelude and are composed on top of it — see `crates/markdown-blathy-core/templates/README.md` for the contract.
 5. Compile warnings (e.g. unknown fonts) are surfaced in the UI, not swallowed.
 6. A companion CLI, `markdown-blathy`, reuses the same core for scriptable PDF export, front-matter editing, template validation and launching the GUI with a document; the Linux deb/rpm packages ship it next to the GUI ([docs/CLI.md](docs/CLI.md)).
+7. Unsaved work is protected: the window title marks edits, closing the window (or New/Open) asks Save/Discard/Cancel, and a dirty document is snapshotted every ~30 s; after a crash the next launch offers the newest snapshot (Restore/Discard) instead of losing it.
 
 ## 2. Non-goals (v1)
 

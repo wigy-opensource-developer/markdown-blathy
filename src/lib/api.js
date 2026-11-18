@@ -45,7 +45,9 @@ export const openMarkdown = (directory) =>
 export const openPendingDocument = () => invoke("open_pending_document");
 
 /** Announce that the `app-request` listener is registered (M9): the backend
- *  then emits the pending open request. Safe to call more than once. */
+ *  then emits the pending open request. Resolves to `true` when one was sent
+ *  — the caller then skips the startup recovery check (the open completes
+ *  first and runs its own check). Safe to call more than once. */
 export const frontendReady = () => invoke("frontend_ready");
 
 /** Approve the close the frontend just guarded (M9): the backend arms a
@@ -89,8 +91,7 @@ export const openExternal = (url) => invoke("open_external", { url });
 export const updateFrontMatter = (markdown, patch) =>
   invoke("update_front_matter", { markdown, patch });
 
-/** Validate a custom `.typ` template by probe-compiling it (§7.4, M5/M6).
- *  The current options are sent along so validation builds the exact engine
+/** Validate a custom `.typ` template by probe-compiling it (§7.4, M5/M6). *  The current options are sent along so validation builds the exact engine
  *  the next render will use — and hands it to the cache, making the first
  *  render instant. Resolves with `{ valid: true }`; rejects with the
  *  offending path and the compile diagnostics when the template is broken. */
@@ -104,6 +105,25 @@ export const validateTemplate = (path, options) =>
  *  with the default `light` first. The frontend maps ids to display labels
  *  via `templateLabel()`. */
 export const listTemplates = () => invoke("list_templates");
+
+/** Autosave (M9 task 4): write the recovery snapshot for the open document.
+ *  The backend uses its exact `PathBuf` as the slot key; best-effort. */
+export const saveRecoverySnapshot = (markdown) =>
+  invoke("save_recovery_snapshot", { markdown });
+
+/** The newest recovery snapshot worth offering, or null. Does not delete it. */
+export const takeRecovery = () => invoke("take_recovery");
+
+/** Restore a snapshot: resolves with `{ markdown, path }` and points
+ *  save-in-place at the exact original file. */
+export const restoreRecovery = (id) => invoke("restore_recovery", { id });
+
+/** Delete a snapshot after the user chose Discard. */
+export const discardRecovery = (id) => invoke("discard_recovery", { id });
+
+/** Drop the current document's snapshot (and the untitled one) — called when
+ *  the user discards unsaved changes. */
+export const clearRecovery = () => invoke("clear_recovery");
 
 /** True when a command result means the user dismissed a dialog — the UI
  *  treats these as silent no-ops (§9). */

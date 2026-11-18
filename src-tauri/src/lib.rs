@@ -17,6 +17,7 @@ pub mod dialogs;
 pub mod document;
 pub mod paths;
 pub mod prewarm;
+pub mod recovery;
 pub mod requests;
 pub mod startup;
 
@@ -92,6 +93,11 @@ pub fn run(startup_file: Option<PathBuf>) {
             commands::save_markdown,
             commands::save_document,
             commands::forget_document,
+            commands::save_recovery_snapshot,
+            commands::take_recovery,
+            commands::restore_recovery,
+            commands::discard_recovery,
+            commands::clear_recovery,
             commands::export_pdf,
             commands::get_initial_directory,
             commands::open_external,

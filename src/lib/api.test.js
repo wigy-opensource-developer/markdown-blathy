@@ -15,7 +15,9 @@ const { getCurrentWindow } = vi.hoisted(() => {
 vi.mock("@tauri-apps/api/window", () => ({ getCurrentWindow }));
 
 import {
+  clearRecovery,
   confirmClose,
+  discardRecovery,
   exportPdf,
   forgetDocument,
   frontendReady,
@@ -26,9 +28,12 @@ import {
   openMarkdown,
   openPendingDocument,
   renderPreview,
+  restoreRecovery,
   saveDocument,
   saveMarkdown,
+  saveRecoverySnapshot,
   setWindowTitle,
+  takeRecovery,
   updateFrontMatter,
   validateTemplate,
 } from "./api.js";
@@ -102,6 +107,36 @@ describe("confirmClose", () => {
   it("invokes confirm_close after the dirty guard approved", () => {
     confirmClose();
     expect(invoke).toHaveBeenCalledWith("confirm_close");
+  });
+});
+
+describe("recovery commands (M9 task 4)", () => {
+  it("saveRecoverySnapshot sends the markdown; the backend owns the key", () => {
+    saveRecoverySnapshot("# Draft");
+    expect(invoke).toHaveBeenCalledWith("save_recovery_snapshot", {
+      markdown: "# Draft",
+    });
+  });
+
+  it("takeRecovery asks for the newest snapshot", () => {
+    takeRecovery();
+    expect(invoke).toHaveBeenCalledWith("take_recovery");
+  });
+
+  it("restoreRecovery and discardRecovery address one snapshot by id", () => {
+    restoreRecovery("0123456789abcdef");
+    expect(invoke).toHaveBeenCalledWith("restore_recovery", {
+      id: "0123456789abcdef",
+    });
+    discardRecovery("0123456789abcdef");
+    expect(invoke).toHaveBeenCalledWith("discard_recovery", {
+      id: "0123456789abcdef",
+    });
+  });
+
+  it("clearRecovery drops the current document's snapshot", () => {
+    clearRecovery();
+    expect(invoke).toHaveBeenCalledWith("clear_recovery");
   });
 });
 
