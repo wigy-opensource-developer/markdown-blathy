@@ -290,7 +290,7 @@ pub fn open_pending_document(
 /// `open_pending_document`, so a listener torn down between registration and
 /// this call cannot lose the document.
 #[tauri::command]
-#[instrument(skip(pending))]
+#[instrument(skip(window, pending))]
 pub fn frontend_ready(window: Window, pending: State<'_, StartupDocument>) -> Result<bool, String> {
     if !pending.has() {
         return Ok(false);
@@ -305,7 +305,7 @@ pub fn frontend_ready(window: Window, pending: State<'_, StartupDocument>) -> Re
 /// one-shot gate and close. The resulting `CloseRequested` sees the allowance
 /// and does not ask again.
 #[tauri::command]
-#[instrument(skip(gate))]
+#[instrument(skip(window, gate))]
 pub fn confirm_close(window: Window, gate: State<'_, CloseGate>) -> Result<(), String> {
     gate.allow();
     window
@@ -363,7 +363,7 @@ pub async fn save_markdown(
 /// Errors when no document path is known (a new, untitled document); the
 /// frontend then runs Save As instead.
 #[tauri::command]
-#[instrument(skip(state, document, content), fields(len = content.len()))]
+#[instrument(skip(app, state, document, content), fields(len = content.len()))]
 pub async fn save_document(
     app: AppHandle,
     state: State<'_, Arc<Service>>,
@@ -396,7 +396,7 @@ pub async fn save_document(
 /// under the right key. Best-effort: a missing app-data directory disables
 /// recovery instead of failing the edit.
 #[tauri::command]
-#[instrument(skip(document, markdown), fields(len = markdown.len()))]
+#[instrument(skip(app, document, markdown), fields(len = markdown.len()))]
 pub fn save_recovery_snapshot(
     app: AppHandle,
     document: State<'_, DocumentPath>,
@@ -413,15 +413,19 @@ pub fn save_recovery_snapshot(
 /// The newest recovery snapshot worth offering, if any (M9 task 4). Never
 /// deletes the snapshot: only an explicit discard or a successful save does.
 #[tauri::command]
-#[instrument]
+#[instrument(skip(app))]
 pub fn take_recovery(app: AppHandle) -> Option<RecoverySnapshot> {
-    recovery_dir(&app).and_then(|dir| recovery::take(&dir))
+    let snapshot = recovery_dir(&app).and_then(|dir| recovery::take(&dir));
+    if let Some(snapshot) = &snapshot {
+        info!(id = %snapshot.id, saved_at = snapshot.saved_at, "recovery snapshot offered");
+    }
+    snapshot
 }
 
 /// Restore a snapshot into the editor (M9 task 4): the backend remembers the
 /// exact path for save-in-place and returns the text plus the display path.
 #[tauri::command]
-#[instrument(skip(document), fields(id))]
+#[instrument(skip(app, document), fields(id))]
 pub fn restore_recovery(
     app: AppHandle,
     document: State<'_, DocumentPath>,
@@ -443,7 +447,7 @@ pub fn restore_recovery(
 
 /// The user chose Discard in the recovery prompt (M9 task 4).
 #[tauri::command]
-#[instrument(fields(id))]
+#[instrument(skip(app), fields(id))]
 pub fn discard_recovery(app: AppHandle, id: String) -> Result<(), String> {
     if let Some(dir) = recovery_dir(&app) {
         recovery::discard(&dir, &id)
