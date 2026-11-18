@@ -53,6 +53,11 @@ ignore = [
   "RUSTSEC-2026-0194",
   "RUSTSEC-2026-0195",
   #
+  # chrono 0.4 is unmaintained (status-only, no known vulnerability). It is
+  # the time dependency of tylax (LaTeX math) and typst-as-lib; neither
+  # offers a release without it, and chrono handles no untrusted input here.
+  "RUSTSEC-2026-0543",
+  #
   # LaTeX math translator (tylax -> mitex). `fxhash` is unmaintained but has
   # no vulnerability. `rkyv` 0.7.46 is used by mitex-spec only to read its
   # *static, build-time-generated* command-spec archive; this app never
