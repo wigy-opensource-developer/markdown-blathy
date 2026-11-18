@@ -93,6 +93,7 @@
 | Preview freeze defers renders while the Document popover is open, stashes finished ones, and owes exactly one catch-up render on close | previewFreeze.js | high |
 | Dirty guard resumes the interrupted Close/New/Open only after a successful save; cancel/failed save keeps the request pending | unsavedGuard.js | high |
 | Recovery is offered only to a pristine editor, and only for the opened document's own snapshot | recovery.js | high |
+| Export warnings name the PDF, count/list the warnings and offer an explicit dismiss | ExportWarnings.jsx | medium |
 | stripWoffFallbacks drops WOFF-1.0 `src` alternatives (any order, quotes) and keeps woff2 | scripts/woff2-only.mjs | medium |
 
 Build guard: `npm run check:bundle` (in `./check.sh`, after the build) fails when

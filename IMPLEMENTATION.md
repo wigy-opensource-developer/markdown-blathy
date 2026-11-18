@@ -160,6 +160,13 @@ pub fn compose(template_source: &str, args: &TemplateArgs) -> String
 
 Assembles `{template_source}\n\n#article(paper: "a4", margin-x: 20mm, margin-y: 25mm, text-align: "left", title: sys.inputs.title, author: sys.inputs.author)[\n#eval(sys.inputs.body, mode: "markup", scope: (<helpers>))\n]`. The `{:?}` formatter on `paper`/`text_align` yields a valid Typst string literal for ASCII values. `title`/`author`/`body` travel per render via `sys.inputs`, so the static source never contains the markdown body; the body is `eval`'d in markup mode inside a content block — never interpolated into template source.
 
+### `FileOutcome` — dialog-bearing command result
+
+Serializes as `{ path, content?, canceled?, warnings? }`. Success omits
+`canceled`; a dismissed dialog is exactly `{ canceled: true }`. `warnings`
+is export-only (M9 task 5): compile warnings returned with the written PDF,
+shown by the UI in a dismissible panel and omitted when empty.
+
 ### `PreviewOutcome`
 
 ```rust

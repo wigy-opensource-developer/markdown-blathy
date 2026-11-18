@@ -37,6 +37,9 @@ body {
   --error-bg: #fdecea;
   --error-border: #f5c6cb;
   --error-text: #8a1c1c;
+  --warn-bg: #fffbeb;
+  --warn-border: #fde68a;
+  --warn-text: #92400e;
 }
 
 [data-mantine-color-scheme="dark"] {
@@ -47,6 +50,9 @@ body {
   --error-bg: #3b1d1d;
   --error-border: #7f1d1d;
   --error-text: #fecaca;
+  --warn-bg: #3a2c12;
+  --warn-border: #a16207;
+  --warn-text: #fde68a;
 }
 
 .app {
@@ -286,4 +292,46 @@ body {
   cursor: pointer;
   color: inherit;
   padding: 2px 4px;
+}
+
+/* Post-export compile warnings (ExportWarnings.jsx, M9 task 5): the PDF was
+   written, so this is a warning card the user dismisses — not an error. */
+#export-warnings {
+  position: fixed;
+  right: 16px;
+  bottom: 44px;
+  z-index: 100;
+  max-width: min(560px, 60vw);
+  max-height: 40vh;
+  overflow: auto;
+  padding: 10px 14px;
+  background: var(--warn-bg);
+  border: 1px solid var(--warn-border);
+  border-radius: 6px;
+  color: var(--warn-text);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.2);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+#export-warnings .export-warnings-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+#export-warnings button {
+  border: none;
+  background: transparent;
+  font-size: 18px;
+  line-height: 1;
+  cursor: pointer;
+  color: inherit;
+  padding: 0 2px;
+}
+
+#export-warnings ul {
+  margin: 8px 0 0;
+  padding-left: 18px;
 }

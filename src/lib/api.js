@@ -18,8 +18,9 @@ export const renderPreview = (markdown, options, seq, documentPath = null) =>
 
 /** Export PDF: markdown + options → system save dialog (defaulting to
  *  `<title>.pdf` in `directory`) → PDF on disk, opened in the system viewer.
- *  Resolves with `{ path }` or `{ canceled: true }` (§7.4). `seq` guards
- *  preview staleness and is unused here. */
+ *  Resolves with `{ path, warnings? }` or `{ canceled: true }` (§7.4, M9
+ *  task 5); `warnings` lists compile warnings the UI shows in a dismissible
+ *  panel. `seq` guards preview staleness and is unused here. */
 export const exportPdf = (markdown, options, title, directory, documentPath = null) =>
   invoke("export_pdf", {
     payload: {

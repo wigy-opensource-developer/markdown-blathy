@@ -68,6 +68,10 @@ pub struct FileOutcome {
     pub content: Option<String>,
     #[serde(skip_serializing_if = "is_false")]
     pub canceled: bool,
+    /// Compile warnings from an export (M9 task 5). Empty for file open/save;
+    /// the UI shows them in a dismissible panel after a successful export.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub warnings: Vec<String>,
 }
 
 impl FileOutcome {
@@ -77,6 +81,7 @@ impl FileOutcome {
             path: None,
             content: None,
             canceled: true,
+            warnings: Vec::new(),
         }
     }
 
@@ -86,6 +91,7 @@ impl FileOutcome {
             path: Some(path.as_ref().to_string_lossy().into_owned()),
             content: Some(content),
             canceled: false,
+            warnings: Vec::new(),
         }
     }
 
@@ -95,6 +101,7 @@ impl FileOutcome {
             path: Some(path.as_ref().to_string_lossy().into_owned()),
             content: None,
             canceled: false,
+            warnings: Vec::new(),
         }
     }
 }
@@ -190,11 +197,12 @@ pub async fn export_pdf(
         .map_err(|e| format!("Export task failed: {e}"))?
         .map_err(|e| e.to_string())?;
 
-    // `FileOutcome` has no warnings channel (§8.4), so converter warnings
-    // are logged rather than surfaced in the UI on export.
+    // The UI lists export warnings in a dismissible panel (M9 task 5); the
+    // log keeps them available for bug reports.
     if !pdf.warnings.is_empty() {
         warn!(warnings = ?pdf.warnings, "converter warnings during export");
     }
+    let warnings = pdf.warnings;
 
     let Some(path) = pick_save_path(
         &app,
@@ -217,7 +225,9 @@ pub async fn export_pdf(
         .map_err(|e| format!("Failed to write PDF: {e}"))?;
     open_in_viewer(&path);
     info!(path = %path.display(), "export PDF saved");
-    Ok(FileOutcome::saved(&path))
+    let mut outcome = FileOutcome::saved(&path);
+    outcome.warnings = warnings;
+    Ok(outcome)
 }
 
 /// Open a Markdown file via the system dialog (starting in `directory` when
@@ -645,6 +655,7 @@ mod tests {
             path: Some("/tmp/doc.md".into()),
             content: Some("# Hi".into()),
             canceled: false,
+            warnings: Vec::new(),
         };
         let json = serde_json::to_string(&outcome).unwrap();
         assert!(json.contains("\"path\":\"/tmp/doc.md\""), "{json}");
@@ -655,6 +666,20 @@ mod tests {
         );
     }
 
+    /// An export may carry compile warnings; they serialize when present and
+    /// stay absent for a plain save (M9 task 5).
+    #[test]
+    fn file_outcome_carries_export_warnings_when_present() {
+        let mut outcome = FileOutcome::saved("/tmp/doc.pdf");
+        outcome.warnings = vec!["duplicate heading ID \"x\"".into()];
+        let json = serde_json::to_string(&outcome).unwrap();
+        assert!(json.contains("\"warnings\":["), "{json}");
+        assert!(json.contains("duplicate heading ID"), "{json}");
+
+        let plain = serde_json::to_string(&FileOutcome::saved("/tmp/doc.pdf")).unwrap();
+        assert!(!plain.contains("warnings"), "{plain}");
+    }
+
     /// A dismissed dialog serializes to exactly `{ "canceled": true }` —
     /// no `path`/`content` keys, so the frontend treats it as silent (§9).
     #[test]
@@ -663,6 +688,7 @@ mod tests {
             path: None,
             content: None,
             canceled: true,
+            warnings: Vec::new(),
         };
         let json = serde_json::to_string(&outcome).unwrap();
         assert_eq!(json, "{\"canceled\":true}");

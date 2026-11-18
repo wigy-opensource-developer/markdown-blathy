@@ -26,6 +26,7 @@ import StatusBar from "./components/StatusBar.jsx";
 import ErrorBanner from "./components/ErrorBanner.jsx";
 import UnsavedChangesModal from "./components/UnsavedChangesModal.jsx";
 import RecoveryPrompt from "./components/RecoveryPrompt.jsx";
+import ExportWarnings from "./components/ExportWarnings.jsx";
 
 export default function App() {
   // Settings are loaded once from localStorage (M5, §8.6) and are the single
@@ -98,6 +99,9 @@ export default function App() {
   // request; `confirmBusy` covers a Save that opens the Save As dialog.
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [confirmBusy, setConfirmBusy] = useState(false);
+  // Post-export compile warnings (M9 task 5): `{ path, warnings }` shown in a
+  // dismissible panel; null when the export was warning-free.
+  const [exportWarnings, setExportWarnings] = useState(null);
   // Crash recovery (M9 task 4): the snapshot offered at startup, if any.
   const [recovery, setRecovery] = useState(null);
   const recoveryOpenRef = useRef(false);
@@ -678,9 +682,15 @@ export default function App() {
           filePath
         );
         if (api.isCanceled(res)) return;
-        // The PDF is written and opened in the system viewer by the backend.
+        // The PDF is written and opened in the system viewer by the backend;
+        // compile warnings get their own dismissible panel (M9 task 5).
+        setExportWarnings(
+          res.warnings?.length
+            ? { path: res.path, warnings: res.warnings }
+            : null
+        );
       }),
-    [runFileAction, markdown, options, title, directory]
+    [runFileAction, markdown, options, title, directory, filePath]
   );
 
   const dismissError = useCallback(() => setError(null), []);
@@ -807,6 +817,10 @@ export default function App() {
           inert={modalOpen}
         />
         <ErrorBanner message={error} onClose={dismissError} />
+        <ExportWarnings
+          notice={exportWarnings}
+          onClose={() => setExportWarnings(null)}
+        />
         <UnsavedChangesModal
           open={confirmOpen}
           busy={confirmBusy}
