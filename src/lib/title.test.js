@@ -107,4 +107,9 @@ describe("windowTitle", () => {
   it("suffixes the document title with the app name", () => {
     expect(windowTitle("Sample")).toBe("Sample - MarkdownBláthy");
   });
+
+  it("marks unsaved changes with a leading dot (M9)", () => {
+    expect(windowTitle("Sample", false)).toBe("Sample - MarkdownBláthy");
+    expect(windowTitle("Sample", true)).toBe("• Sample - MarkdownBláthy");
+  });
 });

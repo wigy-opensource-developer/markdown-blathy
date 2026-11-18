@@ -48,13 +48,32 @@ src-tauri/                   # Tauri app adapter
 src/lib/
 ├── commands.js      # command ids/labels/keys/canRun/run; platform key resolution
 ├── platform.js      # mac/windows/linux detection
-└── keyboard.js      # window-level capture-phase dispatcher + Escape fallback
+├── keyboard.js      # window-level capture-phase dispatcher + Escape fallback
+└── unsavedGuard.js  # Close/New/Open request → Save/Discard/Cancel state machine
 ```
 
 Toolbar buttons, keyboard shortcuts and future native menu entries all call
 `dispatch(commandId)`. `App.jsx` supplies the command context (file handlers,
 popover openers, error dismisser, editor focus) and never duplicates shortcut
 logic in individual components. CodeMirror keeps only its editing keymap.
+
+### Backend → frontend requests
+
+The backend never asks about unsaved changes itself: it emits one Tauri event,
+`app-request`, with `{ kind: "close" | "open" }`. The frontend runs the
+request through the same dirty guard as the toolbar (M9 task 3):
+
+- `close` is emitted from the `CloseRequested` window event after
+  `api.prevent_close()`; the approved close calls `confirm_close`, which arms
+a one-shot `CloseGate` so the resulting close passes through.
+- `open` is emitted by `frontend_ready` (called once the listener is
+  registered) when a document is waiting — the CLI startup file today, a
+  forwarded second instance later. The frontend opens it through
+  `open_pending_document`, which takes the exact `PathBuf` on the backend.
+
+Commands involved: `frontend_ready`, `open_pending_document`, `confirm_close`
+(adapter layer, `src-tauri/src/commands.rs`); the event payload and the close
+gate live in `src-tauri/src/requests.rs`.
 
 ## 2. Dependencies
 
@@ -382,13 +401,15 @@ src/
 │   ├── DocumentSettings.jsx # front-matter settings popover (title/author/heading level/language/hyphenation/extensions); modal, uncontrolled draft read on Apply
 │   ├── Editor.jsx    # CodeMirror 6 via @uiw/react-codemirror
 │   ├── Preview.jsx   # SVG pages from render_preview
-│   ├── StatusBar.jsx # page count / warnings / Ready (inert while settings are open)
-│   └── ErrorBanner.jsx
+│   ├── StatusBar.jsx # page count / warnings / Ready (inert while a modal is open)
+│   ├── ErrorBanner.jsx
+│   └── UnsavedChangesModal.jsx # Save/Discard/Cancel prompt over the shared modal treatment
 ├── lib/
 │   ├── api.js        # invoke() wrappers (one per command)
 │   ├── settings.js   # localStorage-backed settings + applyOptionsPatch
 │   ├── docSettings.js # Document popover form → front-matter patch (tri-state hyphenate)
 │   ├── previewFreeze.js # modal-preview freeze: pause/owe + stash + one catch-up render on close
+│   ├── unsavedGuard.js # dirty guard: defer Close/New/Open, resume after a successful save
 │   └── presets.js    # PAPERS, MARGIN_PRESETS, ALIGNS, FEATURES tables
 └── styles.css        # app-level layout only
 ```

@@ -61,7 +61,7 @@ The full implementation specification lives in [`SPEC.md`](SPEC.md).
 
 ## Known limitations
 
-- **Legacy-codepage filenames** — on Linux systems using a non-UTF-8 locale (e.g. latin-2), a file's *name* is echoed over IPC as a lossy UTF-8 string. Contents load and saves still write to the correct file, but Save-after-Open may create a new file with a mangled name instead of overwriting. UTF-8-locale Linux, macOS and Windows are unaffected. Details in [SPEC.md](SPEC.md).
+- **Legacy-codepage filenames** — on Linux systems using a non-UTF-8 locale (e.g. latin-2), a file's *name* is echoed over IPC as a lossy UTF-8 string: the title bar and the dialogs' default paths may show replacement characters. Contents load and save-in-place still write to the exact file (the backend keeps the real `PathBuf`), so no data is lost. UTF-8-locale Linux, macOS and Windows are unaffected. Details in [SPEC.md](SPEC.md).
 
 ## License
 

@@ -24,6 +24,11 @@ impl StartupDocument {
     pub fn take(&self) -> Option<PathBuf> {
         self.path.lock().ok().and_then(|mut slot| slot.take())
     }
+
+    /// True while a startup document is waiting to be opened.
+    pub fn has(&self) -> bool {
+        self.path.lock().map(|slot| slot.is_some()).unwrap_or(false)
+    }
 }
 
 #[cfg(test)]
@@ -40,6 +45,15 @@ mod tests {
     #[test]
     fn no_startup_document_stays_none() {
         let state = StartupDocument::default();
+        assert!(!state.has());
         assert_eq!(state.take(), None);
+    }
+
+    #[test]
+    fn has_reports_a_pending_document() {
+        let state = StartupDocument::new(Some(PathBuf::from("/tmp/notes.md")));
+        assert!(state.has());
+        state.take();
+        assert!(!state.has());
     }
 }

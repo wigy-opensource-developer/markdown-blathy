@@ -7,7 +7,7 @@
 //! right file even when the echoed display path is mangled.
 //!
 //! The slot is set by every command that establishes a document path
-//! (`open_markdown`, `open_markdown_path`, `save_markdown` as Save As) and
+//! (`open_markdown`, `open_pending_document`, `save_markdown` as Save As) and
 //! cleared by `forget_document` (New), so a plain save can never fall back to
 //! a previously opened file.
 

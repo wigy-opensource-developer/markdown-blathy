@@ -15,19 +15,20 @@ const { getCurrentWindow } = vi.hoisted(() => {
 vi.mock("@tauri-apps/api/window", () => ({ getCurrentWindow }));
 
 import {
+  confirmClose,
   exportPdf,
   forgetDocument,
+  frontendReady,
   getInitialDirectory,
   isCanceled,
   listTemplates,
   openExternal,
   openMarkdown,
-  openMarkdownPath,
+  openPendingDocument,
   renderPreview,
   saveDocument,
   saveMarkdown,
   setWindowTitle,
-  takeStartupDocument,
   updateFrontMatter,
   validateTemplate,
 } from "./api.js";
@@ -83,19 +84,24 @@ describe("openMarkdown", () => {
   });
 });
 
-describe("openMarkdownPath", () => {
-  it("invokes open_markdown_path with the explicit path", () => {
-    openMarkdownPath("/home/u/notes.md");
-    expect(invoke).toHaveBeenCalledWith("open_markdown_path", {
-      path: "/home/u/notes.md",
-    });
+describe("openPendingDocument", () => {
+  it("invokes open_pending_document with no arguments (backend owns the path)", () => {
+    openPendingDocument();
+    expect(invoke).toHaveBeenCalledWith("open_pending_document");
   });
 });
 
-describe("takeStartupDocument", () => {
-  it("invokes take_startup_document with no arguments", () => {
-    takeStartupDocument();
-    expect(invoke).toHaveBeenCalledWith("take_startup_document");
+describe("frontendReady", () => {
+  it("invokes frontend_ready so the backend emits a pending open request", () => {
+    frontendReady();
+    expect(invoke).toHaveBeenCalledWith("frontend_ready");
+  });
+});
+
+describe("confirmClose", () => {
+  it("invokes confirm_close after the dirty guard approved", () => {
+    confirmClose();
+    expect(invoke).toHaveBeenCalledWith("confirm_close");
   });
 });
 

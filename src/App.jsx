@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useDebouncedCallback } from "@mantine/hooks";
 import { MantineProvider } from "@mantine/core";
 import { open } from "@tauri-apps/plugin-dialog";
+import { listen } from "@tauri-apps/api/event";
 import * as api from "./lib/api.js";
 import { marginsForPreset } from "./lib/presets.js";
 import { createPreviewFreeze } from "./lib/previewFreeze.js";
@@ -16,11 +17,13 @@ import { mantineTheme } from "./lib/mantineTheme.js";
 import { resolveColorScheme } from "./lib/uiTheme.js";
 import { SAMPLE_DOC } from "./lib/sample.js";
 import { docTitle, parentDirectory, safeFileName, windowTitle } from "./lib/title.js";
+import { createUnsavedGuard } from "./lib/unsavedGuard.js";
 import Toolbar from "./components/Toolbar.jsx";
 import Editor from "./components/Editor.jsx";
 import Preview from "./components/Preview.jsx";
 import StatusBar from "./components/StatusBar.jsx";
 import ErrorBanner from "./components/ErrorBanner.jsx";
+import UnsavedChangesModal from "./components/UnsavedChangesModal.jsx";
 
 export default function App() {
   // Settings are loaded once from localStorage (M5, §8.6) and are the single
@@ -36,6 +39,12 @@ export default function App() {
   // The concrete Mantine color scheme for the UI chrome only.
   const colorScheme = resolveColorScheme(theme, systemDark);
   const [markdown, setMarkdown] = useState(SAMPLE_DOC);
+  // True while the document has edits that are not on disk (M9): drives the
+  // window-title marker and the unsaved-changes guard. A ref mirrors it for
+  // the guard, whose callbacks outlive a render.
+  const [dirty, setDirty] = useState(false);
+  const dirtyRef = useRef(false);
+  dirtyRef.current = dirty;
   const [pages, setPages] = useState([]);
   const [warnings, setWarnings] = useState([]);
   const [error, setError] = useState(null);
@@ -72,11 +81,21 @@ export default function App() {
   // catch-up render is pending. Null until the first render lands.
   const [docMeta, setDocMeta] = useState(null);
 
-  // True while the Document settings popover is open: the app then treats it
-  // as a modal — the editor/preview/status are blurred, `inert` (for real:
-  // clicks, caret and screen readers stay out) and frozen (see `.settings-open`
-  // in styles.css and lib/previewFreeze.js).
+  // Modals (the Document settings popover and the unsaved-changes prompt)
+  // share one treatment: the editor/preview/status are blurred, `inert`
+  // (clicks, caret and screen readers stay out) and frozen (see
+  // `.modal-open` in styles.css and lib/previewFreeze.js). The counter keeps
+  // two overlapping modals from unfreezing each other early.
+  const [modalDepth, setModalDepth] = useState(0);
+  const modalDepthRef = useRef(0);
+  const modalOpen = modalDepth > 0;
+  // True while the Document settings popover is open (counted in modalDepth).
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const settingsOpenRef = useRef(false);
+  // The unsaved-changes prompt (M9 task 3): open while the guard holds a
+  // request; `confirmBusy` covers a Save that opens the Save As dialog.
+  const [confirmOpen, setConfirmOpen] = useState(false);
+  const [confirmBusy, setConfirmBusy] = useState(false);
   // Command-controlled popover/menu state: the registry opens them, their own
   // targets toggle them, and Mantine reports outside clicks/Escape back here.
   const [pageSettingsOpen, setPageSettingsOpen] = useState(false);
@@ -176,12 +195,63 @@ export default function App() {
     previewFreeze.current.requestNow();
   }, []);
 
-  /** Popover opened → freeze; closed → the freeze catches up once. */
-  const handleSettingsOpenChange = useCallback((open) => {
-    setSettingsOpen(open);
-    if (open) previewFreeze.current.open();
-    else previewFreeze.current.close();
+  /** Enter a modal interaction: the first one freezes previews and blurs the
+   *  panes; the preview freeze catches up once when the last one closes. */
+  const enterModal = useCallback(() => {
+    if (modalDepthRef.current++ === 0) previewFreeze.current.open();
+    setModalDepth(modalDepthRef.current);
   }, []);
+  const leaveModal = useCallback(() => {
+    if (modalDepthRef.current === 0) return; // unpaired notification
+    if (--modalDepthRef.current === 0) previewFreeze.current.close();
+    setModalDepth(modalDepthRef.current);
+  }, []);
+
+  // The latest save routine, for the guard's Save choice. Assigned once the
+  // file handlers below exist; the guard only calls it on a user choice.
+  const saveCurrentRef = useRef(async () => false);
+
+  // One guard for every request that may lose edits (M9 task 3): Close, New
+  // and Open all go through it. Created once — it reads live state through
+  // refs — and mirrors its pending state into React for the modal.
+  const guardRef = useRef(null);
+  if (!guardRef.current) {
+    guardRef.current = createUnsavedGuard({
+      isDirty: () => dirtyRef.current,
+      save: () => saveCurrentRef.current(),
+      perform: (action) => action(),
+      onChange: (pending) => {
+        setConfirmOpen(pending);
+        if (pending) enterModal();
+        else leaveModal();
+      },
+    });
+  }
+
+  /** A choice in the unsaved-changes prompt; the buttons stay disabled while
+   *  a Save runs (it may open the Save As dialog). */
+  const chooseUnsaved = useCallback(async (choice) => {
+    setConfirmBusy(true);
+    try {
+      await guardRef.current.choose(choice);
+    } finally {
+      setConfirmBusy(false);
+    }
+  }, []);
+
+  /** Popover opened → freeze; closed → the freeze catches up once. */
+  const handleSettingsOpenChange = useCallback(
+    (open) => {
+      // Mantine may report the same state twice (initial closed notification);
+      // only real transitions may enter/leave the shared modal treatment.
+      if (open === settingsOpenRef.current) return;
+      settingsOpenRef.current = open;
+      setSettingsOpen(open);
+      if (open) enterModal();
+      else leaveModal();
+    },
+    [enterModal, leaveModal]
+  );
 
   // Initial render of the starting document: straight away — this is boot,
   // not a keystroke. (The Rust side prewarms the default engine meanwhile.)
@@ -190,29 +260,36 @@ export default function App() {
     return () => refreshPreview.cancel();
   }, [requestPreviewNow, refreshPreview]);
 
-  // `markdown-blathy gui FILE` (or a desktop launcher with a path) stores the
-  // path in Rust before the webview boots. Consume it exactly once after mount
-  // and run the normal open-document state update. A load failure surfaces in
-  // the error banner; the sample document stays usable.
-  const startupLoadStarted = useRef(false);
+  // `app-request` carries every backend request that needs the dirty guard
+  // (M9 task 3): a window close, or a document the CLI asked to open. The
+  // handler reads the latest callbacks through a ref, so the listener is
+  // registered once. Registration precedes `frontendReady()`; the startup
+  // document is only consumed by the open command, so a listener torn down by
+  // a remount cannot lose it — the next mount asks again.
+  const requestHandlerRef = useRef(() => {});
   useEffect(() => {
-    if (startupLoadStarted.current) return;
-    startupLoadStarted.current = true;
+    let unlisten = null;
+    let cancelled = false;
     (async () => {
       try {
-        const path = await api.takeStartupDocument();
-        if (!path) return;
-        const res = await api.openMarkdownPath(path);
-        if (api.isCanceled(res)) return;
-        setFilePath(res.path);
-        setMarkdown(res.content);
-        setDirectory(parentDirectory(res.path));
-        requestPreviewNow({ markdown: res.content, documentPath: res.path });
+        unlisten = await listen("app-request", (event) => {
+          requestHandlerRef.current(event.payload);
+        });
+        if (cancelled) {
+          unlisten();
+          unlisten = null;
+          return;
+        }
+        await api.frontendReady();
       } catch (err) {
-        setError(String(err));
+        if (!cancelled) setError(String(err));
       }
     })();
-  }, [requestPreviewNow]);
+    return () => {
+      cancelled = true;
+      unlisten?.();
+    };
+  }, []);
 
   // Load the startup working directory ($XDG_DATA_HOME / $HOME) for the
   // dialogs; until it resolves the dialogs fall back to the OS default.
@@ -248,14 +325,16 @@ export default function App() {
   }, []);
 
   // Keep the OS window title in sync with the document title (§8.4) so
-  // multiple instances are distinguishable in the window manager.
+  // multiple instances are distinguishable in the window manager; the dot
+  // marks unsaved changes (M9).
   useEffect(() => {
-    api.setWindowTitle(windowTitle(title)).catch(() => {});
-  }, [title]);
+    api.setWindowTitle(windowTitle(title, dirty)).catch(() => {});
+  }, [title, dirty]);
 
   const handleEditorChange = useCallback(
     (value) => {
       setMarkdown(value);
+      setDirty(true);
       requestPreview();
     },
     [requestPreview]
@@ -298,55 +377,119 @@ export default function App() {
   // map the outcome onto state. A dismissed dialog is silent (§9); any other
   // failure surfaces in the error banner. All are stable so the memoized
   // toolbar does not re-render on every keystroke.
+  // Open a document result into the editor state (dialog or CLI request).
+  const openDocument = useCallback(
+    (res) => {
+      setFilePath(res.path);
+      setMarkdown(res.content);
+      setDirty(false);
+      setDirectory(parentDirectory(res.path));
+      requestPreviewNow({ markdown: res.content, documentPath: res.path });
+    },
+    [requestPreviewNow]
+  );
+
   // New document: clear the backend's save-in-place path first. Awaiting it
   // means a failure keeps the old document (and its path) rather than leaving
   // the UI untitled while a plain save would still target the old file.
-  const handleNew = useCallback(
+  const doNew = useCallback(
     () =>
       runFileAction(async () => {
         await api.forgetDocument();
         setFilePath(null);
         setMarkdown(SAMPLE_DOC);
+        setDirty(false);
         requestPreviewNow({ markdown: SAMPLE_DOC, documentPath: null });
       }),
     [runFileAction, requestPreviewNow]
   );
 
-  const handleOpen = useCallback(
+  const doOpen = useCallback(
     () =>
       runFileAction(async () => {
         const res = await api.openMarkdown(directory);
         if (api.isCanceled(res)) return;
-        setFilePath(res.path);
-        setMarkdown(res.content);
-        setDirectory(parentDirectory(res.path));
-        requestPreviewNow({ markdown: res.content, documentPath: res.path });
+        openDocument(res);
       }),
-    [runFileAction, directory, requestPreviewNow]
+    [runFileAction, directory, openDocument]
   );
 
-  // Save (Mod+S): write in place when the document has a path, otherwise run
-  // the Save As dialog. The backend owns the exact PathBuf (M9), so a
-  // non-UTF-8 filename saves to the right file even when the display path is
-  // lossy; Save As still defaults its filename to the front-matter title.
-  const handleSaveAs = useCallback(
+  // The CLI's startup file arrives as an `app-request` open (M9 task 3); the
+  // same dirty guard applies, so a forwarded document cannot replace edits
+  // silently.
+  const doOpenPending = useCallback(
     () =>
       runFileAction(async () => {
-        const res = await api.saveMarkdown(markdown, safeFileName(title), directory);
+        const res = await api.openPendingDocument();
         if (api.isCanceled(res)) return;
-        setFilePath(res.path);
+        openDocument(res);
       }),
-    [runFileAction, markdown, title, directory]
+    [runFileAction, openDocument]
   );
 
-  const handleSave = useCallback(() => {
-    if (!filePath) return handleSaveAs();
-    return runFileAction(async () => {
-      const res = await api.saveDocument(markdown);
-      if (api.isCanceled(res)) return;
+  const doClose = useCallback(() => {
+    api.confirmClose().catch((err) => setError(String(err)));
+  }, []);
+
+  // Requests from the backend go through the same guard as the toolbar.
+  requestHandlerRef.current = (payload) => {
+    if (payload?.kind === "close") guardRef.current.request(doClose);
+    else if (payload?.kind === "open") guardRef.current.request(doOpenPending);
+  };
+
+  // New/Open are guarded: a dirty document asks Save/Discard/Cancel first
+  // (M9 task 3), and a successful save resumes the interrupted request.
+  const handleNew = useCallback(() => guardRef.current.request(doNew), [doNew]);
+  const handleOpen = useCallback(() => guardRef.current.request(doOpen), [doOpen]);
+
+  // Save As (Mod+Shift+S): always a dialog. The filename default comes from
+  // the front-matter title; the chosen path becomes the backend's
+  // save-in-place target. Returns whether the document reached disk, so the
+  // guard can resume the request it interrupted (`false` when cancelled or
+  // failed — the prompt stays open for a retry).
+  const saveAsDialog = useCallback(async () => {
+    try {
+      const res = await api.saveMarkdown(
+        docRef.current.markdown,
+        safeFileName(title),
+        directory
+      );
+      if (api.isCanceled(res)) return false;
       setFilePath(res.path);
-    });
-  }, [filePath, handleSaveAs, runFileAction, markdown]);
+      setDirty(false);
+      return true;
+    } catch (err) {
+      setError(String(err));
+      return false;
+    }
+  }, [title, directory]);
+
+  // Save in place (Mod+S): the backend writes its exact PathBuf, so a
+  // non-UTF-8 filename is safe (M9). Never uses the title.
+  const saveInPlace = useCallback(async () => {
+    try {
+      const res = await api.saveDocument(docRef.current.markdown);
+      if (api.isCanceled(res)) return false;
+      setFilePath(res.path);
+      setDirty(false);
+      return true;
+    } catch (err) {
+      setError(String(err));
+      return false;
+    }
+  }, []);
+
+  const saveCurrent = useCallback(
+    () => (docRef.current.documentPath ? saveInPlace() : saveAsDialog()),
+    [saveInPlace, saveAsDialog]
+  );
+  saveCurrentRef.current = saveCurrent;
+
+  const handleSaveAs = useCallback(() => saveAsDialog(), [saveAsDialog]);
+  const handleSave = useCallback(
+    () => (filePath ? saveInPlace() : saveAsDialog()),
+    [filePath, saveInPlace, saveAsDialog]
+  );
 
   // Template picker (M5, §8.4): choose a `.typ` file via the system dialog,
   // validate it with a probe compile, and only apply it on success — a broken
@@ -397,6 +540,7 @@ export default function App() {
       runFileAction(async () => {
         const updated = await api.updateFrontMatter(markdown, patch);
         setMarkdown(updated);
+        setDirty(true);
         // Reflect the written settings immediately: the catch-up render is
         // deferred while the popover is open and may fail on unrelated
         // content, which must not leave the dialog showing stale values.
@@ -506,7 +650,7 @@ export default function App() {
 
   return (
     <MantineProvider theme={mantineTheme} forceColorScheme={colorScheme}>
-      <div className={settingsOpen ? "app settings-open" : "app"}>
+      <div className={modalOpen ? "app modal-open" : "app"}>
         <Toolbar
           platform={platform}
           dispatch={dispatch}
@@ -526,7 +670,7 @@ export default function App() {
           themeMenuOpen={themeMenuOpen}
           onThemeMenuOpenChange={setThemeMenuOpen}
         />
-        <main id="panes" inert={settingsOpen}>
+        <main id="panes" inert={modalOpen}>
           <section id="editor-pane">
             <Editor
               value={markdown}
@@ -543,9 +687,14 @@ export default function App() {
         <StatusBar
           pageCount={pages.length}
           warnings={warnings}
-          inert={settingsOpen}
+          inert={modalOpen}
         />
         <ErrorBanner message={error} onClose={dismissError} />
+        <UnsavedChangesModal
+          open={confirmOpen}
+          busy={confirmBusy}
+          onChoose={chooseUnsaved}
+        />
       </div>
     </MantineProvider>
   );

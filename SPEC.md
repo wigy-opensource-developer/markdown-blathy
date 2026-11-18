@@ -120,7 +120,19 @@ hyphenation remain the defaults.
 status bar are blurred, `inert` and frozen: a render scheduled by earlier
 editor keystrokes is cancelled on open, a render that finishes meanwhile is
 stashed, and the owed/stashed render is shown in a single catch-up pass on
-close (`lib/previewFreeze.js`, `.settings-open` in `styles.css`).
+close (`lib/previewFreeze.js`, `.modal-open` in `styles.css`). The
+unsaved-changes prompt uses the same treatment.
+
+**The unsaved-changes prompt guards every destructive request.** Closing the
+window, New and Open (including a document the CLI asked to open) first run
+through `lib/unsavedGuard.js`: a clean document proceeds at once; a dirty one
+(front-matter edits included) asks Save / Discard / Cancel, and choosing Save
+resumes the *same* interrupted request only after the save reached disk. A
+cancelled Save As or a failed save keeps the prompt open. The window title
+carries a `•` while the document is dirty. The backend intercepts
+`CloseRequested` and asks the frontend via one `app-request` event
+(`close`/`open`), so no dialog blocks the window event loop; `confirm_close`
+arms a one-shot allowance for the approved close.
 
 **The settings draft is uncontrolled.** The form reads its values from the
 DOM on Apply (diffed against the mount-time snapshot), and the segmented

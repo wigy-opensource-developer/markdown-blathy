@@ -7,6 +7,8 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use tauri::Emitter;
+
 use markdown_blathy_core::service::Service;
 use markdown_blathy_core::{options, typst_engine::template};
 
@@ -15,6 +17,7 @@ pub mod dialogs;
 pub mod document;
 pub mod paths;
 pub mod prewarm;
+pub mod requests;
 pub mod startup;
 
 /// Reads `RUST_LOG` from the environment; defaults to `warn` when unset.
@@ -36,6 +39,8 @@ pub fn run(startup_file: Option<PathBuf>) {
         // The exact PathBuf of the open document, so save-in-place never goes
         // through the lossy IPC display string (SPEC §6, M9 task 2).
         .manage(document::DocumentPath::default())
+        // One-shot allowance for a close the frontend already approved.
+        .manage(requests::CloseGate::default())
         // M6 engine cache (§7.5) lives inside the core Service: one compiled
         // engine per static source, rebuilt (and fonts re-scanned) only when
         // the template/options change. Arc so commands can hand an owned
@@ -81,8 +86,9 @@ pub fn run(startup_file: Option<PathBuf>) {
         .invoke_handler(tauri::generate_handler![
             commands::render_preview,
             commands::open_markdown,
-            commands::open_markdown_path,
-            commands::take_startup_document,
+            commands::open_pending_document,
+            commands::frontend_ready,
+            commands::confirm_close,
             commands::save_markdown,
             commands::save_document,
             commands::forget_document,
@@ -93,6 +99,24 @@ pub fn run(startup_file: Option<PathBuf>) {
             commands::validate_template,
             commands::list_templates,
         ])
+        // The frontend owns the unsaved-changes decision: intercept every
+        // close and ask it (M9 task 3). `confirm_close` arms the one-shot
+        // gate so the close it triggers passes straight through.
+        .on_window_event(|window, event| {
+            use tauri::Manager;
+            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                let gate = window.state::<requests::CloseGate>();
+                if gate.take_allowance() {
+                    return;
+                }
+                api.prevent_close();
+                if let Err(err) =
+                    window.emit(requests::APP_REQUEST_EVENT, requests::AppRequest::Close)
+                {
+                    tracing::warn!(error = %err, "failed to ask the frontend about closing");
+                }
+            }
+        })
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }

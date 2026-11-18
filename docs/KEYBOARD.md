@@ -15,6 +15,7 @@ does not register global/system-wide hotkeys.
 | Document settings | `Ctrl+,` | `Cmd+,` |
 | Page settings | `Ctrl+Shift+,` | `Cmd+Shift+,` |
 | Dismiss error banner | `Esc` (when visible) | `Esc` (when visible) |
+| Cancel an unsaved-changes prompt | `Esc` | `Esc` |
 | Color theme menu | toolbar only | toolbar only |
 
 The same command ids drive the toolbar buttons, these shortcuts, and any future

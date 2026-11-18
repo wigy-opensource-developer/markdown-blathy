@@ -1,8 +1,8 @@
 // Status bar: page count + warnings (§9 of SPEC.md). The `N warning(s)`
 // count is a toggle that expands into a collapsible list of the full
-// diagnostics; warnings never fail the render (M5). `inert` is set while the
-// Document settings popover is open (App, §6.2): the bar is blurred and must
-// not take clicks or screen-reader focus.
+// diagnostics; warnings never fail the render (M5). `inert` is set while a
+// modal interaction is open (Document settings, unsaved changes; App, §6.2):
+// the bar is blurred and must not take clicks or screen-reader focus.
 import { memo, useState } from "react";
 
 function StatusBar({ pageCount, warnings, inert }) {

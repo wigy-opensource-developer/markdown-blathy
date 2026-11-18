@@ -38,13 +38,19 @@ export const exportPdf = (markdown, options, title, directory, documentPath = nu
 export const openMarkdown = (directory) =>
   invoke("open_markdown", { directory });
 
-/** Open an explicit Markdown path (a GUI launched with `... gui FILE`).
- *  Returns the same `{ path, content }` outcome as `openMarkdown`. */
-export const openMarkdownPath = (path) => invoke("open_markdown_path", { path });
+/** Take the document the CLI asked to open (M9). Called after the dirty
+ *  guard passes; the backend reads its exact `PathBuf` and remembers it for
+ *  save-in-place. Resolves with `{ path, content }` or `{ canceled: true }`
+ *  when the request was already consumed. */
+export const openPendingDocument = () => invoke("open_pending_document");
 
-/** Take the consumed-once startup document path, or null when the GUI was
- *  started without a file / another caller already consumed it. */
-export const takeStartupDocument = () => invoke("take_startup_document");
+/** Announce that the `app-request` listener is registered (M9): the backend
+ *  then emits the pending open request. Safe to call more than once. */
+export const frontendReady = () => invoke("frontend_ready");
+
+/** Approve the close the frontend just guarded (M9): the backend arms a
+ *  one-shot allowance and closes the window. */
+export const confirmClose = () => invoke("confirm_close");
 
 /** Save Markdown via a "Save As…" dialog: filename defaults to `<title>.md`
  *  in `directory`. Resolves with `{ path }` or `{ canceled: true }` (§7.4).

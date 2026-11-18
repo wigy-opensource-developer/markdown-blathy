@@ -49,9 +49,9 @@ export function safeFileName(title) {
   return cleaned === "" ? "document" : cleaned;
 }
 
-/** The OS window title for the current document: "<title> - MarkdownBláthy".
- *  The app-name suffix keeps multiple instances distinguishable in the
- *  window manager (§8.4). */
-export function windowTitle(title) {
-  return `${title} - MarkdownBláthy`;
+/** The OS window title for the current document: "[• ]<title> - MarkdownBláthy".
+ *  The leading dot marks unsaved changes (M9); the app-name suffix keeps
+ *  multiple instances distinguishable in the window manager (§8.4). */
+export function windowTitle(title, dirty = false) {
+  return `${dirty ? "• " : ""}${title} - MarkdownBláthy`;
 }

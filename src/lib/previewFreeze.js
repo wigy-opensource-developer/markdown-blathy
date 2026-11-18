@@ -1,5 +1,6 @@
-// Preview freeze: wraps the debounced Typst renderer so the Document
-// settings popover can be modal (§6.2). A full render blocks the UI thread
+// Preview freeze: wraps the debounced Typst renderer so modal interactions
+// (the Document settings popover, the unsaved-changes prompt) can run
+// without rendering under the user's hands (§6.2). A full render blocks the UI thread
 // and scales with the document, so while the popover is open nothing may
 // render under the user's hands; changes made meanwhile collapse into ONE
 // catch-up render on close. The App wires it to these call sites:
@@ -8,15 +9,15 @@
 //   requestPreview  → request()          (keystroke/option changes)
 //   requestNow      → requestNow()       (a freshly loaded document starts
 //                                         rendering at once, no debounce)
-//   settings opened → open(); settings closed → close()
+//   modal opened → open(); modal closed → close()
 //
-// Three bits of state: `paused` (the popover is open), `owed` (something
+// Three bits of state: `paused` (a modal is open), `owed` (something
 // changed and a render must still run) and `stashed` (a result from a
 // render that finished — uncancellable — while paused). The subtleties:
 // `owed` is cleared by `started()`, when a scheduled render actually
 // begins, not by `close()` — so a debounce dropped by `open()` keeps its
 // debt, while one already in flight hands its result to `finish()` instead.
-// And only a real pause can owe: an unpaired `close()` (the popover widget
+// And only a real pause can owe: an unpaired `close()` (a widget
 // notifying its initial closed state) never schedules a double render.
 export function createPreviewFreeze({ refresh, refreshNow, cancel, apply }) {
   let paused = false;
@@ -49,12 +50,12 @@ export function createPreviewFreeze({ refresh, refreshNow, cancel, apply }) {
       if (paused) stashed = result;
       else apply(result);
     },
-    /** Popover opened: freeze and drop the pending debounce (still owed). */
+    /** A modal opened: freeze and drop the pending debounce (still owed). */
     open() {
       paused = true;
       cancel();
     },
-    /** Popover closed: show the owed render, or the stashed one — once. */
+    /** A modal closed: show the owed render, or the stashed one — once. */
     close() {
       const catchUp = paused && owed;
       paused = false;

@@ -13,11 +13,13 @@ use markdown_blathy_core::markdown::frontmatter::Patch;
 use markdown_blathy_core::options::RenderOptions;
 use markdown_blathy_core::service::{RenderRequest, Service};
 use serde::{Deserialize, Serialize};
-use tauri::{AppHandle, State};
+use tauri::{AppHandle, Emitter, State, Window};
 use tracing::{debug, info, instrument, warn};
 
 use crate::dialogs::{pick_open_path, pick_save_path};
 use crate::document::DocumentPath;
+use crate::requests::{AppRequest, CloseGate, APP_REQUEST_EVENT};
+use crate::startup::StartupDocument;
 
 /// Frontend → Rust payload for `render_preview` (§7.4).
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -242,32 +244,55 @@ pub async fn open_markdown(
     Ok(FileOutcome::opened(&path, content))
 }
 
-/// Read an explicit Markdown path (used by a GUI launched with
-/// `markdown-blathy gui FILE`). Returns the same `FileOutcome` shape as the
-/// dialog-driven open, so the frontend can share one state-update path. The
-/// path becomes the document to save in place (M9).
+/// Read the document the CLI asked to open (M9). The frontend calls this
+/// after its dirty guard passes, so an unsaved document is never replaced
+/// silently. The path comes from the backend's exact `PathBuf`; nothing is
+/// lost to the IPC display string.
+///
+/// `{ canceled: true }` means another caller already consumed the request.
 #[tauri::command]
-#[instrument(skip(state, document), fields(path))]
-pub fn open_markdown_path(
+#[instrument(skip(state, document, pending))]
+pub fn open_pending_document(
     state: State<'_, Arc<Service>>,
     document: State<'_, DocumentPath>,
-    path: String,
+    pending: State<'_, StartupDocument>,
 ) -> Result<FileOutcome, String> {
-    let path = PathBuf::from(path);
+    let Some(path) = pending.take() else {
+        return Ok(FileOutcome::canceled());
+    };
     let content = state
         .read_document(&path)
         .map_err(|e| format!("Failed to read file: {e}"))?;
     document.set(&path);
-    info!(path = %path.display(), "markdown opened from startup path");
+    info!(path = %path.display(), "pending document opened");
     Ok(FileOutcome::opened(&path, content))
 }
 
-/// Take the consumed-once startup document path. Returns `None` when the GUI
-/// was started without a file or the frontend already consumed it.
+/// The frontend is listening for `app-request` (M9): emit the pending open
+/// request, if any. Emitting again on every call is harmless — the request is
+/// only consumed by `open_pending_document`, so a listener torn down between
+/// registration and this call cannot lose the document.
 #[tauri::command]
-#[instrument(skip(state))]
-pub fn take_startup_document(state: State<'_, crate::startup::StartupDocument>) -> Option<String> {
-    state.take().map(|path| path.to_string_lossy().into_owned())
+#[instrument(skip(pending))]
+pub fn frontend_ready(window: Window, pending: State<'_, StartupDocument>) -> Result<(), String> {
+    if pending.has() {
+        window
+            .emit(APP_REQUEST_EVENT, AppRequest::Open)
+            .map_err(|e| format!("Failed to notify the frontend: {e}"))?;
+    }
+    Ok(())
+}
+
+/// The frontend approved closing the window (M9, Save/Discard): arm the
+/// one-shot gate and close. The resulting `CloseRequested` sees the allowance
+/// and does not ask again.
+#[tauri::command]
+#[instrument(skip(gate))]
+pub fn confirm_close(window: Window, gate: State<'_, CloseGate>) -> Result<(), String> {
+    gate.allow();
+    window
+        .close()
+        .map_err(|e| format!("Failed to close the window: {e}"))
 }
 
 /// Save Markdown via a "Save As…" dialog: the filename defaults to
