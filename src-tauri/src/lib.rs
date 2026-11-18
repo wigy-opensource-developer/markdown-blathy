@@ -1,7 +1,8 @@
 // Tauri shell bootstrap. The render/convert/export logic lives in the
 // Tauri-free `markdown-blathy-core` crate; `commands.rs` is a serialization,
 // dialog and process-launch adapter over `markdown_blathy_core::Service`.
-// Desktop-only: Linux + macOS.
+// Desktop app: Linux is the primary target; macOS and Windows are
+// secondary.
 
 use std::path::PathBuf;
 use std::sync::Arc;

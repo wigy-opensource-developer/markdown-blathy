@@ -109,7 +109,8 @@
 #let superscript(body) = super(body)
 #let subscript(body) = sub(body)
 
-// --- Code blocks: light background, monospace, no highlighting in v1 ---------
+// --- Code blocks: light background, monospace; typst highlights a
+//     recognized language tag via its embedded grammars --------------------
 #let code-block(lang, source) = block(
   fill: rgb("#f5f5f5"),
   inset: 8pt,

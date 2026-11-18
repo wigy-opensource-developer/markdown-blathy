@@ -12,9 +12,10 @@ The name commemorates Ottó Titusz Bláthy who among his other inventions became
 - **Export to PDF** — one click, system save dialog, opens in your default PDF viewer.
 - **Multiple Markdown flavors** — CommonMark, GFM (GitHub Flavored Markdown), or Custom (footnotes, math, task lists).
 - **LaTeX-style math** — inline and display math use familiar TeX/LaTeX notation (fractions, roots, matrices, common macros); Typst renders the preview and PDF.
+- **Syntax-highlighted code blocks** — fenced blocks with a language tag are colored by Typst's built-in highlighter in both preview and PDF.
 - **Custom templates** — supply your own `.typ` template to restyle everything (colors, fonts, layout) while keeping the editing experience.
 - **Heading IDs** — every heading gets an automatic anchor link; override with `{#custom-id}` syntax.
-- **Footnotes** — inline references with note blocks at the bottom; clickable markers in the preview.
+- **Footnotes** — inline references with note blocks at the bottom; markers link to the notes in the exported PDF (preview links activate once typst grows paged anchors).
 - **Settings persist** — your flavor, paper size, margins, and template are saved between sessions.
 - **CLI** — scriptable PDF export, front-matter edits, template validation and GUI launching (deb/rpm packages; see [docs/CLI.md](docs/CLI.md)).
 - **Keyboard shortcuts** — New/Open/Save/Export and settings from the focused window; see [docs/KEYBOARD.md](docs/KEYBOARD.md).

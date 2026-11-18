@@ -30,15 +30,15 @@ User-visible behaviour:
 
 1. Split-screen window: **Markdown editor** (left) and **live preview** (right).
 2. The preview updates automatically while typing (debounced), rendering pages with print margins, exactly as they will appear in the PDF.
-3. A toolbar offers, on the left, New / Open / Save Markdown files and a **Document** settings popover (title, author, auto-heading level, language/hyphenation, and the Markdown extensions/flavor); on the right, a **UI theme** selector (light / system / dark — app chrome only, never the document or PDF), the **Page settings** popover (paper size, margins, text alignment and the Typst template — global preferences, applied live) and **Export PDF** (system save dialog). A custom template is marked by a dot on the Page button. Flavor is a per-document setting (front matter), not a page-setup select; the default is Custom (every extension on).
+3. A toolbar offers, on the left, New / Open / Save Markdown files and a **Document** settings popover (title, author, auto-heading level, language/hyphenation, and the Markdown extensions/flavor); on the right, a **UI theme** selector (light / system / dark — app chrome only, never the document or PDF), the **Page settings** popover (paper size, margins, text alignment and the Typst template — global preferences, applied live) and **Export PDF** (system save dialog). A non-default template (a bundled theme other than light, or a custom file) is marked by a dot on the Page button, with the template's name in the dot's tooltip. Flavor is a per-document setting (front matter), not a page-setup select; the default is Custom (every extension on).
 4. The document style is provided by a bundled Typst template (light / dark / obsidian), selectable from the Page settings popover; users may also supply their own `.typ` template. Templates share a helper prelude and are composed on top of it — see `crates/markdown-blathy-core/templates/README.md` for the contract.
 5. Compile warnings (e.g. unknown fonts) are surfaced in the UI, not swallowed.
+6. A companion CLI, `markdown-blathy`, reuses the same core for scriptable PDF export, front-matter editing, template validation and launching the GUI with a document; the Linux deb/rpm packages ship it next to the GUI ([docs/CLI.md](docs/CLI.md)).
 
 ## 2. Non-goals (v1)
 
 - No incremental compilation (tinymist-style). Full recompile per change is fine for typical documents (< ~50 pages).
 - No client-side Typst WASM (`typst.ts`). All compilation happens in Rust; this avoids version drift between preview and PDF.
-- No syntax highlighting inside code blocks in the PDF (Typst has no built-in highlighter).
 - No raw-HTML support in Markdown (lossy by design).
 - No remote image fetching.
 - No mobile support.
@@ -55,21 +55,24 @@ User-visible behaviour:
 └───────────────▲──────────────────────────────────────────┬───────────────┘
         invoke()│  (JSON over Tauri IPC)                    │invoke()
 ┌───────────────┴──────────────────────────────────────────▼───────────────┐
-│  src-tauri (Rust) — thin command layer (tauri::command)                  │
-│      │                                                                   │
-│      │  all real logic lives in plain modules (no tauri imports):        │
+│  src-tauri — Tauri adapter: thin #[tauri::command] wrappers, system      │
+│  dialogs, prewarm hint, startup-document slot                            │
 │      ▼                                                                   │
-│  markdown::convert  comrak → AST → Typst markup (escaped)                │
-│  typst_engine::template   compose prelude + user template + invocation   │
-│  typst_engine::engine     TypstEngine (typst-as-lib) → compile           │
+│  crates/markdown-blathy-core — the real logic (no tauri imports):        │
+│  service.rs             shared high-level ops (GUI and CLI) + cache      │
+│  markdown::convert      comrak → AST → Typst markup (escaped)            │
+│  typst_engine::template compose prelude + user template + invocation     │
+│  typst_engine::engine   TypstEngine (typst-as-lib) → compile             │
 │      ├── typst_svg  → per-page SVG strings  (preview)                    │
 │      └── typst_pdf  → PDF bytes             (export)                     │
 └──────────────────────────────────────────────────────────────────────────┘
 ```
 
-**Design rule:** `markdown/` and `typst_engine/` must not import `tauri`. The `#[tauri::command]` functions are thin, serialization-only wrappers. This makes the core unit-testable without a running app.
+**Design rule:** `markdown-blathy-core` must not import `tauri`. The `#[tauri::command]` functions are thin serialization/dialog wrappers. This makes the core unit-testable without a running app, and lets the CLI reuse it.
 
-**Commands are stateless in v1** — each invoke recompiles the document from the current inputs. Perf is acceptable: Typst compiles a typical page in single-digit milliseconds, and the engine cache + memoization keep per-render cost low.
+**Renders are stateless** — each invoke recompiles the document from the current inputs; no document state is kept between invokes. The command layer does hold process-level state: the engine cache (one `TypstEngine` per static source), the consumed-once startup-document slot, and the prewarm hint written after each successful render. Perf is acceptable: Typst compiles a typical page in single-digit milliseconds, and the engine cache + memoization keep per-render cost low.
+
+**The CLI is a second thin adapter.** `crates/markdown-blathy` (binary `markdown-blathy`) wraps the same `Service` for scriptable PDF export, front-matter get/set, template validation and listing, and the `gui` launcher, which hands a file to the GUI through the startup-document slot ([docs/CLI.md](docs/CLI.md)).
 
 ## 4. Flavor support
 
@@ -81,7 +84,6 @@ extensions via front matter (see below).
 |---|---|---|---|
 | strikethrough | — | ✅ | ✅ |
 | tables | — | ✅ | ✅ |
-| heading IDs (`{#id}`) | ✅ | ✅ | ✅ |
 | task lists | — | ✅ | ✅ |
 | footnotes | — | — | ✅ |
 | math (`$...$`) | — | — | ✅ |
@@ -90,6 +92,10 @@ extensions via front matter (see below).
 | superscript (`^text^`) | — | — | ✅ |
 | description lists | — | — | ✅ |
 | page breaks (`<!-- pagebreak -->`) | — | — | ✅ |
+| table of contents (`[[_TOC_]]`) | — | — | ✅ |
+
+Heading IDs are always on in every flavor — core app behavior (anchors,
+TOC), not an `ext_*` toggle.
 
 **Front matter is parsed in every flavor.** A leading `---` block of
 `key: value` lines carries the document settings — `title`, `author`,
@@ -168,6 +174,7 @@ to turn this off.
 | **M6 — Engine cache & fonts** | Reusable engine + system/template-side fonts | ✅ Done |
 | **M7 — Logging & extended syntax** | `tracing` + SVG internal links + heading IDs + new constructs | ✅ Done |
 | **M8 — Packaging & release** | Per-platform reusable workflows (deb, rpm, AppImage, macOS, Windows) with a tag-triggered draft release, bundle + AppImage metadata, Windows icon | ✅ Done |
+| **M9 — Data safety & headless test environment** | Headless build/E2E environment + smoke test, plain save, dirty state + close guard, autosave recovery, export warnings surfaced in the UI | ⬜ Planned |
 
 See **IMPLEMENTATION.md** for acceptance criteria and test plans per milestone.
 
@@ -216,6 +223,42 @@ See **IMPLEMENTATION.md** for acceptance criteria and test plans per milestone.
    `docs/screenshots/`; it does not generate them. Publishing is always a
    manual step.
 
+### M9 tasks — data safety & headless test environment
+
+1. **Headless build and E2E environment.** Install the GTK/WebKitGTK dev
+   stack plus the headless display stack (`xvfb`, `xauth`, `dbus-x11`,
+   `webkit2gtk-driver`) in dev containers (apt commands in TESTING.md;
+   verified on a root Debian 13 container — WebKitGTK 2.54, full
+   `cargo test --workspace` links, smoke test alive under Xvfb), and extend
+   the CI `linux-deps` action with the headless extras. Gate the
+   window-initializes smoke test from TESTING.md (`xvfb-run -a
+   dbus-run-session -- env WEBKIT_DISABLE_COMPOSITING_MODE=1 timeout 15s
+   …`; exit 124 = alive). Unblocks the WebDriver E2E plan. Acceptance:
+   `cargo test --workspace` and the smoke test pass in a bare container.
+2. **Plain Save.** `file.save` (Mod+S) writes the open document to its
+   existing path without a dialog; only an untitled document opens the
+   "Save As…" dialog. `save_markdown` takes the current path from the
+   frontend, and the backend keeps the opened path so a non-UTF-8 filename
+   still saves correctly; "Save As…" stays available for changing the path.
+   Acceptance: edit an opened file, Mod+S, no dialog, the file on disk
+   changes.
+3. **Dirty state and close guard.** Track edits since the last save/open;
+   closing the window — and New/Open — with unsaved edits asks
+   Save/Discard/Cancel; the window title carries a dirty marker.
+   Acceptance: closing a dirty window never loses edits silently.
+4. **Autosave and crash recovery.** While dirty, snapshot the document
+   (markdown + path) to app-data every ~30 s; on startup offer the newest
+   snapshot (Restore/Discard) and drop it after a successful save.
+   Acceptance: killing the process mid-edit offers recovery on relaunch.
+5. **Surface export warnings.** `export_pdf` returns `warnings` in its
+   `FileOutcome` and the UI lists them after a successful export (the CLI
+   already prints them). Acceptance: a document with a duplicate heading ID
+   shows the same warnings after export as in the preview.
+6. **Remove the dead "Custom…" margin preset** — asymmetric margins are
+   not planned, so the Margins select offers the real presets only.
+7. **Reconcile the docs** with the new save behavior (the §6 non-UTF-8
+   filename note here, README known limitations).
+
 ### Deferred issues
 
 Follow-ups found in manual use, to schedule after M8:
@@ -226,6 +269,14 @@ Follow-ups found in manual use, to schedule after M8:
   place. Almost certainly a GTK/WebKitGTK window-icon side effect when an
   auxiliary window/portal is mapped; needs a window-level fix (e.g.
   re-asserting the app icon on focus/close). Cosmetic, no functional impact.
+- **Single-instance forwarding** — every `markdown-blathy gui` launch starts
+  a new instance (docs/CLI.md); forwarding to a running instance is not
+  implemented.
+- **Native menu entries** — the command registry (`src/lib/commands.js`) is
+  ready for them, but no menu bar is wired; most visible on macOS.
+- **E2E WebDriver suite** — the plan (harness, five journeys, CI gating) is
+  in TESTING.md; nothing is implemented yet. The headless environment it
+  needs lands with M9 task 1.
 
 ### Upstream dependencies (patch required outside this repo)
 
@@ -249,7 +300,7 @@ one closes only when the upstream crate is patched — there is no in-repo fix.
 ## 6. Limitations
 
 - Raw HTML in Markdown is stripped to text, except the `<!-- pagebreak -->` marker (Custom flavor), which becomes a page break.
-- No syntax highlighting inside code blocks in the PDF.
+- **Code-block highlighting follows typst's built-in grammars** — fenced blocks with a recognized language tag are highlighted (typst embeds syntect/two-face); unknown tags render unstyled, and there is no highlight-theme setting.
 - Only the embedded DejaVu family by default (Sans regular + bold, Sans Mono for code, Math TeX Gyre for math); no CJK coverage out of the box. Custom templates can reference system fonts and ship font files next to the `.typ` file.
 - **System-font naming is typst's, not fontconfig's** — typst strips styling suffixes from family names, so a font whose *name* carries the styling may be unreachable. Use the trimmed family name or a font without a styling suffix.
 - Remote images unsupported; images must be local files reachable through the world's file resolver.

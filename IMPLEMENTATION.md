@@ -420,7 +420,7 @@ The frontend intercepts every click (`Preview.jsx` `preventDefault` on `closest(
 
 ### Use `svg_in_bundle` instead of `svg()` for preview
 
-`svg()` has no link resolver; internal links emit `<a>` without `href`. `svg_in_bundle` accepts a `LateLinkResolver` and anchor points, enabling clickable footnote markers and heading anchors in the preview. Tradeoff: slightly more code to collect anchors, but enables bidirectional footnote links and heading cross-references.
+`svg()` has no link resolver; internal links emit `<a>` without `href`. `svg_in_bundle` accepts a `LateLinkResolver` and anchor points, so internal links gain `href` as soon as typst resolves paged anchors. On typst 0.15 the paged introspector returns no anchors, so preview links stay inert while PDF links work (see the §6 limitation above). Tradeoff: slightly more code to collect anchors, but the machinery for bidirectional footnote links and heading cross-references is in place.
 
 ### Heading IDs are always-on, not flavor-gated
 

@@ -112,6 +112,11 @@ sudo apt-get install -y --no-install-recommends \
   xvfb xauth dbus-x11 webkit2gtk-driver
 ```
 
+Both lists were verified on a root Debian 13 (trixie) container
+(WebKitGTK 2.54, GTK 3.24): after the install the full
+`cargo test --workspace` links, `WebKitWebDriver` is on `PATH`, and the
+smoke test below stays alive under Xvfb (exit 124).
+
 Build the real production binary and smoke-test that the window initializes:
 
 ```bash
