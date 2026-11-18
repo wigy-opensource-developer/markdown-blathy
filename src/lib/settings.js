@@ -4,6 +4,8 @@
 // module stays pure and unit-testable in node (which has no
 // `window.localStorage`); the app passes `window.localStorage`.
 
+import { MARGIN_PRESETS, marginsForPreset } from "./presets.js";
+
 const STORAGE_KEY = "markdown-blathy.settings";
 
 /** The settings shape (§8.6): render options plus the editor font size. */
@@ -86,6 +88,10 @@ function mergeSettings(parsed) {
   if (!hasMargins(options.margins)) {
     options.margins = defaults.options.margins;
   }
+  // `custom` was a dead preset (selecting it left the margins untouched), so
+  // a stored value from an older session is migrated to the preset matching
+  // the stored millimetres.
+  options.marginPreset = normalizeMarginPreset(options.marginPreset, options.margins);
   // An unknown/legacy theme value falls back to following the system.
   const theme = ["light", "system", "dark"].includes(parsed.theme)
     ? parsed.theme
@@ -101,5 +107,26 @@ function hasMargins(margins) {
     [margins.topMm, margins.bottomMm, margins.leftMm, margins.rightMm].every(
       (v) => typeof v === "number"
     )
+  );
+}
+
+/** The matching preset for known values; otherwise the preset whose
+ *  millimetres equal `margins`, else the default. */
+function normalizeMarginPreset(preset, margins) {
+  const known = MARGIN_PRESETS.map((p) => p.value);
+  if (known.includes(preset)) return preset;
+  const match = known.find((value) =>
+    sameMargins(marginsForPreset(value), margins)
+  );
+  return match ?? DEFAULT_SETTINGS.options.marginPreset;
+}
+
+function sameMargins(a, b) {
+  return (
+    a !== null &&
+    a.topMm === b.topMm &&
+    a.bottomMm === b.bottomMm &&
+    a.leftMm === b.leftMm &&
+    a.rightMm === b.rightMm
   );
 }

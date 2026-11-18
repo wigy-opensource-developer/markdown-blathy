@@ -59,8 +59,8 @@ describe("ALIGNS", () => {
 });
 
 describe("MARGIN_PRESETS", () => {
-  it("exposes normal, narrow and custom presets", () => {
-    expect(MARGIN_PRESETS.map((m) => m.value)).toEqual(["normal", "narrow", "custom"]);
+  it("exposes the normal and narrow presets", () => {
+    expect(MARGIN_PRESETS.map((m) => m.value)).toEqual(["normal", "narrow"]);
   });
 });
 
@@ -83,7 +83,7 @@ describe("marginsForPreset", () => {
     });
   });
 
-  it("returns null for custom (user-edited margins are a later milestone)", () => {
+  it("returns null for an unknown preset", () => {
     expect(marginsForPreset("custom")).toBeNull();
   });
 });

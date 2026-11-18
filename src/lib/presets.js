@@ -17,7 +17,6 @@ export const PAPERS = [
 export const MARGIN_PRESETS = [
   { value: "normal", label: "Normal (20/25mm)" },
   { value: "narrow", label: "Narrow (10/15mm)" },
-  { value: "custom", label: "Custom…" },
 ];
 
 export const ALIGNS = [
@@ -75,11 +74,9 @@ export const FEATURE_PRESETS = {
 const MARGIN_PRESET_MM = {
   normal: { topMm: 25, bottomMm: 25, leftMm: 20, rightMm: 20 },
   narrow: { topMm: 15, bottomMm: 15, leftMm: 10, rightMm: 10 },
-  custom: null,
 };
 
-/** Margins (mm) for a margin preset, or `null` for `custom` (user-edited
- *  margins arrive in a later milestone). */
+/** Margins (mm) for a margin preset, or `null` for an unknown value. */
 export function marginsForPreset(value) {
   return MARGIN_PRESET_MM[value] ?? null;
 }

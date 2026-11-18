@@ -78,6 +78,53 @@ describe("loadSettings", () => {
       DEFAULT_SETTINGS.options.margins
     );
   });
+
+  it("migrates a stored `custom` margin preset to the matching preset", () => {
+    // `custom` was a dead option: selecting it left the margins untouched, so
+    // the stored millimetres always match one of the real presets.
+    const storage = fakeStorage({
+      "markdown-blathy.settings": JSON.stringify({
+        options: {
+          marginPreset: "custom",
+          margins: { topMm: 15, bottomMm: 15, leftMm: 10, rightMm: 10 },
+        },
+      }),
+    });
+    expect(loadSettings(storage).options.marginPreset).toBe("narrow");
+  });
+
+  it("migrates an unknown margin preset with unrecognized margins to the default", () => {
+    const storage = fakeStorage({
+      "markdown-blathy.settings": JSON.stringify({
+        options: {
+          marginPreset: "custom",
+          margins: { topMm: 33, bottomMm: 44, leftMm: 5, rightMm: 6 },
+        },
+      }),
+    });
+    const settings = loadSettings(storage);
+    expect(settings.options.marginPreset).toBe(
+      DEFAULT_SETTINGS.options.marginPreset
+    );
+    expect(settings.options.margins).toEqual({
+      topMm: 33,
+      bottomMm: 44,
+      leftMm: 5,
+      rightMm: 6,
+    });
+  });
+
+  it("keeps a known margin preset as stored", () => {
+    const storage = fakeStorage({
+      "markdown-blathy.settings": JSON.stringify({
+        options: {
+          marginPreset: "narrow",
+          margins: { topMm: 15, bottomMm: 15, leftMm: 10, rightMm: 10 },
+        },
+      }),
+    });
+    expect(loadSettings(storage).options.marginPreset).toBe("narrow");
+  });
 });
 
 describe("saveSettings", () => {

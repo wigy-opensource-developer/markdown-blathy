@@ -262,9 +262,9 @@ export default function App() {
   );
 
   // Apply a partial options patch; switching the margin preset maps it to
-  // millimetre margins. `custom` keeps the current margins (custom margin
-  // editing arrives in a later milestone). Every change persists to
-  // localStorage so the settings survive a restart (M5, §8.6). The patch is
+  // millimetre margins. An unknown preset value keeps the current margins.
+  // Every change persists to localStorage so the settings survive a restart
+  // (M5, §8.6). The patch is
   // merged through applyOptionsPatch, which drops the null a Mantine Select
   // emits when the selected option is re-clicked, so a deselect can't corrupt
   // the options (§13).
