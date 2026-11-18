@@ -9,6 +9,12 @@ inputs:
     description: Extra space-separated apt packages (e.g. "imagemagick file").
     required: false
     default: ""
+  headless:
+    description: >-
+      Also install the headless display stack (Xvfb, dbus, WebKitWebDriver)
+      used by the GUI smoke test and the future WebDriver E2E suite.
+    required: false
+    default: "false"
 
 runs:
   using: composite
@@ -28,3 +34,10 @@ runs:
           librsvg2-dev \
           file \
           ${{ inputs.extra }}
+        if [ "${{ inputs.headless }}" = "true" ]; then
+          sudo apt-get install -y -qq \
+            xvfb \
+            xauth \
+            dbus-x11 \
+            webkit2gtk-driver
+        fi

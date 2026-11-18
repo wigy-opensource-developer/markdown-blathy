@@ -59,3 +59,46 @@ jobs:
       # ---- quality gate ------------------------------------------------------
       - name: run check.sh
         run: ./check.sh
+
+  headless-smoke:
+    # The GUI must initialize a real WebKitGTK webview without a display.
+    # This is the environment gate the WebDriver E2E layer builds on
+    # (TESTING.md); a window that crashes on startup fails here.
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+
+      # Same build stack as the check job, plus the headless extras.
+      - uses: ./.github/actions/linux-deps
+        with:
+          headless: "true"
+
+      - name: install Rust toolchain
+        # Keep in sync with rust-toolchain.toml (single source for local + CI).
+        uses: dtolnay/rust-toolchain@1.99.1
+
+      - name: rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: .
+
+      - name: setup Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: install npm dependencies
+        run: npm ci
+
+      # A debug build is enough for the smoke test and far faster than a
+      # release bundle; the frontend dist must exist because tauri-build
+      # embeds it at compile time.
+      - name: build frontend
+        run: npm run build
+
+      - name: build GUI (debug)
+        run: cargo build -p markdown-blathy-tauri
+
+      - name: smoke test (window initializes under Xvfb)
+        run: ./scripts/smoke-headless.sh target/debug/MarkdownBláthy

@@ -117,22 +117,24 @@ Both lists were verified on a root Debian 13 (trixie) container
 `cargo test --workspace` links, `WebKitWebDriver` is on `PATH`, and the
 smoke test below stays alive under Xvfb (exit 124).
 
-Build the real production binary and smoke-test that the window initializes:
+Build the production binary and smoke-test that the window initializes:
 
 ```bash
 npm run tauri build -- --no-bundle
-mkdir -p /tmp/runtime-root && chmod 700 /tmp/runtime-root
-
-env XDG_RUNTIME_DIR=/tmp/runtime-root \
-  xvfb-run -a dbus-run-session -- \
-  env WEBKIT_DISABLE_COMPOSITING_MODE=1 \
-  timeout 15s target/release/MarkdownBláthy
+./scripts/smoke-headless.sh                # target/release/MarkdownBláthy, 15 s
+./scripts/smoke-headless.sh target/debug/MarkdownBláthy 15   # debug build
 ```
 
-Exit status `124` means the app stayed alive until `timeout` stopped it — the
-success condition for this smoke test. AT-SPI and EGL warnings about the
-missing accessibility bus or software rendering are expected in a bare
-container.
+The script runs the binary under `xvfb-run -a dbus-run-session --` with
+`WEBKIT_DISABLE_COMPOSITING_MODE=1` and a private `XDG_RUNTIME_DIR`. It
+passes when the app is still alive at the deadline (`timeout` exit status
+124) and fails with the captured output when the window exits early. AT-SPI
+and EGL warnings about the missing accessibility bus or software rendering
+are expected in a bare container and do not fail the test.
+
+The CI `headless-smoke` job runs the same script against a debug build on
+every push and PR, so a GUI that cannot start on a headless Linux runner is
+caught before release.
 
 ## Completing the UI test framework
 
@@ -208,11 +210,16 @@ Add a separate job (not necessarily on every push; nightly or manual is
 acceptable if runtime is a concern) that:
 
 1. installs the native build packages above plus `xvfb`, `xauth`,
-   `dbus-x11` and `webkit2gtk-driver`;
+   `dbus-x11` and `webkit2gtk-driver` (the `headless` input of the
+   `linux-deps` action does this);
 2. runs `./check.sh`;
 3. builds with `npm run tauri build -- --no-bundle`;
 4. runs the WebDriver suite under `xvfb-run -a dbus-run-session --`;
 5. uploads logs and failure screenshots as workflow artifacts.
+
+Step 1 and the display plumbing already exist: the `headless-smoke` CI job
+uses the same action input and runs `scripts/smoke-headless.sh`, which
+implements the Xvfb invocation the WebDriver suite will reuse.
 
 A complete framework is reached when the E2E job is required for release
 tags, covers the five journeys above, and fails deterministically on
