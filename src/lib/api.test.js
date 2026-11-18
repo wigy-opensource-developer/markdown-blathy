@@ -16,6 +16,7 @@ vi.mock("@tauri-apps/api/window", () => ({ getCurrentWindow }));
 
 import {
   exportPdf,
+  forgetDocument,
   getInitialDirectory,
   isCanceled,
   listTemplates,
@@ -23,6 +24,7 @@ import {
   openMarkdown,
   openMarkdownPath,
   renderPreview,
+  saveDocument,
   saveMarkdown,
   setWindowTitle,
   takeStartupDocument,
@@ -105,6 +107,20 @@ describe("saveMarkdown", () => {
       title: "My Doc",
       directory: "/home/u/Documents",
     });
+  });
+});
+
+describe("saveDocument", () => {
+  it("invokes save_document with only the content (backend owns the path)", () => {
+    saveDocument("# Hi");
+    expect(invoke).toHaveBeenCalledWith("save_document", { content: "# Hi" });
+  });
+});
+
+describe("forgetDocument", () => {
+  it("invokes forget_document with no arguments (New)", () => {
+    forgetDocument();
+    expect(invoke).toHaveBeenCalledWith("forget_document");
   });
 });
 

@@ -17,6 +17,7 @@ use tauri::{AppHandle, State};
 use tracing::{debug, info, instrument, warn};
 
 use crate::dialogs::{pick_open_path, pick_save_path};
+use crate::document::DocumentPath;
 
 /// Frontend → Rust payload for `render_preview` (§7.4).
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -212,12 +213,14 @@ pub async fn export_pdf(
 }
 
 /// Open a Markdown file via the system dialog (starting in `directory` when
-/// given) and read it (§7.4, M4).
+/// given) and read it (§7.4, M4). The opened path becomes the document to
+/// save in place (M9).
 #[tauri::command]
-#[instrument(skip(app, state), fields(directory))]
+#[instrument(skip(app, state, document), fields(directory))]
 pub async fn open_markdown(
     app: AppHandle,
     state: State<'_, Arc<Service>>,
+    document: State<'_, DocumentPath>,
     directory: Option<String>,
 ) -> Result<FileOutcome, String> {
     let Some(path) = pick_open_path(
@@ -234,23 +237,27 @@ pub async fn open_markdown(
     let content = state
         .read_document(&path)
         .map_err(|e| format!("Failed to read file: {e}"))?;
+    document.set(&path);
     info!(path = %path.display(), "markdown opened");
     Ok(FileOutcome::opened(&path, content))
 }
 
 /// Read an explicit Markdown path (used by a GUI launched with
 /// `markdown-blathy gui FILE`). Returns the same `FileOutcome` shape as the
-/// dialog-driven open, so the frontend can share one state-update path.
+/// dialog-driven open, so the frontend can share one state-update path. The
+/// path becomes the document to save in place (M9).
 #[tauri::command]
-#[instrument(skip(state), fields(path))]
+#[instrument(skip(state, document), fields(path))]
 pub fn open_markdown_path(
     state: State<'_, Arc<Service>>,
+    document: State<'_, DocumentPath>,
     path: String,
 ) -> Result<FileOutcome, String> {
     let path = PathBuf::from(path);
     let content = state
         .read_document(&path)
         .map_err(|e| format!("Failed to read file: {e}"))?;
+    document.set(&path);
     info!(path = %path.display(), "markdown opened from startup path");
     Ok(FileOutcome::opened(&path, content))
 }
@@ -264,12 +271,14 @@ pub fn take_startup_document(state: State<'_, crate::startup::StartupDocument>) 
 }
 
 /// Save Markdown via a "Save As…" dialog: the filename defaults to
-/// `<title>.md` in `directory`, and the write is atomic (§7.4, M4).
+/// `<title>.md` in `directory`, and the write is atomic (§7.4, M4). The
+/// chosen path becomes the document to save in place (M9).
 #[tauri::command]
-#[instrument(skip(app, state, content), fields(title, directory))]
+#[instrument(skip(app, state, document, content), fields(title, directory))]
 pub async fn save_markdown(
     app: AppHandle,
     state: State<'_, Arc<Service>>,
+    document: State<'_, DocumentPath>,
     content: String,
     title: String,
     directory: Option<String>,
@@ -294,8 +303,48 @@ pub async fn save_markdown(
     .await
     .map_err(|e| format!("Save task failed: {e}"))?
     .map_err(|e| format!("Failed to save: {e}"))?;
+    document.set(&path);
     info!(path = %path.display(), "markdown saved");
     Ok(FileOutcome::saved(&path))
+}
+
+/// Save the open document in place (M9): write to the exact `PathBuf` the
+/// backend remembers, with no dialog and no title-derived filename. This is
+/// what makes Save-after-Open correct for a non-UTF-8 filename — the path
+/// never round-trips through the lossy IPC string.
+///
+/// Errors when no document path is known (a new, untitled document); the
+/// frontend then runs Save As instead.
+#[tauri::command]
+#[instrument(skip(state, document, content), fields(len = content.len()))]
+pub async fn save_document(
+    state: State<'_, Arc<Service>>,
+    document: State<'_, DocumentPath>,
+    content: String,
+) -> Result<FileOutcome, String> {
+    let Some(path) = document.get() else {
+        return Err("This document has no file yet — use Save As…".into());
+    };
+
+    let service = state.inner().clone();
+    let write_path = path.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        service.write_document(&write_path, content.as_bytes())
+    })
+    .await
+    .map_err(|e| format!("Save task failed: {e}"))?
+    .map_err(|e| format!("Failed to save: {e}"))?;
+    info!(path = %path.display(), "markdown saved in place");
+    Ok(FileOutcome::saved(&path))
+}
+
+/// Forget the remembered document path (M9). Called by New so a later plain
+/// save cannot overwrite the file that was open before.
+#[tauri::command]
+#[instrument(skip(document))]
+pub fn forget_document(document: State<'_, DocumentPath>) {
+    document.clear();
+    debug!("document path cleared");
 }
 
 /// The working directory at startup: `$XDG_DATA_HOME` when set and non-empty,

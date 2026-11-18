@@ -26,13 +26,16 @@ const keyEvent = (props) => ({
 
 describe("command registry", () => {
   it("looks commands up by id", () => {
-    expect(getCommand("file.save")?.label).toBe("Save Markdown As…");
+    expect(getCommand("file.save")?.label).toBe("Save");
+    expect(getCommand("file.saveAs")?.label).toBe("Save As…");
     expect(getCommand("missing")).toBeNull();
   });
 
   it("resolves Mod to per-platform key chords", () => {
     expect(resolveKey("file.save", PLATFORM_MAC)).toBe("Mod+s");
     expect(resolveKey("file.save", PLATFORM_LINUX)).toBe("Mod+s");
+    expect(resolveKey("file.saveAs", PLATFORM_MAC)).toBe("Mod+Shift+s");
+    expect(resolveKey("file.saveAs", PLATFORM_LINUX)).toBe("Mod+Shift+s");
     expect(resolveKey("document.settings", PLATFORM_LINUX)).toBe("Mod+,");
     expect(resolveKey("page.settings", PLATFORM_LINUX)).toBe("Mod+Shift+,");
     expect(resolveKey("theme.menu", PLATFORM_MAC)).toBeNull();
@@ -62,6 +65,12 @@ describe("command registry", () => {
   it("maps keyboard events to command ids", () => {
     expect(commandForEvent(keyEvent({ ctrlKey: true }), PLATFORM_LINUX)).toBe("file.save");
     expect(commandForEvent(keyEvent({ metaKey: true }), PLATFORM_MAC)).toBe("file.save");
+    expect(
+      commandForEvent(keyEvent({ ctrlKey: true, shiftKey: true }), PLATFORM_LINUX)
+    ).toBe("file.saveAs");
+    expect(
+      commandForEvent(keyEvent({ metaKey: true, shiftKey: true }), PLATFORM_MAC)
+    ).toBe("file.saveAs");
     expect(
       commandForEvent(
         keyEvent({ ctrlKey: true, shiftKey: true, key: "<", code: "Comma" }),
@@ -95,12 +104,15 @@ describe("command registry", () => {
   it("formats tooltips and ARIA shortcuts from the registry", () => {
     expect(shortcutLabel("file.save", PLATFORM_LINUX)).toBe("Ctrl+S");
     expect(shortcutLabel("file.save", PLATFORM_MAC)).toBe("Cmd+S");
+    expect(shortcutLabel("file.saveAs", PLATFORM_LINUX)).toBe("Ctrl+Shift+S");
     expect(shortcutLabel("page.settings", PLATFORM_LINUX)).toBe("Ctrl+Shift+,");
     expect(ariaKeyShortcut("file.save", PLATFORM_LINUX)).toBe("Control+S");
     expect(ariaKeyShortcut("file.save", PLATFORM_MAC)).toBe("Meta+S");
+    expect(ariaKeyShortcut("file.saveAs", PLATFORM_LINUX)).toBe("Control+Shift+S");
     expect(ariaKeyShortcut("theme.menu", PLATFORM_LINUX)).toBeUndefined();
-    expect(commandTooltip("file.save", PLATFORM_LINUX)).toBe(
-      "Save Markdown As… (Ctrl+S)"
+    expect(commandTooltip("file.save", PLATFORM_LINUX)).toBe("Save (Ctrl+S)");
+    expect(commandTooltip("file.saveAs", PLATFORM_MAC)).toBe(
+      "Save As… (Cmd+Shift+S)"
     );
   });
 });

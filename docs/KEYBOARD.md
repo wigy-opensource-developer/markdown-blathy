@@ -9,7 +9,8 @@ does not register global/system-wide hotkeys.
 |---|---|---|
 | New document | `Ctrl+N` | `Cmd+N` |
 | Open Markdown | `Ctrl+O` | `Cmd+O` |
-| Save Markdown As… | `Ctrl+S` | `Cmd+S` |
+| Save | `Ctrl+S` | `Cmd+S` |
+| Save As… | `Ctrl+Shift+S` | `Cmd+Shift+S` |
 | Export PDF | `Ctrl+E` | `Cmd+E` |
 | Document settings | `Ctrl+,` | `Cmd+,` |
 | Page settings | `Ctrl+Shift+,` | `Cmd+Shift+,` |

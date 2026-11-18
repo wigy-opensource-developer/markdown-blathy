@@ -12,6 +12,7 @@ use markdown_blathy_core::{options, typst_engine::template};
 
 pub mod commands;
 pub mod dialogs;
+pub mod document;
 pub mod paths;
 pub mod prewarm;
 pub mod startup;
@@ -32,6 +33,9 @@ pub fn run(startup_file: Option<PathBuf>) {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .manage(startup::StartupDocument::new(startup_file))
+        // The exact PathBuf of the open document, so save-in-place never goes
+        // through the lossy IPC display string (SPEC §6, M9 task 2).
+        .manage(document::DocumentPath::default())
         // M6 engine cache (§7.5) lives inside the core Service: one compiled
         // engine per static source, rebuilt (and fonts re-scanned) only when
         // the template/options change. Arc so commands can hand an owned
@@ -80,6 +84,8 @@ pub fn run(startup_file: Option<PathBuf>) {
             commands::open_markdown_path,
             commands::take_startup_document,
             commands::save_markdown,
+            commands::save_document,
+            commands::forget_document,
             commands::export_pdf,
             commands::get_initial_directory,
             commands::open_external,

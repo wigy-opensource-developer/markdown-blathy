@@ -298,11 +298,19 @@ export default function App() {
   // map the outcome onto state. A dismissed dialog is silent (§9); any other
   // failure surfaces in the error banner. All are stable so the memoized
   // toolbar does not re-render on every keystroke.
-  const handleNew = useCallback(() => {
-    setFilePath(null);
-    setMarkdown(SAMPLE_DOC);
-    requestPreviewNow({ markdown: SAMPLE_DOC, documentPath: null });
-  }, [requestPreviewNow]);
+  // New document: clear the backend's save-in-place path first. Awaiting it
+  // means a failure keeps the old document (and its path) rather than leaving
+  // the UI untitled while a plain save would still target the old file.
+  const handleNew = useCallback(
+    () =>
+      runFileAction(async () => {
+        await api.forgetDocument();
+        setFilePath(null);
+        setMarkdown(SAMPLE_DOC);
+        requestPreviewNow({ markdown: SAMPLE_DOC, documentPath: null });
+      }),
+    [runFileAction, requestPreviewNow]
+  );
 
   const handleOpen = useCallback(
     () =>
@@ -317,10 +325,11 @@ export default function App() {
     [runFileAction, directory, requestPreviewNow]
   );
 
-  // Always a "Save As…" dialog: the filename defaults to `<title>.md` in the
-  // working Directory (§8.4). The returned path becomes the new filePath, so
-  // the title picks up the new stem when there is no frontmatter.
-  const handleSave = useCallback(
+  // Save (Mod+S): write in place when the document has a path, otherwise run
+  // the Save As dialog. The backend owns the exact PathBuf (M9), so a
+  // non-UTF-8 filename saves to the right file even when the display path is
+  // lossy; Save As still defaults its filename to the front-matter title.
+  const handleSaveAs = useCallback(
     () =>
       runFileAction(async () => {
         const res = await api.saveMarkdown(markdown, safeFileName(title), directory);
@@ -329,6 +338,15 @@ export default function App() {
       }),
     [runFileAction, markdown, title, directory]
   );
+
+  const handleSave = useCallback(() => {
+    if (!filePath) return handleSaveAs();
+    return runFileAction(async () => {
+      const res = await api.saveDocument(markdown);
+      if (api.isCanceled(res)) return;
+      setFilePath(res.path);
+    });
+  }, [filePath, handleSaveAs, runFileAction, markdown]);
 
   // Template picker (M5, §8.4): choose a `.typ` file via the system dialog,
   // validate it with a probe compile, and only apply it on success — a broken
@@ -417,6 +435,7 @@ export default function App() {
       fileNew: handleNew,
       fileOpen: handleOpen,
       fileSave: handleSave,
+      fileSaveAs: handleSaveAs,
       fileExport: handleExport,
       openDocumentSettings: () => handleSettingsOpenChange(true),
       openPageSettings: () => setPageSettingsOpen(true),
@@ -429,6 +448,7 @@ export default function App() {
       handleNew,
       handleOpen,
       handleSave,
+      handleSaveAs,
       handleExport,
       handleSettingsOpenChange,
       dismissError,

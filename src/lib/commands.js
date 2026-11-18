@@ -35,10 +35,17 @@ export const COMMANDS = [
   },
   {
     id: "file.save",
-    label: "Save Markdown As…",
+    label: "Save",
     keys: modKeys("S"),
     canRun: () => true,
     run: (ctx) => ctx.fileSave(),
+  },
+  {
+    id: "file.saveAs",
+    label: "Save As…",
+    keys: { mac: "Mod-Shift-S", other: "Mod-Shift-S" },
+    canRun: () => true,
+    run: (ctx) => ctx.fileSaveAs(),
   },
   {
     id: "file.exportPdf",

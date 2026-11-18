@@ -72,7 +72,7 @@ function Toolbar({
             Open
           </Button>
         </Tooltip>
-        <Tooltip label={tip("file.save")}>
+        <Tooltip label={`${tip("file.save")} · ${tip("file.saveAs")}`}>
           <Button
             variant="subtle"
             size="compact-md"

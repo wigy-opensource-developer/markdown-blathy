@@ -47,9 +47,20 @@ export const openMarkdownPath = (path) => invoke("open_markdown_path", { path })
 export const takeStartupDocument = () => invoke("take_startup_document");
 
 /** Save Markdown via a "Save As…" dialog: filename defaults to `<title>.md`
- *  in `directory`. Resolves with `{ path }` or `{ canceled: true }` (§7.4). */
+ *  in `directory`. Resolves with `{ path }` or `{ canceled: true }` (§7.4).
+ *  The chosen path becomes the backend's save-in-place target. */
 export const saveMarkdown = (content, title, directory) =>
   invoke("save_markdown", { content, title, directory });
+
+/** Save the open document in place (M9): writes to the exact `PathBuf` the
+ *  backend remembers from the last open/Save As, without a dialog. The path
+ *  never travels through this IPC string, so a non-UTF-8 filename still
+ *  saves to the right file (§6). Rejects when the document is untitled. */
+export const saveDocument = (content) => invoke("save_document", { content });
+
+/** Forget the backend's save-in-place path (New): a later plain save must not
+ *  overwrite the previously opened file. */
+export const forgetDocument = () => invoke("forget_document");
 
 /** The working directory at startup: `$XDG_DATA_HOME` or `$HOME` (§8.4). */
 export const getInitialDirectory = () => invoke("get_initial_directory");
