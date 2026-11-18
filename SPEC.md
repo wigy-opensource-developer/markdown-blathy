@@ -187,7 +187,7 @@ to turn this off.
 | **M6 — Engine cache & fonts** | Reusable engine + system/template-side fonts | ✅ Done |
 | **M7 — Logging & extended syntax** | `tracing` + SVG internal links + heading IDs + new constructs | ✅ Done |
 | **M8 — Packaging & release** | Per-platform reusable workflows (deb, rpm, AppImage, macOS, Windows) with a tag-triggered draft release, bundle + AppImage metadata, Windows icon | ✅ Done |
-| **M9 — Data safety & headless test environment** | Headless build/E2E environment + smoke test, plain save, dirty state + close guard, autosave recovery, export warnings surfaced in the UI | ⬜ Planned |
+| **M9 — Data safety & headless test environment** | Headless build/E2E environment + smoke test, plain save, dirty state + close guard, autosave recovery, export warnings surfaced in the UI | ✅ Done |
 
 See **IMPLEMENTATION.md** for acceptance criteria and test plans per milestone.
 
@@ -238,6 +238,8 @@ See **IMPLEMENTATION.md** for acceptance criteria and test plans per milestone.
 
 ### M9 tasks — data safety & headless test environment
 
+All tasks below are implemented and covered by the quality gate.
+
 1. **Headless build and E2E environment.** Install the GTK/WebKitGTK dev
    stack plus the headless display stack (`xvfb`, `xauth`, `dbus-x11`,
    `webkit2gtk-driver`) in dev containers (apt commands in TESTING.md;
@@ -253,9 +255,10 @@ See **IMPLEMENTATION.md** for acceptance criteria and test plans per milestone.
    test pass in a bare container.
 2. **Plain Save.** `file.save` (Mod+S) writes the open document to its
    existing path without a dialog; only an untitled document opens the
-   "Save As…" dialog. `save_markdown` takes the current path from the
-   frontend, and the backend keeps the opened path so a non-UTF-8 filename
-   still saves correctly; "Save As…" stays available for changing the path.
+   "Save As…" dialog. `save_document` writes the backend's remembered
+   `PathBuf` (set by open/Save As, cleared by New), so a non-UTF-8 filename
+   still saves correctly; `file.saveAs` (Mod+Shift+S) stays available for
+   changing the path and keeps the front-matter-title default filename.
    Acceptance: edit an opened file, Mod+S, no dialog, the file on disk
    changes.
 3. **Dirty state and close guard.** Track edits since the last save/open;
@@ -287,7 +290,9 @@ Follow-ups found in manual use, to schedule after M8:
   re-asserting the app icon on focus/close). Cosmetic, no functional impact.
 - **Single-instance forwarding** — every `markdown-blathy gui` launch starts
   a new instance (docs/CLI.md); forwarding to a running instance is not
-  implemented.
+  implemented. The `app-request` `open` event and the dirty guard are in
+  place, so the forwarding task only needs to deliver the path to the running
+  backend and emit that event.
 - **Native menu entries** — the command registry (`src/lib/commands.js`) is
   ready for them, but no menu bar is wired; most visible on macOS.
 - **E2E WebDriver suite** — the plan (harness, five journeys, CI gating) is
@@ -323,7 +328,7 @@ one closes only when the upstream crate is patched — there is no in-repo fix.
 - **Math is LaTeX-flavored, but not a full LaTeX engine.** Common LaTeX math (scripts, fractions/roots, symbols, styles, matrices, common macros) is translated to Typst math. Packages, exotic TeX primitives and some environment/TikZ edge cases remain unsupported; translator diagnostics report them.
 - No incremental compilation — full recompile per change.
 - **Linux UI text is grayscale-antialiased** — WebKitGTK renders text onto composited transparent layers. The Typst SVG preview is vector paths and unaffected.
-- **Non-UTF-8 filenames on legacy-locale Linux** — paths travel over IPC as JSON strings (UTF-8), so a filename in e.g. latin-2 bytes is echoed back lossily. File *contents* still load and writes still go to the correct file.
+- **Non-UTF-8 filenames on legacy-locale Linux** — paths travel over IPC as JSON strings (UTF-8), so a filename in e.g. latin-2 bytes is echoed back lossily: the title bar and dialog defaults may show replacement characters. File *contents* load, save-in-place and crash recovery use the backend's exact `PathBuf` (and the snapshot's exact path bytes), so writes always go to the correct file.
 - SVG preview text is not selectable (inline SVG).
 - **Emoji shortcodes** (`:smile:`) are not expanded — the author pastes actual emoji characters.
 - **Automatic URL linking** is not enabled — users write explicit bare links (`<https://example.com>`) when they want a link.

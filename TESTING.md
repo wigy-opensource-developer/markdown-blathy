@@ -299,19 +299,28 @@ regressions without duplicating the converter or engine test matrix.
 ### M7 — Logging & extended syntax
 - [ ] `tracing` + `EnvFilter` replaces `eprintln!`; `RUST_LOG=debug` shows cache rebuilds and preview timing
 - [ ] SVG internal link resolution via `svg_in_bundle` with `LateLinkResolver` + anchors — machinery in place; inert in SVG on typst 0.15 (no paged anchors), PDF links work; href test `#[ignore]`d until typst catches up
-- [ ] Heading IDs: manual `{#custom-id}` always honored; auto slug = kebab-case(plain text) gated by `maxLevel` (toolbar setting, overridable per doc via front-matter `headingIdsMaxLevel`); one uniqueness namespace, duplicate warning; emitted as invisible `#label("id")`
+- [ ] Heading IDs: manual `{#custom-id}` always honored; auto slug = kebab-case(plain text) gated by `maxLevel` (toolbar setting, overridable per doc via front-matter `autoHeadingLevel`); one uniqueness namespace, duplicate warning; emitted as invisible `#label("id")`
 - [ ] Internal links: `[x](#slug)` → prelude `internal-link` (works in PDF; broken targets degrade to plain text)
 - [ ] Explicit bare links (`<url>`) supported in all flavors
 - [ ] Highlight/subscript/superscript/definition lists in Custom flavor
 - [ ] TOC: `[[_TOC_]]` marker triggers `#markdown-toc()` in Custom flavor
 - [ ] Probe exercises all new helpers
-- [ ] Manual verification: open document with footnote → preview shows clickable marker → click scrolls to note
+- [ ] Manual verification: open a document with a footnote → the preview shows the marker and note (links are inert in the SVG on typst 0.15; they work in the exported PDF)
+
+### M9 — Data safety & headless environment
+- [x] GTK/WebKitGTK + Xvfb/dbus/WebKitWebDriver install documented and verified in a bare container; `cargo test --workspace` links
+- [x] `scripts/smoke-headless.sh` runs the GUI under Xvfb and requires both a live window and a rendered preview; the `headless-smoke` CI job gates every push/PR
+- [x] Mod+S saves in place through the backend's exact `PathBuf`; Mod+Shift+S is Save As and keeps the title-based default filename; New clears the path
+- [x] Dirty marker in the window title; Close/New/Open (including CLI opens) ask Save/Discard/Cancel; a successful save resumes the interrupted request
+- [x] Recovery snapshots every 30 s while dirty, one atomic slot per document (exact path bytes); startup offers Restore/Discard only to a pristine editor; snapshots survive until discard or a successful save
+- [x] Export returns compile warnings and the UI shows them in a dismissible panel
+- [x] The dead "Custom…" margin preset is gone; stored `custom` settings migrate to the matching preset
 
 ## Test quality rules
 
 - Follow red-green-refactor. One failing test at a time.
 - `markdown/` and `typst_engine/` are plain Rust (no `tauri` imports) — tests run with `cargo test`.
 - Frontend pure modules (`lib/*.js`) testable with Vitest.
-- Component tests not required for v1.
+- Component bodies that can render statically are covered with `react-dom/server`; portal-based wrappers are left to the E2E layer.
 - Slow engine tests marked with `#[ignore]`.
 - No untested production code.

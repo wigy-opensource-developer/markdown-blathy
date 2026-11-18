@@ -9,6 +9,7 @@ The name commemorates Ottó Titusz Bláthy who among his other inventions became
 
 - **Split-screen editing** — Markdown on the left, live preview on the right.
 - **Pixel-identical preview** — the preview is rendered by the same Typst compiler that produces the PDF, so what you see is what you get.
+- **Save in place** — Ctrl+S overwrites the open file (no dialog); Save As is Ctrl+Shift+S.
 - **Export to PDF** — one click, system save dialog, opens in your default PDF viewer.
 - **Multiple Markdown flavors** — CommonMark, GFM (GitHub Flavored Markdown), or Custom (footnotes, math, task lists).
 - **LaTeX-style math** — inline and display math use familiar TeX/LaTeX notation (fractions, roots, matrices, common macros); Typst renders the preview and PDF.
