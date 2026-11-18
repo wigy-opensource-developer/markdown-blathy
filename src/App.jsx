@@ -1,11 +1,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { useDebouncedCallback } from "@mantine/hooks";
 import { MantineProvider } from "@mantine/core";
 import { open } from "@tauri-apps/plugin-dialog";
 import { listen } from "@tauri-apps/api/event";
 import * as api from "./lib/api.js";
 import { marginsForPreset } from "./lib/presets.js";
-import { createPreviewFreeze } from "./lib/previewFreeze.js";
+import { createRenderScheduler } from "./lib/renderScheduler.js";
 import { createRenderStatus } from "./lib/renderStatus.js";
 import { isStaleResponse } from "./lib/seq.js";
 import { getCommand } from "./lib/commands.js";
@@ -41,13 +40,29 @@ export default function App() {
   );
   // The concrete Mantine color scheme for the UI chrome only.
   const colorScheme = resolveColorScheme(theme, systemDark);
+  // The editor is UNCONTROLLED between loads: `markdown` is the text the
+  // editor was *loaded* with (open/new/restore/front-matter edit), while the
+  // live buffer lives in `docRef` and is updated on every keystroke without a
+  // React commit. This is a performance requirement, not a style: a commit
+  // per keystroke makes WebKitGTK run a full-document pass over the multi-MB
+  // inline SVG preview, which takes longer than the 200 ms debounce — the
+  // preview then re-renders once per character instead of once per pause.
   const [markdown, setMarkdown] = useState(SAMPLE_DOC);
+  // Bumped on every load so the editor remounts with the new text even when
+  // the new text equals the previous load (e.g. New after typing).
+  const [documentVersion, setDocumentVersion] = useState(0);
   // True while the document has edits that are not on disk (M9): drives the
   // window-title marker and the unsaved-changes guard. A ref mirrors it for
   // the guard, whose callbacks outlive a render.
   const [dirty, setDirty] = useState(false);
+  // The guard reads the ref, which flips on the first keystroke (the state
+  // only follows at the debounced render); every save/load updates both.
   const dirtyRef = useRef(false);
-  dirtyRef.current = dirty;
+  // The first keystroke marks the buffer dirty in a ref at once (the close
+  // guard must never miss an edit) but defers the React state update to the
+  // debounced render: a commit here would repaint the whole SVG preview
+  // before the user has paused, reintroducing the per-character cost.
+  const pendingDirtyRef = useRef(false);
   const [pages, setPages] = useState([]);
   const [warnings, setWarnings] = useState([]);
   const [error, setError] = useState(null);
@@ -60,12 +75,12 @@ export default function App() {
   // The directory the dialogs start browsing in: `$XDG_DATA_HOME`/`$HOME` at
   // startup, then the directory of the most recently opened file (§8.4).
   const [directory, setDirectory] = useState(null);
-  // Last preview request sequence we *sent*; responses older than this are
-  // dropped (§7.5).
+  // Latest preview sequence: bumped when a render is sent, and when a load
+  // invalidates an in-flight response; older responses are dropped (§7.5).
   const seq = useRef(0);
-  // The preview freeze, built below once the render callback it wraps exists
-  // (§6.2; see lib/previewFreeze.js).
-  const previewFreeze = useRef(null);
+  // The render scheduler, built below once the render callback it drives
+  // exists (§6.2; see lib/renderScheduler.js).
+  const scheduler = useRef(null);
   // The delayed "Rendering…" state machine (lib/renderStatus.js), built
   // below with its React binding.
   const renderStatus = useRef(null);
@@ -75,7 +90,10 @@ export default function App() {
   // committed the new `markdown`. `documentPath` lets the backend resolve
   // document-relative images.
   const docRef = useRef({ markdown: SAMPLE_DOC, options, documentPath: null });
-  docRef.current = { markdown, options, documentPath: filePath };
+  // Only non-buffer fields are synced from render state; `markdown` is owned
+  // by the editor and the load helper (a render must not clobber typed text).
+  docRef.current.options = options;
+  docRef.current.documentPath = filePath;
 
   // The effective document settings from the last render (§6.2): Rust parses
   // the front matter and returns it, so the frontend never parses YAML
@@ -87,7 +105,7 @@ export default function App() {
   // Modals (the Document settings popover and the unsaved-changes prompt)
   // share one treatment: the editor/preview/status are blurred, `inert`
   // (clicks, caret and screen readers stay out) and frozen (see
-  // `.modal-open` in styles.css and lib/previewFreeze.js). The counter keeps
+  // `.modal-open` in styles.css and lib/renderScheduler.js). The counter keeps
   // two overlapping modals from unfreezing each other early.
   const [modalDepth, setModalDepth] = useState(0);
   const modalDepthRef = useRef(0);
@@ -131,7 +149,8 @@ export default function App() {
     [docMeta, filePath]
   );
 
-  /** The pages of a finished render land in one (heavy) React commit. */
+  /** The pages of a finished render land in one (heavy) React commit — the
+   *  scheduler applies it only while no modal is open. */
   const applyPreview = useCallback((result) => {
     setPages(result.pages);
     setWarnings(result.warnings);
@@ -149,77 +168,87 @@ export default function App() {
     renderStatus.current = createRenderStatus({ delayMs: 350, notify: setRenderBusy });
   }
 
-  // Debounced preview refresh: pauses 200ms after the last keystroke, well
-  // within the ≤300ms acceptance for M3. `useDebouncedCallback` keeps the
-  // latest callback in a ref, so `markdown`/`options` are always fresh when
-  // the debounced call actually fires. The returned function is stable across
-  // renders, so effects/callbacks depending on it stay stable too.
-  // The render body: reads `docRef`, so a `requestPreviewNow()` fired in the
-  // same event as `setMarkdown(...)` still renders the new text, and the
-  // debounced path renders whatever is current when the timer fires. All its
-  // captures are refs/stable setters, so this callback itself is stable.
+  // The render body the scheduler starts: reads `docRef`, so it always
+  // compiles the live buffer — a load in the same event included. Returns
+  // the result for the scheduler to apply, or null when the response was
+  // invalidated by a newer load (seq guard, §7.5) or the compile failed;
+  // either way the scheduler's catch-up check still runs. All its captures
+  // are refs/stable setters, so this callback is stable.
   const runRender = useCallback(async () => {
-    const freeze = previewFreeze.current;
-    freeze.started();
+    if (pendingDirtyRef.current) {
+      pendingDirtyRef.current = false;
+      setDirty(true); // title dot + autosave start; the user has paused
+    }
     renderStatus.current.start();
     const seqId = ++seq.current;
     const { markdown: doc, options: opts, documentPath: docPath } = docRef.current;
     try {
       const result = await api.renderPreview(doc, opts, seqId, docPath);
-      if (isStaleResponse(result.seq, seq.current)) return; // stale — drop (a newer render owns the note now)
-      freeze.finish(result); // commit now, or stash while settings are open
+      // Invalidated by a load: drop the pages, keep the "Rendering…" note —
+      // the load's render is the live episode now.
+      if (isStaleResponse(result.seq, seq.current)) return null;
+      return result;
     } catch (err) {
       renderStatus.current.stop();
       setError(String(err)); // keep the last good preview
+      return null;
     }
   }, []);
 
-  // Debounced preview refresh: pauses 200ms after the last keystroke, well
-  // within the ≤300ms acceptance for M3. Keystrokes are the only callers
-  // that want to wait; a freshly loaded document asks for `requestNow`
-  // (below) and starts rendering at once.
-  const refreshPreview = useDebouncedCallback(runRender, 200);
-
-  // Freezes document renders while the Document settings popover is open
-  // (§6.2): rendering blocks the UI thread and scales with the document, so
-  // settings edits must not race a render scheduled by earlier editor
-  // keystrokes; changes made meanwhile collapse into one catch-up render on
-  // close. lib/previewFreeze.js owns that ordering; the App only reports
-  // render lifecycle (`started`/`finish`) and the popover open/close. The
-  // cycle — refreshPreview uses the freeze, the freeze re-schedules
-  // refreshPreview — resolves through the ref: both exist before either is
-  // called, and all captured functions are stable across renders.
-  if (!previewFreeze.current) {
-    previewFreeze.current = createPreviewFreeze({
-      refresh: refreshPreview,
-      refreshNow: runRender,
-      cancel: refreshPreview.cancel,
+  // The render cycle has ONE owner (lib/renderScheduler.js): edits are
+  // debounced 200 ms (well within the ≤300 ms acceptance for M3); at most
+  // one compile is in flight — edits meanwhile only mark a catch-up owed,
+  // never start or schedule a second render; when the render settles, the
+  // catch-up starts iff there were edits since it began and the last one is
+  // ≥200 ms old (otherwise the remaining debounce is armed). The modal
+  // freeze (§6.2) lives in the same machine: while a popover is open nothing
+  // renders and finished results are stashed for one catch-up pass on close.
+  // `invalidate` bumps the seq so a load drops an in-flight response even
+  // though its own render waits for that one to settle.
+  if (!scheduler.current) {
+    scheduler.current = createRenderScheduler({
+      debounceMs: 200,
+      render: runRender,
       apply: applyPreview,
+      invalidate: () => {
+        seq.current += 1;
+      },
     });
   }
 
-  /** Schedule a preview; deferred as owed while the popover is open. */
-  const requestPreview = useCallback(() => previewFreeze.current.request(), []);
+  /** Load `text` as a fresh document: the editor remounts with it, the live
+   *  buffer follows, and the next render reads the same text. */
+  const loadDocument = useCallback((text) => {
+    docRef.current.markdown = text;
+    setMarkdown(text);
+    setDocumentVersion((version) => version + 1);
+  }, []);
+
+  /** An edit needs a preview: the scheduler debounces it, or remembers it
+   *  as owed while a render is in flight / a modal is open. */
+  const requestPreview = useCallback(() => scheduler.current.request(), []);
 
   /**
    * Render a just-loaded document right away (no 200 ms debounce). `patch`
-   * carries the fresh text when the caller's `setMarkdown(...)` has not
-   * re-rendered yet — the initial sample needs no patch.
+   * carries the fresh text when the caller's load has not updated the live
+   * buffer yet — the initial sample needs no patch. If a render is in
+   * flight, its response is invalidated and the load renders as soon as it
+   * settles (still one compile at a time).
    */
   const requestPreviewNow = useCallback((patch) => {
     if (patch) docRef.current = { ...docRef.current, ...patch };
-    previewFreeze.current.requestNow();
+    scheduler.current.requestNow();
   }, []);
 
   /** Enter a modal interaction: the first one freezes previews and blurs the
-   *  panes; the preview freeze catches up once when the last one closes. */
+   *  panes; the scheduler catches up once when the last one closes. */
   const enterModal = useCallback(() => {
-    if (modalDepthRef.current++ === 0) previewFreeze.current.open();
+    if (modalDepthRef.current++ === 0) scheduler.current.open();
     setModalDepth(modalDepthRef.current);
   }, []);
   const leaveModal = useCallback(() => {
     if (modalDepthRef.current === 0) return; // unpaired notification
-    if (--modalDepthRef.current === 0) previewFreeze.current.close();
+    if (--modalDepthRef.current === 0) scheduler.current.close();
     setModalDepth(modalDepthRef.current);
   }, []);
 
@@ -308,7 +337,8 @@ export default function App() {
     try {
       const res = await api.restoreRecovery(snapshot.id);
       setFilePath(res.path);
-      setMarkdown(res.markdown);
+      loadDocument(res.markdown);
+      dirtyRef.current = true;
       setDirty(true);
       pristineRef.current = false;
       if (res.path) setDirectory(parentDirectory(res.path));
@@ -318,7 +348,7 @@ export default function App() {
     } finally {
       closeRecovery();
     }
-  }, [recovery, requestPreviewNow, closeRecovery]);
+  }, [recovery, loadDocument, requestPreviewNow, closeRecovery]);
 
   const handleDiscardRecovery = useCallback(async () => {
     const snapshot = recovery;
@@ -332,7 +362,7 @@ export default function App() {
     }
   }, [recovery, closeRecovery]);
 
-  /** Popover opened → freeze; closed → the freeze catches up once. */
+  /** Popover opened → freeze; closed → the scheduler catches up once. */
   const handleSettingsOpenChange = useCallback(
     (open) => {
       // Mantine may report the same state twice (initial closed notification);
@@ -350,8 +380,8 @@ export default function App() {
   // not a keystroke. (The Rust side prewarms the default engine meanwhile.)
   useEffect(() => {
     requestPreviewNow();
-    return () => refreshPreview.cancel();
-  }, [requestPreviewNow, refreshPreview]);
+    return () => scheduler.current.dispose();
+  }, [requestPreviewNow]);
 
   // `app-request` carries every backend request that needs the dirty guard
   // (M9 task 3): a window close, or a document the CLI asked to open. The
@@ -429,9 +459,15 @@ export default function App() {
 
   const handleEditorChange = useCallback(
     (value) => {
+      // A programmatic load echoes through CodeMirror's onChange; it is not a
+      // user edit (loadDocument already set the buffer).
+      if (value === docRef.current.markdown) return;
       pristineRef.current = false;
-      setMarkdown(value);
-      setDirty(true);
+      docRef.current.markdown = value;
+      if (!dirtyRef.current) {
+        dirtyRef.current = true;
+        pendingDirtyRef.current = true;
+      }
       requestPreview();
     },
     [requestPreview]
@@ -499,12 +535,14 @@ export default function App() {
       // asked for must not sit under a recovery prompt for another file.
       closeRecoveryRef.current();
       setFilePath(res.path);
-      setMarkdown(res.content);
+      loadDocument(res.content);
+      pendingDirtyRef.current = false;
+      dirtyRef.current = false;
       setDirty(false);
       setDirectory(parentDirectory(res.path));
       requestPreviewNow({ markdown: res.content, documentPath: res.path });
     },
-    [requestPreviewNow]
+    [loadDocument, requestPreviewNow]
   );
 
   // New document: clear the backend's save-in-place path first. Awaiting it
@@ -516,11 +554,13 @@ export default function App() {
         closeRecoveryRef.current();
         await api.forgetDocument();
         setFilePath(null);
-        setMarkdown(SAMPLE_DOC);
+        loadDocument(SAMPLE_DOC);
+        pendingDirtyRef.current = false;
+        dirtyRef.current = false;
         setDirty(false);
         requestPreviewNow({ markdown: SAMPLE_DOC, documentPath: null });
       }),
-    [runFileAction, requestPreviewNow]
+    [runFileAction, loadDocument, requestPreviewNow]
   );
 
   const doOpen = useCallback(
@@ -576,6 +616,8 @@ export default function App() {
       );
       if (api.isCanceled(res)) return false;
       setFilePath(res.path);
+      pendingDirtyRef.current = false;
+      dirtyRef.current = false;
       setDirty(false);
       return true;
     } catch (err) {
@@ -591,6 +633,8 @@ export default function App() {
       const res = await api.saveDocument(docRef.current.markdown);
       if (api.isCanceled(res)) return false;
       setFilePath(res.path);
+      pendingDirtyRef.current = false;
+      dirtyRef.current = false;
       setDirty(false);
       return true;
     } catch (err) {
@@ -658,9 +702,10 @@ export default function App() {
   const handleApplySettings = useCallback(
     (patch) =>
       runFileAction(async () => {
-        const updated = await api.updateFrontMatter(markdown, patch);
-        setMarkdown(updated);
+        const updated = await api.updateFrontMatter(docRef.current.markdown, patch);
+        loadDocument(updated);
         pristineRef.current = false;
+        dirtyRef.current = true;
         setDirty(true);
         // Reflect the written settings immediately: the catch-up render is
         // deferred while the popover is open and may fail on unrelated
@@ -668,14 +713,14 @@ export default function App() {
         setDocMeta((prev) => applyDocSettingsPatch(prev, patch));
         requestPreview();
       }),
-    [runFileAction, markdown, requestPreview]
+    [runFileAction, loadDocument, requestPreview]
   );
 
   const handleExport = useCallback(
     () =>
       runFileAction(async () => {
         const res = await api.exportPdf(
-          markdown,
+          docRef.current.markdown,
           options,
           safeFileName(title),
           directory,
@@ -690,7 +735,7 @@ export default function App() {
             : null
         );
       }),
-    [runFileAction, markdown, options, title, directory, filePath]
+    [runFileAction, options, title, directory, filePath]
   );
 
   const dismissError = useCallback(() => setError(null), []);
@@ -800,6 +845,7 @@ export default function App() {
         <main id="panes" inert={modalOpen}>
           <section id="editor-pane">
             <Editor
+              key={documentVersion}
               value={markdown}
               onChange={handleEditorChange}
               fontSize={editorFontSize}

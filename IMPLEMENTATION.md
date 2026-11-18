@@ -424,7 +424,7 @@ Compiles with `sys.inputs`, calls `typst_pdf::pdf(&doc, &Default::default())`.
 ```
 src/
 ├── main.jsx          # font imports, MantineProvider, <App/>
-├── App.jsx           # app state, debounce loop, seq guard, preview freeze, layout
+├── App.jsx           # app state, render-cycle wiring, seq guard, layout
 ├── components/
 │   ├── Toolbar.jsx   # left: file buttons + Document popover; right: Page popover + export
 │   ├── PageSettings.jsx # page setup (paper/margins/align) + template popover; non-modal, live apply
@@ -439,7 +439,9 @@ src/
 │   ├── api.js        # invoke() wrappers (one per command)
 │   ├── settings.js   # localStorage-backed settings + applyOptionsPatch
 │   ├── docSettings.js # Document popover form → front-matter patch (tri-state hyphenate)
-│   ├── previewFreeze.js # modal-preview freeze: pause/owe + stash + one catch-up render on close
+│   ├── renderScheduler.js # the render cycle: 200ms debounce, single flight, catch-up, modal freeze
+│   ├── renderStatus.js # delayed "Rendering…" note (350 ms into a pending render)
+│   ├── seq.js        # stale-response guard (response seq vs latest sent/invalidated)
 │   ├── unsavedGuard.js # dirty guard: defer Close/New/Open, resume after a successful save
 │   ├── recovery.js   # autosave cadence + pristine/expected-path decision
 │   └── presets.js    # PAPERS, MARGIN_PRESETS, ALIGNS, FEATURES tables
@@ -451,15 +453,23 @@ src/
 ```jsx
 const [settings, setSettings] = useState(() => loadSettings(window.localStorage));
 const { options, editorFontSize } = settings;
+// The text the editor was *loaded* with; the live buffer is docRef.markdown.
 const [markdown, setMarkdown] = useState(SAMPLE_DOC);
+const [documentVersion, setDocumentVersion] = useState(0);
 const [pages, setPages] = useState([]);
 const [warnings, setWarnings] = useState([]);
 const [error, setError] = useState(null);
-const filePath = useRef(null);
+const [dirty, setDirty] = useState(false);
+const docRef = useRef({ markdown: SAMPLE_DOC, options, documentPath: null });
+const filePath = useState(null);
 const directory = useState(null);
 const seq = useRef(0);
-const [title, setTitle] = useState(() => docTitle(SAMPLE_DOC, null, "Sample"));
 ```
+
+`docRef` carries `markdown` (live buffer), `options` and `documentPath` to the
+renderer. `loadDocument(text)` sets the live buffer, `setMarkdown(text)` and
+bumps `documentVersion`; the `<Editor key={documentVersion}>` remounts with the
+new text. See "Editor buffer is uncontrolled between loads" in §8.
 
 ### changeOption
 
@@ -470,6 +480,69 @@ Merges a partial patch through `applyOptionsPatch` (drops `null` values for non-
 The frontend intercepts every click (`Preview.jsx` `preventDefault` on `closest("a")`). http(s) opens in the system browser; any other scheme is rejected with a banner error. Fragment links (`href` starting with `#`) are internal — left to the webview to scroll natively.
 
 ## 8. Implementation decisions
+
+### Editor buffer is uncontrolled between loads
+
+`markdown` state is the text the editor was *loaded* with, not the live buffer.
+Keystrokes write `docRef.current.markdown` and schedule the debounced render
+without a React commit; the first edit flips a ref immediately (the close
+guard must never miss an edit), and the `dirty` state update is deferred to
+the moment the debounced render starts, so the title dot and autosave appear
+when the user pauses. Loads — Open, New, recovery Restore, front-matter Apply —
+go through `loadDocument`, which sets the buffer and bumps `documentVersion`,
+remounting the editor with the new text (this also handles the case where the
+new text equals the previous load, e.g. New after typing).
+
+Why: on WebKitGTK a React commit makes the engine run a full-document pass
+over the inline SVG preview. With a ~3 MB nine-page preview that pass costs
+longer than the 200 ms debounce, so the timer expires between keystrokes and
+the preview re-renders once per character. Measured with the headless harness
+(Xvfb + xdotool, 20 characters at 60 ms): before, a nine-page document
+produced one render per character (input processed ~1.2 s per key); after, the
+same burst produces one render containing all 20 characters. Consequences:
+Save/Save As/Export/front-matter Apply read `docRef.current.markdown`; applying
+front matter remounts the editor (cursor returns to the start). The same
+WebKitGTK cost produced the uncontrolled Document settings draft (§4).
+
+### The render cycle is single-flight
+
+`lib/renderScheduler.js` is the one owner of "when does a preview render
+start". It absorbed the 200 ms debounce (formerly `useDebouncedCallback` in
+App.jsx) and the modal preview freeze (formerly `lib/previewFreeze.js`), and
+adds single flight:
+
+- Edits (keystrokes, option changes) arm a 200 ms debounce; only a pause
+  renders.
+- While a render is in flight, nothing new is started *or scheduled*: edits
+  only mark a catch-up owed and refresh the last-edit timestamp. The Typst
+  compile runs on `spawn_blocking`, so typing is never blocked by it, and
+  the uncontrolled editor (above) means keystrokes do not commit React
+  either.
+- When the render settles — result, compile error, or invalidated response
+  — the catch-up check runs: a new render starts iff there were edits since
+  it began AND the last edit is ≥200 ms old; if the user typed more recently,
+  the remaining debounce is armed instead. Many edits collapse into one
+  catch-up, and the catch-up render is itself single-flight.
+- Loads (Open/New/Restore) use `requestNow()`: no debounce, and the seq
+  guard invalidates an in-flight response (it shows the old document). The
+  load's own render still waits for the in-flight one to settle — at most
+  one compile runs at a time, even across loads. A keystroke after a
+  deferred load folds into the same owed render, debounced normally.
+- The modal freeze is unchanged in spirit: while a modal is open nothing
+  starts, a finished result is stashed, and close catches up once (a newer
+  change supersedes the stash; the catch-up deadline is measured from the
+  last edit, so a long-open modal renders at once on close).
+
+Save and close never wait for a render: they read the live buffer
+(`docRef`) and the dirty ref, which flips on the first keystroke.
+
+Known limit: applying a finished preview is one main-thread DOM swap, and
+on WebKitGTK its cost scales with the SVG size (~1.2 s for a ~3 MB nine-page
+preview). Keystrokes during that swap are buffered by the OS and delivered
+right after — none are lost — and the swap only happens after a ≥200 ms
+pause, never per keystroke. Making the swap itself interruptible would need
+chunked page insertion (or a separate preview document); the same applies
+to the "Rendering…" note, which commits 350 ms into a long render.
 
 ### Use `svg_in_bundle` instead of `svg()` for preview
 

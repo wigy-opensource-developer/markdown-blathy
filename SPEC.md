@@ -73,6 +73,8 @@ User-visible behaviour:
 
 **Renders are stateless** — each invoke recompiles the document from the current inputs; no document state is kept between invokes. The command layer does hold process-level state: the engine cache (one `TypstEngine` per static source), the consumed-once startup-document slot, and the prewarm hint written after each successful render. Perf is acceptable: Typst compiles a typical page in single-digit milliseconds, and the engine cache + memoization keep per-render cost low.
 
+**The render cycle is single-flight.** The frontend debounces edits by 200 ms and keeps at most one preview compile in flight: edits during a render only mark a catch-up owed, which starts when the render settles and the last edit is ≥200 ms old (`src/lib/renderScheduler.js`). Loads invalidate an in-flight response through the seq guard but still wait for it to settle. Save and close never wait for a render.
+
 **The CLI is a second thin adapter.** `crates/markdown-blathy` (binary `markdown-blathy`) wraps the same `Service` for scriptable PDF export, front-matter get/set, template validation and listing, and the `gui` launcher, which hands a file to the GUI through the startup-document slot ([docs/CLI.md](docs/CLI.md)).
 
 ## 4. Flavor support
@@ -121,7 +123,7 @@ hyphenation remain the defaults.
 status bar are blurred, `inert` and frozen: a render scheduled by earlier
 editor keystrokes is cancelled on open, a render that finishes meanwhile is
 stashed, and the owed/stashed render is shown in a single catch-up pass on
-close (`lib/previewFreeze.js`, `.modal-open` in `styles.css`). The
+close (`lib/renderScheduler.js`, `.modal-open` in `styles.css`). The
 unsaved-changes prompt uses the same treatment.
 
 **The unsaved-changes prompt guards every destructive request.** Closing the

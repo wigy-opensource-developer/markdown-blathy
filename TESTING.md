@@ -90,7 +90,7 @@
 | api wrappers call invoke with correct command names | api.js | high |
 | FLAVORS, PAPERS, MARGIN_PRESETS, ALIGNS have expected values | presets.js | high |
 | Document patch diffs the form; hyphenate is tri-state (absent = keep, null = clear, boolean = set); feature maps compare order-insensitively | docSettings.js | high |
-| Preview freeze defers renders while the Document popover is open, stashes finished ones, and owes exactly one catch-up render on close | previewFreeze.js | high |
+| Render scheduler debounces edits (200 ms), keeps one compile in flight, catches up once after it settles (only for edits ≥200 ms old), and freezes/stashes around modals | renderScheduler.js | high |
 | Dirty guard resumes the interrupted Close/New/Open only after a successful save; cancel/failed save keeps the request pending | unsavedGuard.js | high |
 | Recovery is offered only to a pristine editor, and only for the opened document's own snapshot | recovery.js | high |
 | Export warnings name the PDF, count/list the warnings and offer an explicit dismiss | ExportWarnings.jsx | medium |
