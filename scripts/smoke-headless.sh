@@ -38,19 +38,31 @@ trap 'rm -rf "$RUNTIME_DIR" "$LOG"' EXIT
 chmod 700 "$RUNTIME_DIR"
 
 set +e
-env XDG_RUNTIME_DIR="$RUNTIME_DIR" \
+# `RUST_LOG` makes the command layer log "preview rendered": a blank webview
+# also stays alive, so a render is what proves the frontend actually ran.
+env XDG_RUNTIME_DIR="$RUNTIME_DIR" RUST_LOG=markdown_blathy_lib=info \
   xvfb-run -a dbus-run-session -- \
   env WEBKIT_DISABLE_COMPOSITING_MODE=1 \
   timeout "$TIMEOUT" "$BINARY" >"$LOG" 2>&1
 status=$?
 set -e
 
-if [[ $status -eq 124 ]]; then
-  echo "ok: GUI stayed alive for ${TIMEOUT}s under Xvfb ($BINARY)"
-  exit 0
+if [[ $status -ne 124 ]]; then
+  echo "error: GUI exited before the ${TIMEOUT}s deadline (status $status) — the window did not initialize" >&2
+  echo "--- output:" >&2
+  tail -50 "$LOG" >&2
+  exit 1
 fi
 
-echo "error: GUI exited before the ${TIMEOUT}s deadline (status $status) — the window did not initialize" >&2
-echo "--- output:" >&2
-tail -50 "$LOG" >&2
-exit 1
+# Staying alive is not enough: a debug build without the `custom-protocol`
+# feature loads the dev URL and shows a blank window that never exits.
+if ! grep -q "preview rendered" "$LOG"; then
+  echo "error: the window stayed alive but the frontend never rendered a preview" >&2
+  echo "       (blank webview? debug builds need --features tauri/custom-protocol)" >&2
+  echo "--- output:" >&2
+  tail -50 "$LOG" >&2
+  exit 1
+fi
+
+echo "ok: GUI rendered a preview and stayed alive for ${TIMEOUT}s under Xvfb ($BINARY)"
+exit 0

@@ -97,8 +97,11 @@ jobs:
       - name: build frontend
         run: npm run build
 
-      - name: build GUI (debug)
-        run: cargo build -p markdown-blathy-tauri
+      # A plain `cargo build` links the dev server URL; the `custom-protocol`
+      # feature embeds `dist/` so the binary is self-contained like
+      # `tauri build` (without it the smoke test would see a blank window).
+      - name: build GUI (debug, embedded frontend)
+        run: cargo build -p markdown-blathy-tauri --features tauri/custom-protocol
 
-      - name: smoke test (window initializes under Xvfb)
-        run: ./scripts/smoke-headless.sh target/debug/MarkdownBláthy
+      - name: smoke test (renders a preview under Xvfb)
+        run: ./scripts/smoke-headless.sh target/debug/markdown-blathy-tauri

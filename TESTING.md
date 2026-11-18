@@ -115,26 +115,36 @@ sudo apt-get install -y --no-install-recommends \
 Both lists were verified on a root Debian 13 (trixie) container
 (WebKitGTK 2.54, GTK 3.24): after the install the full
 `cargo test --workspace` links, `WebKitWebDriver` is on `PATH`, and the
-smoke test below stays alive under Xvfb (exit 124).
+smoke test below renders a preview under Xvfb.
 
-Build the production binary and smoke-test that the window initializes:
+Build the production binary and smoke-test that the window initializes and
+the frontend actually renders:
 
 ```bash
 npm run tauri build -- --no-bundle
 ./scripts/smoke-headless.sh                # target/release/MarkdownBláthy, 15 s
-./scripts/smoke-headless.sh target/debug/MarkdownBláthy 15   # debug build
+
+# Faster debug loop; `custom-protocol` embeds dist/ (a plain cargo build
+# points at the Vite dev server and shows a blank window):
+npm run build
+cargo build -p markdown-blathy-tauri --features tauri/custom-protocol
+./scripts/smoke-headless.sh target/debug/markdown-blathy-tauri 15
 ```
 
 The script runs the binary under `xvfb-run -a dbus-run-session --` with
 `WEBKIT_DISABLE_COMPOSITING_MODE=1` and a private `XDG_RUNTIME_DIR`. It
-passes when the app is still alive at the deadline (`timeout` exit status
-124) and fails with the captured output when the window exits early. AT-SPI
-and EGL warnings about the missing accessibility bus or software rendering
-are expected in a bare container and do not fail the test.
+passes only when both hold: the app is still alive at the deadline
+(`timeout` exit status 124) **and** the command layer logged `preview
+rendered`, which proves the embedded frontend loaded, IPC works and Typst
+compiled. A blank webview also stays alive, so the render check is what keeps
+the gate honest. Failures print the captured output. AT-SPI and EGL warnings
+about the missing accessibility bus or software rendering are expected in a
+bare container and do not fail the test.
 
-The CI `headless-smoke` job runs the same script against a debug build on
-every push and PR, so a GUI that cannot start on a headless Linux runner is
-caught before release.
+The CI `headless-smoke` job runs the same script against the
+`custom-protocol` debug build on every push and PR, so a GUI that cannot
+start — or renders nothing — on a headless Linux runner is caught before
+release.
 
 ## Completing the UI test framework
 

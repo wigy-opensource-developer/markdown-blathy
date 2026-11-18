@@ -229,12 +229,15 @@ See **IMPLEMENTATION.md** for acceptance criteria and test plans per milestone.
    stack plus the headless display stack (`xvfb`, `xauth`, `dbus-x11`,
    `webkit2gtk-driver`) in dev containers (apt commands in TESTING.md;
    verified on a root Debian 13 container — WebKitGTK 2.54, full
-   `cargo test --workspace` links, smoke test alive under Xvfb), and extend
-   the CI `linux-deps` action with the headless extras. Gate the
-   window-initializes smoke test from TESTING.md (`xvfb-run -a
-   dbus-run-session -- env WEBKIT_DISABLE_COMPOSITING_MODE=1 timeout 15s
-   …`; exit 124 = alive). Unblocks the WebDriver E2E plan. Acceptance:
-   `cargo test --workspace` and the smoke test pass in a bare container.
+   `cargo test --workspace` links, smoke test renders under Xvfb), and extend
+   the CI `linux-deps` action with the headless extras. Gate the smoke test
+   from TESTING.md (`xvfb-run -a dbus-run-session -- env
+   WEBKIT_DISABLE_COMPOSITING_MODE=1 timeout 15s …`); it passes only when the
+   window is alive **and** the frontend rendered a preview, so a blank
+   webview fails. A debug build must enable `tauri/custom-protocol` to embed
+   `dist/` (a plain `cargo build` points at the dev server). Unblocks the
+   WebDriver E2E plan. Acceptance: `cargo test --workspace` and the smoke
+   test pass in a bare container.
 2. **Plain Save.** `file.save` (Mod+S) writes the open document to its
    existing path without a dialog; only an untitled document opens the
    "Save As…" dialog. `save_markdown` takes the current path from the
