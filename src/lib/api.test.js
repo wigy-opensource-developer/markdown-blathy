@@ -19,6 +19,7 @@ import {
   confirmClose,
   discardRecovery,
   exportPdf,
+  exportPages,
   forgetDocument,
   frontendReady,
   getInitialDirectory,
@@ -58,6 +59,7 @@ describe("renderPreview", () => {
         options: renderOptionsPayload(OPTIONS),
         seq: 7,
         documentPath: null,
+        pages: [],
       },
     });
   });
@@ -70,8 +72,29 @@ describe("renderPreview", () => {
         options: renderOptionsPayload(OPTIONS),
         seq: 8,
         documentPath: "/home/u/docs/report.md",
+        pages: [],
       },
     });
+  });
+
+  it("forwards the initial page window for the atomic swap", () => {
+    renderPreview("# Hi", OPTIONS, 9, null, [3, 4, 5]);
+    expect(invoke).toHaveBeenCalledWith("render_preview", {
+      payload: {
+        markdown: "# Hi",
+        options: renderOptionsPayload(OPTIONS),
+        seq: 9,
+        documentPath: null,
+        pages: [3, 4, 5],
+      },
+    });
+  });
+});
+
+describe("exportPages", () => {
+  it("invokes export_pages with the render seq and page indices", () => {
+    exportPages(7, [0, 1, 2]);
+    expect(invoke).toHaveBeenCalledWith("export_pages", { seq: 7, pages: [0, 1, 2] });
   });
 });
 

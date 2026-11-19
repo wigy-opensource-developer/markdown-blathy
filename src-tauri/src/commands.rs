@@ -6,12 +6,14 @@
 //! operations.
 
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use markdown_blathy_core::markdown::convert::DocMeta;
 use markdown_blathy_core::markdown::frontmatter::Patch;
 use markdown_blathy_core::options::RenderOptions;
 use markdown_blathy_core::service::{RenderRequest, Service};
+use markdown_blathy_core::typst_engine::engine;
+use markdown_blathy_core::PagedDocument;
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, State, Window};
 use tracing::{debug, info, instrument, warn};
@@ -39,19 +41,68 @@ pub struct RenderPayload {
     /// resolve against its folder (§6.4). None for the untitled sample.
     #[serde(default)]
     pub document_path: Option<String>,
+    /// The initial page window the frontend wants exported WITH the render
+    /// (its visible viewport ± overscan). Returning these pages in the same
+    /// response keeps the preview swap atomic: the last-good pages stay up
+    /// until the new ones land, instead of flashing placeholders. Empty =
+    /// metadata only (boot, before the pane is measured); scrolling exports
+    /// further pages via `export_pages`.
+    #[serde(default)]
+    pub pages: Vec<usize>,
 }
 
-/// Per-page SVG strings plus warnings and the effective document settings,
-/// echoed back with the request's `seq`. The `doc` settings let the frontend
-/// show the parsed front-matter title/author/flavor/extensions without
-/// parsing YAML itself (§6.2).
+/// Render metadata echoed back with the request's `seq`: the compile is
+/// cached backend-side (ONE document, see `LastRender`) and SVG pages are
+/// exported from it on demand via `export_pages`. `page_sizes` are the
+/// intrinsic (width, height) points per page so the virtualized preview can
+/// lay out placeholder sheets before any SVG arrives (§7.4). The `doc`
+/// settings let the frontend show the parsed front-matter title/author/
+/// flavor/extensions without parsing YAML itself (§6.2).
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PreviewOutcome {
-    pub pages: Vec<String>,
+    pub page_count: usize,
+    pub page_sizes: Vec<(f64, f64)>,
+    /// The template's page background as a CSS color; null when transparent
+    /// or not a solid fill (the preview falls back to the UI theme's pane
+    /// background for its placeholder sheets).
+    pub page_background: Option<String>,
+    /// The requested initial window, exported from the same compile so the
+    /// frontend can swap old → new pages in one commit (empty when none was
+    /// requested).
+    pub pages: Vec<PageSvg>,
     pub warnings: Vec<String>,
     pub doc: DocMeta,
     pub seq: u64,
+}
+
+/// The single cached render: the latest compiled document, keyed by the
+/// request `seq`. Replaced on every render — deliberately NOT a cache of
+/// SVG strings; `export_pages` exports from it on demand, so memory holds
+/// one document's frames instead of every page's markup (§7.5).
+#[derive(Default)]
+pub struct LastRender(Mutex<Option<CachedRender>>);
+
+struct CachedRender {
+    seq: u64,
+    paged: Arc<PagedDocument>,
+}
+
+/// One exported page: its index in the document plus the SVG markup.
+#[derive(Debug, Serialize)]
+pub struct PageSvg {
+    pub index: usize,
+    pub svg: String,
+}
+
+/// `export_pages` result. `stale` means the requested `seq` is not the
+/// cached document any more (a newer render superseded it) — the frontend
+/// drops the response, same contract as the preview seq guard (§7.5).
+#[derive(Debug, Serialize)]
+pub struct PagesOutcome {
+    pub seq: u64,
+    pub stale: bool,
+    pub pages: Vec<PageSvg>,
 }
 
 /// Result of a dialog-bearing file command (§7.4, M4).
@@ -119,34 +170,57 @@ fn render_request(payload: &RenderPayload) -> RenderRequest {
     }
 }
 
-/// Live preview: markdown + options → per-page SVG strings (§7.4).
+/// Live preview: markdown + options → the compiled document (§7.4).
 ///
 /// The core service owns the M6 engine cache; compilation is CPU-bound, so it
-/// runs on `spawn_blocking`. `seq` is echoed back so the frontend can drop
-/// stale responses. The engine identity returned by the service is saved as
-/// the next launch's prewarm hint (§7.5).
+/// runs on `spawn_blocking`. The finished document becomes the single cached
+/// render (`LastRender`); the response carries only metadata (page count +
+/// sizes) and the frontend exports the pages it mounts via `export_pages`.
+/// `seq` is echoed back so the frontend can drop stale responses. The engine
+/// identity returned by the service is saved as the next launch's prewarm
+/// hint (§7.5).
 #[tauri::command]
-#[instrument(skip(state, app, payload), fields(seq = payload.seq, md_len = payload.markdown.len()))]
+#[instrument(skip(state, app, payload, last), fields(seq = payload.seq, md_len = payload.markdown.len()))]
 pub async fn render_preview(
     state: State<'_, Arc<Service>>,
     app: AppHandle,
+    last: State<'_, LastRender>,
     payload: RenderPayload,
 ) -> Result<PreviewOutcome, String> {
     let t0 = std::time::Instant::now();
     let request = render_request(&payload);
+    let window = payload.pages;
     let service = state.inner().clone();
 
-    let detail = tauri::async_runtime::spawn_blocking(move || service.render_detailed(&request))
-        .await
-        .map_err(|e| format!("Preview task failed: {e}"))?
-        .map_err(|e| e.to_string())?;
+    let (detail, exported) = tauri::async_runtime::spawn_blocking(move || {
+        let detail = service.render_detailed(&request)?;
+        let exported = engine::export_pages(&detail.result.paged, &window);
+        Ok::<_, markdown_blathy_core::CoreError>((detail, exported))
+    })
+    .await
+    .map_err(|e| format!("Preview task failed: {e}"))?
+    .map_err(|e| e.to_string())?;
 
-    let svg_bytes: usize = detail.result.pages.iter().map(|page| page.len()).sum();
+    let page_count = detail.result.page_sizes.len();
     debug!(total_ms = t0.elapsed().as_millis(), "render timing (core)");
     info!(
-        pages = detail.result.pages.len(),
-        svg_bytes, "preview rendered"
+        pages = page_count,
+        exported = exported.len(),
+        "preview rendered"
     );
+
+    // The single cached render: replace, never accumulate. Exports read it
+    // back under the same seq; a newer render supersedes it (§7.5).
+    {
+        let mut guard = last
+            .0
+            .lock()
+            .map_err(|_| "render cache poisoned".to_string())?;
+        *guard = Some(CachedRender {
+            seq: payload.seq,
+            paged: detail.result.paged.clone(),
+        });
+    }
 
     // Prewarm hint for the next launch (§7.5): the static source just
     // rendered with is what the next launch's first render will want, so
@@ -167,10 +241,60 @@ pub async fn render_preview(
     });
 
     Ok(PreviewOutcome {
-        pages: detail.result.pages,
+        page_count,
+        page_sizes: detail.result.page_sizes,
+        page_background: detail.result.page_background,
+        pages: exported
+            .into_iter()
+            .map(|(index, svg)| PageSvg { index, svg })
+            .collect(),
         warnings: detail.result.warnings,
         doc: detail.result.doc,
         seq: payload.seq,
+    })
+}
+
+/// Export SVG pages from the single cached render — no recompile (§7.5).
+///
+/// The virtualized preview asks for the pages it is about to mount; export
+/// is CPU-bound but small (a window of pages), and still runs off the UI
+/// thread. A `seq` mismatch means a newer render superseded the document:
+/// the response is marked `stale` and the frontend drops it.
+#[tauri::command]
+#[instrument(skip(last), fields(seq, requested = pages.len()))]
+pub async fn export_pages(
+    last: State<'_, LastRender>,
+    seq: u64,
+    pages: Vec<usize>,
+) -> Result<PagesOutcome, String> {
+    let cached = {
+        let guard = last
+            .0
+            .lock()
+            .map_err(|_| "render cache poisoned".to_string())?;
+        match guard.as_ref() {
+            Some(c) if c.seq == seq => c.paged.clone(),
+            _ => {
+                return Ok(PagesOutcome {
+                    seq,
+                    stale: true,
+                    pages: Vec::new(),
+                })
+            }
+        }
+    };
+    let exported =
+        tauri::async_runtime::spawn_blocking(move || engine::export_pages(&cached, &pages))
+            .await
+            .map_err(|e| format!("Export task failed: {e}"))?;
+    info!(count = exported.len(), "pages exported");
+    Ok(PagesOutcome {
+        seq,
+        stale: false,
+        pages: exported
+            .into_iter()
+            .map(|(index, svg)| PageSvg { index, svg })
+            .collect(),
     })
 }
 
@@ -582,7 +706,7 @@ fn open_in_viewer(path: &Path) {
 
 #[cfg(test)]
 mod tests {
-    use super::{DocMeta, FileOutcome, PreviewOutcome, RenderPayload};
+    use super::{DocMeta, FileOutcome, PageSvg, PagesOutcome, PreviewOutcome, RenderPayload};
     use markdown_blathy_core::options::{FeatureFlags, Flavor, Margins, Paper, TextAlign};
 
     /// Pins the IPC contract: the exact JSON the frontend `lib/api.js` sends
@@ -603,6 +727,12 @@ mod tests {
         let payload: RenderPayload = serde_json::from_str(json).unwrap();
         assert_eq!(payload.markdown, "# Hi");
         assert_eq!(payload.seq, 7);
+        assert!(payload.pages.is_empty(), "window defaults to empty");
+        let with_window: RenderPayload = serde_json::from_str(
+            r##"{ "markdown": "# Hi", "options": { "flavor": "github", "paper": "a4", "margins": { "topMm": 25, "bottomMm": 25, "leftMm": 20, "rightMm": 20 }, "textAlign": "left" }, "seq": 8, "pages": [3, 4, 5] }"##,
+        )
+        .unwrap();
+        assert_eq!(with_window.pages, vec![3, 4, 5]);
         assert_eq!(payload.options.flavor, Flavor::Github);
         assert_eq!(payload.options.paper, Paper::A4);
         assert_eq!(
@@ -619,12 +749,19 @@ mod tests {
     }
 
     /// Pins the IPC contract: `PreviewOutcome` serializes back to the
-    /// camelCase shape the frontend reads (§7.4), including the effective
+    /// camelCase shape the frontend reads (§7.4) — metadata only, the SVG
+    /// pages travel through `export_pages` — including the effective
     /// document settings (§6.2).
     #[test]
     fn preview_outcome_serializes_with_camel_case_and_seq() {
         let outcome = PreviewOutcome {
-            pages: vec!["<svg>".into()],
+            page_count: 1,
+            page_sizes: vec![(595.0, 842.0)],
+            page_background: Some("#0d1117".into()),
+            pages: vec![PageSvg {
+                index: 0,
+                svg: "<svg>".into(),
+            }],
             warnings: vec!["font warning".into()],
             doc: DocMeta {
                 title: Some("My Doc".into()),
@@ -639,7 +776,13 @@ mod tests {
             seq: 3,
         };
         let json = serde_json::to_string(&outcome).unwrap();
-        assert!(json.contains("\"pages\":[\"<svg>\"]"), "{json}");
+        assert!(json.contains("\"pageCount\":1"), "{json}");
+        assert!(json.contains("\"pageSizes\":[[595.0,842.0]]"), "{json}");
+        assert!(json.contains("\"pageBackground\":\"#0d1117\""), "{json}");
+        assert!(
+            json.contains("\"pages\":[{\"index\":0,\"svg\":\"<svg>\"}]"),
+            "{json}"
+        );
         assert!(json.contains("\"warnings\":[\"font warning\"]"), "{json}");
         assert!(json.contains("\"seq\":3"), "{json}");
         assert!(json.contains("\"doc\":{"), "{json}");
@@ -649,6 +792,33 @@ mod tests {
         // The Document settings widget reads these back (§6.2).
         assert!(json.contains("\"lang\":\"hu\""), "{json}");
         assert!(json.contains("\"hyphenate\":false"), "{json}");
+    }
+
+    /// Pins the `export_pages` contract: indexed SVGs, and the stale marker
+    /// the frontend drops superseded responses by (§7.5).
+    #[test]
+    fn pages_outcome_serializes_indexed_svgs_and_stale() {
+        let outcome = PagesOutcome {
+            seq: 7,
+            stale: false,
+            pages: vec![PageSvg {
+                index: 2,
+                svg: "<svg>".into(),
+            }],
+        };
+        let json = serde_json::to_string(&outcome).unwrap();
+        assert!(json.contains("\"seq\":7"), "{json}");
+        assert!(json.contains("\"stale\":false"), "{json}");
+        assert!(json.contains("\"index\":2"), "{json}");
+        assert!(json.contains("\"svg\":\"<svg>\""), "{json}");
+        let stale = PagesOutcome {
+            seq: 7,
+            stale: true,
+            pages: Vec::new(),
+        };
+        let json = serde_json::to_string(&stale).unwrap();
+        assert!(json.contains("\"stale\":true"), "{json}");
+        assert!(json.contains("\"pages\":[]"), "{json}");
     }
 
     /// Success outcome must not carry a `canceled` flag — the frontend reads

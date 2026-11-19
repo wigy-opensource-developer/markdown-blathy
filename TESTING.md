@@ -91,6 +91,11 @@
 | FLAVORS, PAPERS, MARGIN_PRESETS, ALIGNS have expected values | presets.js | high |
 | Document patch diffs the form; hyphenate is tri-state (absent = keep, null = clear, boolean = set); feature maps compare order-insensitively | docSettings.js | high |
 | Render scheduler debounces edits (200 ms), keeps one compile in flight, catches up once after it settles (only for edits ≥200 ms old), and freezes/stashes around modals | renderScheduler.js | high |
+| Virtualized-preview geometry: sheets scale to the pane keeping aspect ratio, total height known from metadata, visible range ± overscan clamped | previewWindow.js | high |
+| Mounted-only page cache: SVGs pruned to the visible window, render-seeded window held without refetch, fetches deduplicated, new seq resets, late/stale responses dropped | previewPages.js | high |
+| export_pages exports indexed SVGs from the single cached render; a seq mismatch serializes stale:true | commands.rs | high |
+| page_background resolves the template's page fill for placeholder sheets (auto → white, solid → hex, transparent/gradient → None) | engine.rs | medium |
+| Placeholder sheets wear the template paper color and a tilted aria-hidden "Rendering…" note; mounted sheets inject their SVG | Preview.jsx (Sheet) | medium |
 | Dirty guard resumes the interrupted Close/New/Open only after a successful save; cancel/failed save keeps the request pending | unsavedGuard.js | high |
 | Recovery is offered only to a pristine editor, and only for the opened document's own snapshot | recovery.js | high |
 | Export warnings name the PDF, count/list the warnings and offer an explicit dismiss | ExportWarnings.jsx | medium |

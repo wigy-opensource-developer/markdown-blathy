@@ -6,7 +6,9 @@
 //! based so the CLI can consume them without a Tauri runtime.
 
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
+
+use typst_layout::PagedDocument;
 
 use crate::engine_cache::TemplateEngineCache;
 use crate::error::CoreError;
@@ -14,7 +16,7 @@ use crate::files;
 use crate::markdown::convert::DocMeta;
 use crate::markdown::frontmatter::{self, Patch};
 use crate::options::RenderOptions;
-use crate::typst_engine::engine::{self, FontOptions, PreviewOutcome};
+use crate::typst_engine::engine::{self, CompiledPreview, FontOptions};
 use crate::typst_engine::template::{self, PreparedRender};
 
 /// Input for a preview render or PDF export.
@@ -27,11 +29,18 @@ pub struct RenderRequest {
     pub document_path: Option<PathBuf>,
 }
 
-/// A completed preview render. The adapter adds its own transport fields
-/// (the GUI's `seq`) on top.
+/// A completed preview render: the compiled document itself (the GUI keeps
+/// the latest ONE as its single cached render and exports SVG pages from it
+/// on demand), the intrinsic page sizes for placeholder geometry, warnings
+/// and the effective document settings. The adapter adds its own transport
+/// fields (the GUI's `seq`) on top.
 #[derive(Debug)]
 pub struct RenderResult {
-    pub pages: Vec<String>,
+    pub paged: Arc<PagedDocument>,
+    /// (width, height) in points, one per page.
+    pub page_sizes: Vec<(f64, f64)>,
+    /// The template's page background as a CSS color, if it is a solid fill.
+    pub page_background: Option<String>,
     pub warnings: Vec<String>,
     pub doc: DocMeta,
 }
@@ -101,17 +110,19 @@ impl Service {
         .map_err(CoreError::render)
     }
 
-    /// Compile an already-prepared render with the cached engine.
-    pub fn render_prepared(&self, prepared: &PreparedRender) -> Result<PreviewOutcome, CoreError> {
+    /// Compile an already-prepared render with the cached engine. No SVG
+    /// export here: the adapter caches the document and exports pages on
+    /// demand (`engine::export_pages`).
+    pub fn render_prepared(&self, prepared: &PreparedRender) -> Result<CompiledPreview, CoreError> {
         let mut cache = self.cache.lock().map_err(|_| CoreError::CachePoisoned)?;
         let engine = cache
             .engine_for(&prepared.static_source, &prepared.fonts)
             .map_err(CoreError::render)?;
-        engine::compile_preview_with_inputs(engine, &prepared.inputs)
+        engine::compile_preview(engine, &prepared.inputs)
             .map_err(|e| CoreError::render(e.to_string()))
     }
 
-    /// Render Markdown to per-page SVGs plus warnings and document metadata.
+    /// Render Markdown to the compiled document plus warnings and metadata.
     pub fn render(&self, request: &RenderRequest) -> Result<RenderResult, CoreError> {
         self.render_detailed(request).map(|detail| detail.result)
     }
@@ -120,9 +131,13 @@ impl Service {
     pub fn render_detailed(&self, request: &RenderRequest) -> Result<RenderDetail, CoreError> {
         let prepared = self.prepare(request)?;
         let outcome = self.render_prepared(&prepared)?;
+        let page_sizes = engine::page_sizes(&outcome.paged);
+        let page_background = engine::page_background(&outcome.paged);
         Ok(RenderDetail {
             result: RenderResult {
-                pages: outcome.pages,
+                paged: Arc::new(outcome.paged),
+                page_sizes,
+                page_background,
                 warnings: merged_warnings(prepared.warnings.clone(), outcome.warnings),
                 doc: prepared.doc.clone(),
             },
@@ -301,12 +316,14 @@ mod tests {
     }
 
     #[test]
-    fn render_returns_pages_warnings_and_doc_meta() {
+    fn render_returns_document_sizes_and_doc_meta() {
         let rendered = service()
             .render(&request("---\ntitle: Service\n---\n# Heading"))
             .expect("render must succeed");
-        assert!(!rendered.pages.is_empty());
-        assert!(rendered.pages[0].contains("<svg"));
+        assert!(!rendered.page_sizes.is_empty());
+        assert!(rendered.page_sizes[0].0 > 0.0 && rendered.page_sizes[0].1 > 0.0);
+        let pages = engine::export_all_pages(&rendered.paged);
+        assert!(pages[0].contains("<svg"));
         assert_eq!(rendered.doc.title.as_deref(), Some("Service"));
     }
 

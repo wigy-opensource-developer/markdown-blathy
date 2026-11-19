@@ -9,7 +9,7 @@
 //!   re-runs the font scan) only when the static source changes.
 //! - `build_engine` + `compile_pdf_with_inputs`: PDF bytes for export.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::error::Error;
 use std::fmt;
 use std::path::{Path, PathBuf};
@@ -19,6 +19,7 @@ use typst::diag::EcoString;
 use typst::foundations::Dict;
 use typst::layout::{FrameItem, Point};
 use typst::model::{Destination, LateLinkResolver, ResolvedLink};
+use typst::visualize::Paint;
 use typst_as_lib::{TypstEngine, TypstTemplateMainFile};
 use typst_layout::PagedDocument;
 
@@ -35,10 +36,13 @@ pub const FONT_BOLD_BYTES: &[u8] = include_bytes!("../../fonts/DejaVuSans-Bold.t
 pub const FONT_MONO_BYTES: &[u8] = include_bytes!("../../fonts/DejaVuSansMono.ttf");
 pub const FONT_MATH_BYTES: &[u8] = include_bytes!("../../fonts/DejaVuMathTeXGyre.ttf");
 
-/// Per-page SVG strings plus any compile warnings (never fatal).
+/// A compiled preview: the finished paged document plus any compile
+/// warnings (never fatal). SVG export is a separate step (`export_pages`)
+/// so the GUI can cache ONE document per render and export only the pages
+/// the virtualized preview actually mounts (§7.5).
 #[derive(Debug)]
-pub struct PreviewOutcome {
-    pub pages: Vec<String>,
+pub struct CompiledPreview {
+    pub paged: PagedDocument,
     pub warnings: Vec<String>,
 }
 
@@ -204,17 +208,15 @@ pub fn build_engine(
     Ok(builder.build())
 }
 
-/// Compile the engine's static source with the per-render `sys.inputs` and
-/// render preview pages as SVG (§6.4).
+/// Compile the engine's static source with the per-render `sys.inputs`.
 ///
-/// Uses `svg_in_bundle` with a `LateLinkResolver` so internal links —
-/// footnote markers ↔ notes, heading anchors, cross-references — resolve to
-/// clickable `<a>` elements in the SVG. The plain `typst_svg::svg()` omits
-/// `href` on every internal link.
-pub fn compile_preview_with_inputs(
+/// Layout is whole-document by nature (page breaks, footnotes and counters
+/// flow across pages); the result is cached by the adapter and pages are
+/// exported from it on demand — see `export_pages`.
+pub fn compile_preview(
     engine: &TypstEngine<TypstTemplateMainFile>,
     inputs: &Dict,
-) -> Result<PreviewOutcome, EngineError> {
+) -> Result<CompiledPreview, EngineError> {
     let warned = engine.compile_with_input(inputs.clone());
     let doc: PagedDocument = warned
         .output
@@ -225,24 +227,64 @@ pub fn compile_preview_with_inputs(
         .map(|diag| render_diagnostic(engine, diag))
         .collect();
 
-    let pages = compile_preview_pages(&doc);
-    Ok(PreviewOutcome { pages, warnings })
+    Ok(CompiledPreview {
+        paged: doc,
+        warnings,
+    })
 }
 
-/// Render all pages as SVG with internal link resolution (footnotes, heading
-/// anchors, cross-references).
+/// Intrinsic (width, height) of every page, in points. Cheap metadata the
+/// virtualized preview needs to lay out placeholder sheets before any SVG
+/// is exported, so the scroll height is stable from the moment a render
+/// lands.
+pub fn page_sizes(doc: &PagedDocument) -> Vec<(f64, f64)> {
+    doc.pages()
+        .iter()
+        .map(|page| (page.frame.width().to_pt(), page.frame.height().to_pt()))
+        .collect()
+}
+
+/// The page background as a CSS color, from the first page's resolved fill
+/// (SVG semantics: `auto` = white). `None` for a transparent or non-solid
+/// fill (gradient/tiling) — the preview's placeholder sheets then fall back
+/// to the UI theme's pane background. Placeholders wear this color so a
+/// dark template never flashes white while its pages export.
+pub fn page_background(doc: &PagedDocument) -> Option<String> {
+    let page = doc.pages().first()?;
+    match page.fill_or_white() {
+        Some(Paint::Solid(color)) => Some(color.to_hex().to_string()),
+        _ => None,
+    }
+}
+
+/// Export the requested pages as SVG with internal link resolution
+/// (footnotes, heading anchors, cross-references).
 ///
-/// Walks every page's frame for `FrameItem::Link(Destination::Location, …)`,
-/// resolves each location via the `LateLinkResolver` to get the anchor string,
-/// then calls `svg_in_bundle` with the collected anchors and a tracked
-/// resolver.
-fn compile_preview_pages(doc: &PagedDocument) -> Vec<String> {
+/// Walks only the wanted pages' frames for `FrameItem::Link(Destination::
+/// Location, …)`, resolves each location via the `LateLinkResolver` to get
+/// the anchor string, then calls `svg_in_bundle` with the collected anchors
+/// and a tracked resolver. Out-of-range indices are ignored; the result is
+/// in ascending page order. Exporting a subset of the *same* compiled
+/// document is pixel-identical to exporting all of it — layout already
+/// happened.
+pub fn export_pages(doc: &PagedDocument, indices: &[usize]) -> Vec<(usize, String)> {
+    let wanted: HashSet<usize> = indices
+        .iter()
+        .copied()
+        .filter(|&i| i < doc.pages().len())
+        .collect();
+    if wanted.is_empty() {
+        return Vec::new();
+    }
     let resolver = LateLinkResolver::new(None, doc.introspector().as_ref());
     let tracked = resolver.track();
 
-    // Collect (position, anchor_id) pairs per page.
+    // Collect (position, anchor_id) pairs per wanted page.
     let mut anchors_by_page: HashMap<usize, Vec<(Point, EcoString)>> = HashMap::new();
-    for page in doc.pages().iter() {
+    for (page_idx, page) in doc.pages().iter().enumerate() {
+        if !wanted.contains(&page_idx) {
+            continue;
+        }
         for (_, item) in page.frame.items() {
             if let FrameItem::Link(Destination::Location(loc), _) = item {
                 if let Some(pos) = doc.introspector().position(*loc) {
@@ -257,13 +299,28 @@ fn compile_preview_pages(doc: &PagedDocument) -> Vec<String> {
         }
     }
 
-    doc.pages()
+    let mut out: Vec<(usize, String)> = wanted
         .iter()
-        .enumerate()
-        .map(|(page_idx, page)| {
+        .map(|&page_idx| {
+            let page = &doc.pages()[page_idx];
             let anchors = anchors_by_page.get(&page_idx).cloned().unwrap_or_default();
-            typst_svg::svg_in_bundle(page, &Default::default(), &anchors, tracked)
+            (
+                page_idx,
+                typst_svg::svg_in_bundle(page, &Default::default(), &anchors, tracked),
+            )
         })
+        .collect();
+    out.sort_by_key(|(idx, _)| *idx);
+    out
+}
+
+/// Every page as SVG, in order — the full-document convenience for tests
+/// and any consumer that wants the whole preview at once.
+pub fn export_all_pages(doc: &PagedDocument) -> Vec<String> {
+    let all: Vec<usize> = (0..doc.pages().len()).collect();
+    export_pages(doc, &all)
+        .into_iter()
+        .map(|(_, svg)| svg)
         .collect()
 }
 
@@ -337,8 +394,9 @@ fn render_diagnostic_with_world(
 #[cfg(test)]
 mod tests {
     use super::{
-        build_engine, compile_pdf_with_inputs, compile_preview_with_inputs, FontOptions,
-        PreviewOutcome, FONT_BOLD_BYTES, FONT_BYTES, FONT_MATH_BYTES, FONT_MONO_BYTES,
+        build_engine, compile_pdf_with_inputs, compile_preview, export_all_pages, page_background,
+        CompiledPreview, FontOptions, FONT_BOLD_BYTES, FONT_BYTES, FONT_MATH_BYTES,
+        FONT_MONO_BYTES,
     };
     use crate::options::{Flavor, HeadingIds, Margins, Paper, RenderOptions, TextAlign};
     use crate::typst_engine::template::{
@@ -410,9 +468,28 @@ mod tests {
         )
     }
 
-    fn compile_body(body: &str) -> PreviewOutcome {
+    /// Test view of a compile: every page exported eagerly. The GUI exports
+    /// lazily from its single cached document; tests assert on SVG content,
+    /// so they keep the all-pages shape.
+    struct TestPreview {
+        pages: Vec<String>,
+        warnings: Vec<String>,
+    }
+
+    impl From<CompiledPreview> for TestPreview {
+        fn from(compiled: CompiledPreview) -> Self {
+            Self {
+                pages: export_all_pages(&compiled.paged),
+                warnings: compiled.warnings,
+            }
+        }
+    }
+
+    fn compile_body(body: &str) -> TestPreview {
         let (engine, inputs) = engine_for_body(body);
-        compile_preview_with_inputs(&engine, &inputs).expect("must compile")
+        compile_preview(&engine, &inputs)
+            .expect("must compile")
+            .into()
     }
 
     fn engine_for_body_with_fonts(
@@ -444,20 +521,24 @@ mod tests {
     }
 
     /// Full pipeline: markdown → converter → static source + inputs → compile.
-    fn compile_markdown(markdown: &str, options: &RenderOptions) -> PreviewOutcome {
+    fn compile_markdown(markdown: &str, options: &RenderOptions) -> TestPreview {
         let static_source = build_static_source(DEFAULT_TEMPLATE, options).unwrap();
         let (inputs, ..) = render_inputs(markdown, options).unwrap();
         let engine = build_engine(&static_source, &FontOptions::default()).expect("engine");
-        compile_preview_with_inputs(&engine, &inputs).expect("must compile")
+        compile_preview(&engine, &inputs)
+            .expect("must compile")
+            .into()
     }
 
     /// Compile markdown through a *custom* template source (prelude + user
     /// file) with the Custom flavor — the M6 flow used by the theme tests.
-    fn compile_custom_theme(template: &str, markdown: &str) -> PreviewOutcome {
+    fn compile_custom_theme(template: &str, markdown: &str) -> TestPreview {
         let static_source = build_static_source(template, &custom_options()).unwrap();
         let (inputs, ..) = render_inputs(markdown, &custom_options()).unwrap();
         let engine = build_engine(&static_source, &FontOptions::default()).expect("engine");
-        compile_preview_with_inputs(&engine, &inputs).expect("must compile")
+        compile_preview(&engine, &inputs)
+            .expect("must compile")
+            .into()
     }
 
     /// The rightmost `<use>` run offset in a page SVG, ignoring the enclosing
@@ -587,8 +668,8 @@ mod tests {
             ..FontOptions::default()
         };
         let engine = build_engine(source, &fonts).expect("engine must build");
-        let outcome = compile_preview_with_inputs(&engine, &inputs).expect("image must resolve");
-        assert!(!outcome.pages.is_empty());
+        let outcome = compile_preview(&engine, &inputs).expect("image must resolve");
+        assert!(!outcome.paged.pages().is_empty());
         assert!(
             outcome.warnings.is_empty(),
             "a resolved SVG must not warn: {:?}",
@@ -597,7 +678,7 @@ mod tests {
 
         // Without the root the image cannot resolve.
         let engine = build_engine(source, &FontOptions::default()).expect("engine must build");
-        let err = compile_preview_with_inputs(&engine, &inputs).unwrap_err();
+        let err = compile_preview(&engine, &inputs).unwrap_err();
         assert!(
             err.to_string().to_ascii_lowercase().contains("corner"),
             "missing image error should name the file: {err}"
@@ -813,7 +894,7 @@ mod tests {
     fn compile_error_yields_diagnostics_not_panic() {
         // The body is passed via sys.inputs and contains a deliberate error.
         let (engine, inputs) = engine_for_body("#undefined-function(42)");
-        let err = compile_preview_with_inputs(&engine, &inputs).unwrap_err();
+        let err = compile_preview(&engine, &inputs).unwrap_err();
         let msg = err.to_string();
         assert!(
             msg.contains("line") && msg.contains("undefined-function"),
@@ -846,10 +927,12 @@ mod tests {
             inputs.insert("title".into(), Value::None);
             inputs.insert("author".into(), Value::None);
             inputs.insert("body".into(), body.into_value());
-            compile_preview_with_inputs(&engine, &inputs)
-                .expect("must compile")
-                .pages[0]
-                .clone()
+            export_all_pages(
+                &compile_preview(&engine, &inputs)
+                    .expect("must compile")
+                    .paged,
+            )[0]
+            .clone()
         };
         let a1 = render("= Heading one");
         let a2 = render("= Heading one");
@@ -882,7 +965,7 @@ mod tests {
 
         let (engine, inputs) =
             engine_for_body_with_fonts(&format!("#set text(font: {family:?})\nHello"), &fonts);
-        let outcome = compile_preview_with_inputs(&engine, &inputs).expect("must compile");
+        let outcome = compile_preview(&engine, &inputs).expect("must compile");
         assert!(
             outcome.warnings.is_empty(),
             "the referenced family must render cleanly: {family:?} -> {:?}",
@@ -891,7 +974,7 @@ mod tests {
 
         let (engine, inputs) =
             engine_for_body_with_fonts(&format!("#set text(font: {other:?})\nHello"), &fonts);
-        let outcome = compile_preview_with_inputs(&engine, &inputs).expect("must compile");
+        let outcome = compile_preview(&engine, &inputs).expect("must compile");
         assert!(
             !outcome.warnings.is_empty(),
             "an unreferenced family must not be in the subset: {other:?}"
@@ -921,8 +1004,7 @@ mod tests {
                 asset_roots: Vec::new(),
             },
         );
-        let outcome =
-            compile_preview_with_inputs(&engine_on, &inputs).expect("system font must compile");
+        let outcome = compile_preview(&engine_on, &inputs).expect("system font must compile");
         assert!(
             outcome.warnings.is_empty(),
             "a real system font must render without warnings: {family:?} -> {:?}",
@@ -930,8 +1012,7 @@ mod tests {
         );
 
         let (engine_off, inputs) = engine_for_body_with_fonts(&body, &FontOptions::default());
-        let outcome =
-            compile_preview_with_inputs(&engine_off, &inputs).expect("must still compile");
+        let outcome = compile_preview(&engine_off, &inputs).expect("must still compile");
         assert!(
             !outcome.warnings.is_empty(),
             "without system fonts the family must warn: {family:?}"
@@ -960,10 +1041,12 @@ mod tests {
             let source = build_static_source(template, &gfm_options()).unwrap();
             let (inputs, ..) = render_inputs("Hello world.", &gfm_options()).unwrap();
             let engine = build_engine(&source, &fonts).expect("engine");
-            compile_preview_with_inputs(&engine, &inputs)
-                .expect("must compile")
-                .pages[0]
-                .clone()
+            export_all_pages(
+                &compile_preview(&engine, &inputs)
+                    .expect("must compile")
+                    .paged,
+            )[0]
+            .clone()
         };
         let baseline = render(DEFAULT_TEMPLATE);
         let with_font = render(&format!(
@@ -1047,10 +1130,12 @@ mod tests {
             let static_source = build_static_source(template, &gfm_options()).unwrap();
             let (inputs, ..) = render_inputs("- [ ]", &gfm_options()).unwrap();
             let engine = build_engine(&static_source, &fonts).expect("engine");
-            compile_preview_with_inputs(&engine, &inputs)
-                .expect("must compile")
-                .pages[0]
-                .clone()
+            export_all_pages(
+                &compile_preview(&engine, &inputs)
+                    .expect("must compile")
+                    .paged,
+            )[0]
+            .clone()
         };
         let default_ids = glyph_ids(&render(DEFAULT_TEMPLATE));
         let ubuntu_ids = glyph_ids(&render(&format!(
@@ -1218,14 +1303,15 @@ mod tests {
         let static_source = build_static_source(&template, &custom_options()).unwrap();
         let (inputs, ..) = render_inputs(markdown, &custom_options()).unwrap();
         let engine = build_engine(&static_source, &fonts).expect("engine");
-        let outcome = compile_preview_with_inputs(&engine, &inputs).expect("obsidian must compile");
-        assert!(!outcome.pages.is_empty());
+        let outcome = compile_preview(&engine, &inputs).expect("obsidian must compile");
+        assert!(!outcome.paged.pages().is_empty());
         assert!(
             outcome.warnings.is_empty(),
             "obsidian theme must render without warnings: {:?}",
             outcome.warnings
         );
-        let svg = &outcome.pages[0];
+        let pages = export_all_pages(&outcome.paged);
+        let svg = &pages[0];
         // The page fill proves the obsidian `article` ran; the embedded data
         // URI proves the corner SVG was resolved from the template's asset
         // root and rasterized into the preview as a vector image.
@@ -1461,7 +1547,7 @@ mod tests {
         let static_source = build_static_source(&template, &gfm_options()).unwrap();
         let (inputs, ..) = render_inputs("- [x] done", &gfm_options()).unwrap();
         let engine = build_engine(&static_source, &FontOptions::default()).expect("engine");
-        let err = compile_preview_with_inputs(&engine, &inputs).unwrap_err();
+        let err = compile_preview(&engine, &inputs).unwrap_err();
         assert!(err.to_string().contains("line"), "{err}");
     }
 
@@ -1479,6 +1565,49 @@ mod tests {
         assert!(
             (narrow_x - wide_x).abs() < 0.01,
             "monospace advances must match: iiii ends at {narrow_x}, mmmm at {wide_x}"
+        );
+    }
+
+    /// The placeholder sheets wear the template's page fill: auto → white
+    /// (SVG semantics), a solid fill → its hex, transparent/non-solid → None
+    /// (the frontend falls back to the UI theme's pane background).
+    #[test]
+    fn page_background_follows_the_template_fill() {
+        let (engine, inputs) = engine_for_body("Hello");
+        let light = compile_preview(&engine, &inputs).expect("must compile");
+        assert_eq!(page_background(&light.paged).as_deref(), Some("#ffffff"));
+
+        let compiled_custom = |template: &str, asset_dir: Option<String>| {
+            let source = format!("{DEFAULT_TEMPLATE}\n\n{template}");
+            let static_source = build_static_source(&source, &custom_options()).unwrap();
+            let (inputs, ..) = render_inputs("Hello", &custom_options()).unwrap();
+            let fonts = FontOptions {
+                asset_roots: asset_dir.into_iter().map(|d| d.into()).collect(),
+                ..FontOptions::default()
+            };
+            let engine = build_engine(&static_source, &fonts).expect("engine");
+            compile_preview(&engine, &inputs).expect("must compile")
+        };
+        for (theme, expected) in [("dark", "#0d1117"), ("obsidian", "#191724")] {
+            let dir = format!("{}/templates/{theme}", env!("CARGO_MANIFEST_DIR"));
+            let source =
+                std::fs::read_to_string(format!("{dir}/main.typ")).expect("template must exist");
+            let compiled = compiled_custom(&source, Some(dir));
+            assert_eq!(
+                page_background(&compiled.paged).as_deref(),
+                Some(expected),
+                "{theme} placeholder must match its page fill"
+            );
+        }
+        assert_eq!(
+            page_background(&compiled_custom("#set page(fill: none)", None).paged),
+            None
+        );
+        assert_eq!(
+            page_background(
+                &compiled_custom("#set page(fill: gradient.linear(red, blue))", None).paged
+            ),
+            None
         );
     }
 }

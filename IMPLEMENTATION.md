@@ -167,13 +167,27 @@ Serializes as `{ path, content?, canceled?, warnings? }`. Success omits
 is export-only (M9 task 5): compile warnings returned with the written PDF,
 shown by the UI in a dismissible panel and omitted when empty.
 
-### `PreviewOutcome`
+### `PreviewOutcome` / `PagesOutcome`
 
 ```rust
-pub struct PreviewOutcome { pub pages: Vec<String>, pub warnings: Vec<String>, pub seq: u64 }
+pub struct PreviewOutcome { pub page_count: usize, pub page_sizes: Vec<(f64, f64)>, pub page_background: Option<String>, pub pages: Vec<PageSvg>, pub warnings: Vec<String>, pub doc: DocMeta, pub seq: u64 }
+pub struct PagesOutcome { pub seq: u64, pub stale: bool, pub pages: Vec<PageSvg> } // PageSvg { index, svg }
 ```
 
-`pages` = per-page SVG strings. `warnings` = merged converter + engine warnings. `seq` = request sequence number for stale-response guard.
+`render_preview` compiles and caches ONE document (`LastRender`, keyed by
+`seq`) and returns metadata plus the requested initial window: the payload's
+`pages` indices (the frontend's visible viewport ± overscan) are exported
+from the same compile, so the preview swaps last-good → new in ONE commit
+— no placeholder gap. `page_sizes` = intrinsic (width, height) points per
+page, so the virtualized preview can lay out placeholder sheets before any
+SVG exists; `page_background` = the template's resolved page fill as a CSS
+color (`auto` → white, solid → hex, transparent/gradient → null → the UI
+theme's pane background), so placeholders never flash white under a dark
+template. `export_pages(seq, indices)` exports further pages from that
+cached document on scroll — no recompile; a `seq` mismatch resolves
+`stale: true` and the frontend drops it. `warnings` = merged converter +
+engine warnings. `seq` = request sequence number for the stale-response
+guard.
 
 ## 4. Markdown → Typst converter
 
@@ -430,7 +444,7 @@ src/
 │   ├── PageSettings.jsx # page setup (paper/margins/align) + template popover; non-modal, live apply
 │   ├── DocumentSettings.jsx # front-matter settings popover (title/author/heading level/language/hyphenation/extensions); modal, uncontrolled draft read on Apply
 │   ├── Editor.jsx    # CodeMirror 6 via @uiw/react-codemirror
-│   ├── Preview.jsx   # SVG pages from render_preview
+│   ├── Preview.jsx   # virtualized page list; exports the visible window on demand
 │   ├── StatusBar.jsx # page count / warnings / Ready (inert while a modal is open)
 │   ├── ErrorBanner.jsx
 │   ├── UnsavedChangesModal.jsx # Save/Discard/Cancel prompt over the shared modal treatment
@@ -440,6 +454,8 @@ src/
 │   ├── settings.js   # localStorage-backed settings + applyOptionsPatch
 │   ├── docSettings.js # Document popover form → front-matter patch (tri-state hyphenate)
 │   ├── renderScheduler.js # the render cycle: 200ms debounce, single flight, catch-up, modal freeze
+│   ├── previewWindow.js # virtualized-preview geometry: sheet layout + visible range
+│   ├── previewPages.js # mounted-only SVG cache: prune/fetch/dedupe per viewport
 │   ├── renderStatus.js # delayed "Rendering…" note (350 ms into a pending render)
 │   ├── seq.js        # stale-response guard (response seq vs latest sent/invalidated)
 │   ├── unsavedGuard.js # dirty guard: defer Close/New/Open, resume after a successful save
@@ -456,7 +472,8 @@ const { options, editorFontSize } = settings;
 // The text the editor was *loaded* with; the live buffer is docRef.markdown.
 const [markdown, setMarkdown] = useState(SAMPLE_DOC);
 const [documentVersion, setDocumentVersion] = useState(0);
-const [pages, setPages] = useState([]);
+// Render metadata + the initial window's SVGs (seed); only the window is held.
+const [preview, setPreview] = useState(null);
 const [warnings, setWarnings] = useState([]);
 const [error, setError] = useState(null);
 const [dirty, setDirty] = useState(false);
@@ -536,13 +553,49 @@ adds single flight:
 Save and close never wait for a render: they read the live buffer
 (`docRef`) and the dirty ref, which flips on the first keystroke.
 
-Known limit: applying a finished preview is one main-thread DOM swap, and
-on WebKitGTK its cost scales with the SVG size (~1.2 s for a ~3 MB nine-page
-preview). Keystrokes during that swap are buffered by the OS and delivered
-right after — none are lost — and the swap only happens after a ≥200 ms
-pause, never per keystroke. Making the swap itself interruptible would need
-chunked page insertion (or a separate preview document); the same applies
-to the "Rendering…" note, which commits 350 ms into a long render.
+Known limit: Typst layout is whole-document by nature — page breaks,
+footnotes and counters flow across pages — so the compile itself cannot be
+windowed; it is bounded by the comemo warmth above. Everything after the
+compile is window-sized (next section).
+
+### Single cached render, virtualized preview
+
+A render lands as metadata (page count + intrinsic page sizes + paper
+color) PLUS the initial visible window's SVGs, exported from the same
+compile so the swap from the last-good pages is atomic. The backend keeps
+exactly ONE compiled document (`LastRender` in commands.rs, keyed by the
+render seq, replaced on every render — deliberately not a cache of SVG
+strings). `Preview.jsx` is a virtualized list:
+
+- `lib/previewWindow.js` lays out every page as a placeholder sheet with
+  the correct aspect ratio, so the full scroll height is known the moment
+  a render lands and the scrollbar never jumps when pages arrive. Sheets
+  wear the template's page fill (`page_background` metadata; the UI theme's
+  pane background for transparent/non-solid fills), and each placeholder
+  carries the same tilted "Rendering…" note the pane shows for slow
+  renders (aria-hidden — the pane-level status note owns the announcement).
+- Only the visible window ± overscan mounts real SVG. `export_pages`
+  fetches those pages from the cached document — no recompile, so scrolling
+  is cheap and needs no debounce (rAF-throttled).
+- `lib/previewPages.js` holds SVG strings ONLY for mounted pages: scrolling
+  away drops the markup, scrolling back re-exports it. A new render seq
+  resets everything, seeding the window the response already exported (no
+  refetch, no placeholder gap); late or stale responses never resurrect
+  unmounted pages. RAM holds the window, not the document.
+
+The render scheduler is unchanged. Its apply commit swaps the last-good
+pages for the new window in one step: the old pages stay up — dimmed under
+the delayed pane note — for the whole compile, exactly as before
+virtualization, and full renders never flash placeholders or eager sheet
+notes. Placeholders (with their tilted note) appear only for pages scrolled
+to that are not exported yet. The multi-MB DOM swap (and the busy-note
+repaint that used to delay shortcuts under software rendering) scales with
+the visible window instead of the document. Export, IPC and DOM cost are
+window-sized; the layout compile remains whole-document (known limit
+above). PDF export is untouched: it compiles fresh, full document.
+Pixel-identity holds — a subset export of the same compiled document is the
+same layout. Browser find-in-page only sees mounted pages, as with any
+virtualized list.
 
 ### Use `svg_in_bundle` instead of `svg()` for preview
 

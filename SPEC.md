@@ -75,6 +75,8 @@ User-visible behaviour:
 
 **The render cycle is single-flight.** The frontend debounces edits by 200 ms and keeps at most one preview compile in flight: edits during a render only mark a catch-up owed, which starts when the render settles and the last edit is ≥200 ms old (`src/lib/renderScheduler.js`). Loads invalidate an in-flight response through the seq guard but still wait for it to settle. Save and close never wait for a render.
 
+**The preview is virtualized.** A render lands as metadata (page count + intrinsic sizes + the template's page fill) plus the visible window's SVGs, so the swap from the last-good pages is atomic — they stay up, dimmed under the delayed "Rendering…" note, until the new ones land. The backend keeps the ONE compiled document; scrolling exports further pages on demand (`export_pages`), dropping their markup when they scroll away. Unexported pages show as placeholder sheets in the template's paper color with a "Rendering…" note. Layout is still whole-document — Typst page breaks flow across pages — but export, IPC and DOM cost scale with the visible window, not the document.
+
 **The CLI is a second thin adapter.** `crates/markdown-blathy` (binary `markdown-blathy`) wraps the same `Service` for scriptable PDF export, front-matter get/set, template validation and listing, and the `gui` launcher, which hands a file to the GUI through the startup-document slot ([docs/CLI.md](docs/CLI.md)).
 
 ## 4. Flavor support

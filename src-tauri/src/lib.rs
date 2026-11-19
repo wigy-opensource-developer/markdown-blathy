@@ -59,6 +59,9 @@ pub fn run(startup_file: Option<PathBuf>) {
             let templates_dir = paths::templates_dir(app.handle());
             let service = Arc::new(Service::new(templates_dir));
             app.manage(service.clone());
+            // The single cached render (§7.5): the latest compiled document,
+            // replaced on every render; `export_pages` exports from it.
+            app.manage(commands::LastRender::default());
 
             let hint_file = paths::app_data_dir(app.handle()).map(|dir| prewarm::hint_path(&dir));
             // Resolved here (outside spawn_blocking) because `app` is not Send.
@@ -86,6 +89,7 @@ pub fn run(startup_file: Option<PathBuf>) {
         })
         .invoke_handler(tauri::generate_handler![
             commands::render_preview,
+            commands::export_pages,
             commands::open_markdown,
             commands::open_pending_document,
             commands::frontend_ready,

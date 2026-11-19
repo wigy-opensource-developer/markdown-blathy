@@ -378,10 +378,10 @@ pub fn build_and_probe(
     static_source: &str,
     fonts: &FontOptions,
 ) -> Result<typst_as_lib::TypstEngine<typst_as_lib::TypstTemplateMainFile>, String> {
-    use crate::typst_engine::engine::{build_engine, compile_preview_with_inputs};
+    use crate::typst_engine::engine::{build_engine, compile_preview};
 
     let engine = build_engine(static_source, fonts).map_err(|e| e.to_string())?;
-    compile_preview_with_inputs(&engine, &probe_inputs()).map_err(|e| e.to_string())?;
+    compile_preview(&engine, &probe_inputs()).map_err(|e| e.to_string())?;
     Ok(engine)
 }
 
@@ -752,13 +752,14 @@ mod tests {
         inputs.insert("body".into(), "= Heading\n\nSome *text*.".into_value());
         let engine =
             crate::typst_engine::engine::build_engine(&source, &FontOptions::default()).unwrap();
-        let outcome = crate::typst_engine::engine::compile_preview_with_inputs(&engine, &inputs)
+        let outcome = crate::typst_engine::engine::compile_preview(&engine, &inputs)
             .expect("default template probe must compile");
         assert!(
-            !outcome.pages.is_empty(),
+            !outcome.paged.pages().is_empty(),
             "probe must render at least one page"
         );
-        assert!(outcome.pages[0].contains("<svg"), "page must be SVG");
+        let pages = crate::typst_engine::engine::export_all_pages(&outcome.paged);
+        assert!(pages[0].contains("<svg"), "page must be SVG");
     }
 
     /// Probe a user template exactly as the `validate_template` command does

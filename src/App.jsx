@@ -5,6 +5,7 @@ import { listen } from "@tauri-apps/api/event";
 import * as api from "./lib/api.js";
 import { marginsForPreset } from "./lib/presets.js";
 import { createRenderScheduler } from "./lib/renderScheduler.js";
+import { computeLayout, visibleRange } from "./lib/previewWindow.js";
 import { createRenderStatus } from "./lib/renderStatus.js";
 import { isStaleResponse } from "./lib/seq.js";
 import { getCommand } from "./lib/commands.js";
@@ -63,7 +64,19 @@ export default function App() {
   // debounced render: a commit here would repaint the whole SVG preview
   // before the user has paused, reintroducing the per-character cost.
   const pendingDirtyRef = useRef(false);
-  const [pages, setPages] = useState([]);
+  // Render metadata of the latest preview plus its initial window's SVGs
+  // (seed): { seq, pageCount, pageSizes, pageBackground, seed }. The window
+  // is exported with the compile so the swap from the last-good pages is
+  // atomic; scrolling exports further pages on demand from the backend's
+  // single cached document — no state here ever holds the whole multi-MB
+  // preview. A ref mirrors it for the export callback, whose responses
+  // outlive a render.
+  const [preview, setPreview] = useState(null);
+  const previewRef = useRef(null);
+  // The preview pane's scroll window, reported by Preview (no state — a
+  // scroll must not commit React). runRender reads it to ask for the pages
+  // the user is looking at, so a render swaps old → new atomically.
+  const viewportRef = useRef({ width: 0, height: 0, top: 0 });
   const [warnings, setWarnings] = useState([]);
   const [error, setError] = useState(null);
   // Bundled template ids for the Page settings selector; seeded with the
@@ -149,14 +162,26 @@ export default function App() {
     [docMeta, filePath]
   );
 
-  /** The pages of a finished render land in one (heavy) React commit — the
-   *  scheduler applies it only while no modal is open. */
+  /** A finished render lands as metadata PLUS the initial window's SVGs,
+   *  exported from the same compile. One commit swaps the last-good pages
+   *  for the new ones — no placeholder gap, and the pane's "Rendering…"
+   *  note (armed only for slow renders) decorates the OLD pages until this
+   *  moment, exactly as before virtualization. Scrolling exports further
+   *  pages window-sized via export_pages. */
   const applyPreview = useCallback((result) => {
-    setPages(result.pages);
+    const meta = {
+      seq: result.seq,
+      pageCount: result.pageCount,
+      pageSizes: result.pageSizes,
+      pageBackground: result.pageBackground ?? null,
+      seed: result.pages ?? [],
+    };
+    previewRef.current = meta;
+    setPreview(meta);
     setWarnings(result.warnings);
     setDocMeta(result.doc);
     setError(null);
-    renderStatus.current.stop(); // the pending note comes down with the pages
+    renderStatus.current.stop(); // the pending note comes down with the swap
   }, []);
 
   // Delayed "Rendering…" feedback on the preview pane: keystroke renders
@@ -182,8 +207,18 @@ export default function App() {
     renderStatus.current.start();
     const seqId = ++seq.current;
     const { markdown: doc, options: opts, documentPath: docPath } = docRef.current;
+    // Ask for the window the user is looking at, so the response can swap
+    // old → new in one commit. Sizes come from the previous render (paper
+    // rarely changes mid-edit; indices are clamped backend-side either way).
+    // Before the first measurement this is empty: metadata only, and the
+    // Preview fetches its window once measured.
+    const vp = viewportRef.current;
+    const layout = computeLayout(previewRef.current?.pageSizes ?? [], vp.width);
+    const { first, last } = visibleRange(layout, vp.top, vp.height);
+    const window = [];
+    for (let i = first; i <= last; i++) window.push(i);
     try {
-      const result = await api.renderPreview(doc, opts, seqId, docPath);
+      const result = await api.renderPreview(doc, opts, seqId, docPath, window);
       // Invalidated by a load: drop the pages, keep the "Rendering…" note —
       // the load's render is the live episode now.
       if (isStaleResponse(result.seq, seq.current)) return null;
@@ -820,6 +855,28 @@ export default function App() {
     [runFileAction]
   );
 
+  // Export-on-demand for the virtualized preview: SVG pages from the
+  // backend's single cached render (no recompile). Reads the live seq ref;
+  // a response superseded by a newer render is dropped. Rejects on failure
+  // so Preview clears its in-flight marks (the banner shows why).
+  const handleFetchPages = useCallback(async (indices) => {
+    const seq = previewRef.current?.seq;
+    if (seq == null) return [];
+    try {
+      const res = await api.exportPages(seq, indices);
+      if (res.stale || previewRef.current?.seq !== seq) return [];
+      return res.pages;
+    } catch (err) {
+      setError(String(err));
+      throw err;
+    }
+  }, []);
+
+  // Preview reports its scroll window here (a ref write, not a commit).
+  const handleViewport = useCallback((vp) => {
+    viewportRef.current = vp;
+  }, []);
+
   return (
     <MantineProvider theme={mantineTheme} forceColorScheme={colorScheme}>
       <div className={modalOpen ? "app modal-open" : "app"}>
@@ -854,11 +911,17 @@ export default function App() {
             />
           </section>
           <section id="preview-pane" data-rendering={renderBusy ? "true" : undefined}>
-            <Preview pages={pages} busy={renderBusy} onExternalLink={handleExternalLink} />
+            <Preview
+              preview={preview}
+              fetchPages={handleFetchPages}
+              onViewport={handleViewport}
+              busy={renderBusy}
+              onExternalLink={handleExternalLink}
+            />
           </section>
         </main>
         <StatusBar
-          pageCount={pages.length}
+          pageCount={preview?.pageCount ?? 0}
           warnings={warnings}
           inert={modalOpen}
         />

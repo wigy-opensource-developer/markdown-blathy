@@ -3,18 +3,30 @@ import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { renderOptionsPayload } from "./presets.js";
 
-/** Live preview: markdown + options → per-page SVG strings. The `seq` is
- *  echoed back for the stale-response guard (§7.5). `documentPath` lets the
+/** Live preview: markdown + options → render metadata ({ seq, pageCount,
+ *  pageSizes, pageBackground, warnings, doc }) PLUS the requested initial
+ *  page window (`pages: [{ index, svg }]`) exported from the same compile,
+ *  so the preview swaps old → new in one commit — the last-good pages stay
+ *  up until the new ones land. The backend caches the ONE compiled document;
+ *  scrolling exports further pages via `exportPages` (§7.5). The `seq` is
+ *  echoed back for the stale-response guard. `documentPath` lets the
  *  backend resolve document-relative images against the document's folder. */
-export const renderPreview = (markdown, options, seq, documentPath = null) =>
+export const renderPreview = (markdown, options, seq, documentPath = null, pages = []) =>
   invoke("render_preview", {
     payload: {
       markdown,
       options: renderOptionsPayload(options),
       seq,
       documentPath,
+      pages,
     },
   });
+
+/** Export SVG pages from the backend's single cached render — no recompile
+ *  (§7.5). `seq` must match the cached document; a mismatch resolves
+ *  `{ seq, stale: true, pages: [] }` and the caller drops it. Otherwise
+ *  resolves `{ seq, stale: false, pages: [{ index, svg }] }`. */
+export const exportPages = (seq, pages) => invoke("export_pages", { seq, pages });
 
 /** Export PDF: markdown + options → system save dialog (defaulting to
  *  `<title>.pdf` in `directory`) → PDF on disk, opened in the system viewer.
