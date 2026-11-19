@@ -224,6 +224,25 @@ body {
   margin-top: 40px;
 }
 
+/* Current / total page badge, floating in the preview pane's bottom-right
+   (Preview.jsx). Fixed to the pane — not the scrolling #preview — so it
+   stays put while pages scroll under it; pointer-events:none keeps it out
+   of the way of clicks and links. A translucent dark pill reads on any
+   paper color; tabular digits keep the width steady while scrolling. */
+.page-indicator {
+  position: absolute;
+  bottom: 16px;
+  right: 24px;
+  padding: 2px 10px;
+  border-radius: 999px;
+  background: rgba(0, 0, 0, 0.55);
+  color: #fff;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  pointer-events: none;
+  user-select: none;
+}
+
 #status {
   display: flex;
   flex-direction: column;

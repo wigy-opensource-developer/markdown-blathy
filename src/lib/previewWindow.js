@@ -71,3 +71,15 @@ export function visibleRange(layout, scrollTop, viewportHeight, overscan = 2) {
     last: Math.min(n - 1, last + overscan),
   };
 }
+
+/**
+ * The 1-based number of the topmost page actually visible in the scroll
+ * window (no overscan) — the "current page" for the preview's page
+ * indicator. Returns null for an empty layout or an unmeasured viewport,
+ * so the indicator stays hidden until there is something to report.
+ */
+export function currentPageAt(layout, scrollTop, viewportHeight) {
+  const { first, last } = visibleRange(layout, scrollTop, viewportHeight, 0);
+  if (last < first) return null;
+  return first + 1;
+}

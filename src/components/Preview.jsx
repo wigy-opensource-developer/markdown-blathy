@@ -12,6 +12,8 @@
 // (lib/previewWindow.js). Mounted-only markup lives in lib/previewPages.js:
 // scrolling away drops a page's SVG, scrolling back re-exports it (cheap,
 // no recompile). No commit ever carries the whole multi-MB preview again.
+// A small current/total page badge floats in the pane's bottom-right
+// (currentPageAt — the topmost visible page, no source mapping needed).
 //
 // The SVG strings come from our own Typst compile — never from user input
 // directly — so injecting them as DOM is safe (same trust boundary as the
@@ -24,7 +26,7 @@
 // "Rendering…" note. `busy` also rides along as the parent section's
 // `data-rendering` attribute (App.jsx), which drives the dimming CSS.
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { computeLayout, visibleRange } from "../lib/previewWindow.js";
+import { computeLayout, visibleRange, currentPageAt } from "../lib/previewWindow.js";
 import { initialPages, nextViewport, applyFetch, failFetch } from "../lib/previewPages.js";
 
 /** One sheet of the page list. With its SVG it is the printed page; without
@@ -77,6 +79,8 @@ function Preview({ preview, fetchPages, onViewport, busy, onExternalLink }) {
 
   const layout = useMemo(() => computeLayout(pageSizes, view.width), [pageSizes, view.width]);
   const { first, last } = visibleRange(layout, view.top, view.height);
+  // The topmost visible page (no overscan) for the current/total indicator.
+  const currentPage = currentPageAt(layout, view.top, view.height);
   const visible = useMemo(() => {
     const indices = [];
     for (let i = first; i <= last; i++) indices.push(i);
@@ -189,6 +193,11 @@ function Preview({ preview, fetchPages, onViewport, busy, onExternalLink }) {
           </div>
         )}
       </div>
+      {currentPage != null && (
+        <div className="page-indicator" aria-label={`Page ${currentPage} of ${pageCount}`}>
+          {currentPage} / {pageCount}
+        </div>
+      )}
     </>
   );
 }

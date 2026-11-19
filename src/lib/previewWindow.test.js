@@ -5,6 +5,7 @@ import { describe, expect, it } from "vitest";
 import {
   computeLayout,
   visibleRange,
+  currentPageAt,
   MAX_PAGE_WIDTH,
   PAGE_GAP,
   PAGE_PAD,
@@ -84,5 +85,24 @@ describe("visibleRange", () => {
 
   it("a viewport taller than the document mounts everything", () => {
     expect(visibleRange(layout, 0, 100000, 0)).toEqual({ first: 0, last: 2 });
+  });
+});
+
+describe("currentPageAt", () => {
+  const layout = computeLayout(SIZES, 400); // tops 24, 648, 1472
+
+  it("reports the topmost visible page, 1-based, without overscan", () => {
+    expect(currentPageAt(layout, 0, 400)).toBe(1);
+    expect(currentPageAt(layout, 700, 400)).toBe(2); // page 1 spans 648..1448
+    expect(currentPageAt(layout, 1500, 400)).toBe(3);
+  });
+
+  it("clamps a scroll past the end to the last page", () => {
+    expect(currentPageAt(layout, 99999, 400)).toBe(3);
+  });
+
+  it("is null for an empty layout or an unmeasured viewport", () => {
+    expect(currentPageAt({ slots: [], totalHeight: 0 }, 0, 400)).toBeNull();
+    expect(currentPageAt(layout, 0, 0)).toBeNull();
   });
 });

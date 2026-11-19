@@ -59,6 +59,12 @@ describe("Preview", () => {
       "--sheet-bg:var(--preview-bg)"
     );
   });
+
+  it("hides the page indicator until the pane is measured", () => {
+    // SSR has no viewport (height 0) → no current page → no badge yet.
+    expect(render({ preview: META })).not.toContain("page-indicator");
+    expect(render({ preview: null })).not.toContain("page-indicator");
+  });
 });
 
 describe("Sheet", () => {

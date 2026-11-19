@@ -454,7 +454,7 @@ src/
 │   ├── settings.js   # localStorage-backed settings + applyOptionsPatch
 │   ├── docSettings.js # Document popover form → front-matter patch (tri-state hyphenate)
 │   ├── renderScheduler.js # the render cycle: 200ms debounce, single flight, catch-up, modal freeze
-│   ├── previewWindow.js # virtualized-preview geometry: sheet layout + visible range
+│   ├── previewWindow.js # virtualized-preview geometry: sheet layout, visible range, current page
 │   ├── previewPages.js # mounted-only SVG cache: prune/fetch/dedupe per viewport
 │   ├── renderStatus.js # delayed "Rendering…" note (350 ms into a pending render)
 │   ├── seq.js        # stale-response guard (response seq vs latest sent/invalidated)
@@ -582,6 +582,12 @@ strings). `Preview.jsx` is a virtualized list:
   resets everything, seeding the window the response already exported (no
   refetch, no placeholder gap); late or stale responses never resurrect
   unmounted pages. RAM holds the window, not the document.
+- A current/total page badge (`currentPage / pageCount`) floats in the
+  pane's bottom-right, fixed to the pane while pages scroll under it.
+  `currentPageAt` reports the topmost visible page (no overscan) from the
+  scroll geometry alone — it needs no markdown↔page source mapping (that
+  belongs to the planned editor↔preview scroll sync). Hidden until the
+  pane is measured; pointer-events:none, tabular digits.
 
 The render scheduler is unchanged. Its apply commit swaps the last-good
 pages for the new window in one step: the old pages stay up — dimmed under
