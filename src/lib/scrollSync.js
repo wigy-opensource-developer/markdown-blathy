@@ -30,10 +30,24 @@ function anchorY(anchor, layout) {
 /** Build the strictly source-line-ordered interpolation knots, including
  * document boundaries so the editor's first/last lines can reach the ends of
  * long final blocks. Invalid, duplicate, or physically backwards anchors are
- * skipped defensively; the converter normally guarantees none of them. */
+ * skipped defensively; the converter normally guarantees none of them.
+ *
+ * Cached per anchors array + geometry: scroll frames call the mapping 60×/s
+ * and block-heavy documents have thousands of anchors — sorting them per
+ * frame would be O(n log n) each time. The slots are fully determined by the
+ * pageSizes array and the scaled page width, so those plus the line count
+ * form the cache key. */
+const knotCache = new WeakMap();
+
 function knots(anchors, layout, sourceLineCount) {
   if (!Array.isArray(anchors) || anchors.length === 0 || layout.slots.length === 0) {
     return [];
+  }
+  const sizes = layout.pageSizes ?? [];
+  const width = layout.slots[0].width;
+  const cached = knotCache.get(anchors);
+  if (cached && cached.sizes === sizes && cached.width === width && cached.lines === sourceLineCount) {
+    return cached.points;
   }
   const result = [{ line: 1, y: PAGE_PAD }];
   let lastLine = 1;
@@ -57,7 +71,20 @@ function knots(anchors, layout, sourceLineCount) {
     const y = Math.max(lastY, layout.totalHeight - PAGE_PAD);
     result.push({ line: sourceLineCount, y });
   }
+  knotCache.set(anchors, { sizes, width, lines: sourceLineCount, points: result });
   return result;
+}
+
+/** First index i ≥ 1 with key(points[i]) ≥ value (points sorted by key). */
+function upperSegment(points, value, key) {
+  let lo = 1;
+  let hi = points.length - 1;
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1;
+    if (key(points[mid]) < value) lo = mid + 1;
+    else hi = mid;
+  }
+  return lo;
 }
 
 /** Map a (possibly fractional) one-based Markdown line to the virtual
@@ -66,15 +93,13 @@ export function previewYAtSourceLine(anchors, line, layout, sourceLineCount) {
   const points = knots(anchors, layout, sourceLineCount);
   if (points.length === 0) return null;
   if (points.length === 1 || line <= points[0].line) return points[0].y;
-  for (let i = 1; i < points.length; i++) {
-    const right = points[i];
-    if (line <= right.line) {
-      const left = points[i - 1];
-      const t = clamp((line - left.line) / (right.line - left.line), 0, 1);
-      return left.y + (right.y - left.y) * t;
-    }
-  }
-  return points[points.length - 1].y;
+  const last = points[points.length - 1];
+  if (line >= last.line) return last.y;
+  const i = upperSegment(points, line, (p) => p.line);
+  const left = points[i - 1];
+  const right = points[i];
+  const t = clamp((line - left.line) / (right.line - left.line), 0, 1);
+  return left.y + (right.y - left.y) * t;
 }
 
 /** Inverse of previewYAtSourceLine, using the same knots. Equal-Y anchors
@@ -83,16 +108,14 @@ export function sourceLineAtPreviewY(anchors, y, layout, sourceLineCount) {
   const points = knots(anchors, layout, sourceLineCount);
   if (points.length === 0) return null;
   if (points.length === 1 || y <= points[0].y) return points[0].line;
-  for (let i = 1; i < points.length; i++) {
-    const right = points[i];
-    if (y <= right.y) {
-      const left = points[i - 1];
-      if (right.y === left.y) return right.line;
-      const t = clamp((y - left.y) / (right.y - left.y), 0, 1);
-      return left.line + (right.line - left.line) * t;
-    }
-  }
-  return points[points.length - 1].line;
+  const last = points[points.length - 1];
+  if (y >= last.y) return last.line;
+  const i = upperSegment(points, y, (p) => p.y);
+  const left = points[i - 1];
+  const right = points[i];
+  if (right.y === left.y) return right.line;
+  const t = clamp((y - left.y) / (right.y - left.y), 0, 1);
+  return left.line + (right.line - left.line) * t;
 }
 
 function previewLayout(preview, scroller) {

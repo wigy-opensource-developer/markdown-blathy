@@ -57,6 +57,37 @@ describe("scroll source interpolation", () => {
       previewYAtSourceLine(anchors, 1, { slots: [], totalHeight: 0, pageSizes: [] }, 10)
     ).toBeNull();
   });
+
+  it("recomputes knots when the pane geometry changes (cache key)", () => {
+    const sizes = [
+      [100, 200],
+      [100, 200],
+    ];
+    const wide = computeLayout(sizes, 100);
+    wide.pageSizes = sizes;
+    const narrow = computeLayout(sizes, 50);
+    narrow.pageSizes = sizes;
+    const yWide = previewYAtSourceLine(anchors, 3.5, wide, 10);
+    const yNarrow = previewYAtSourceLine(anchors, 3.5, narrow, 10);
+    expect(yWide).not.toBe(yNarrow);
+    // Same geometry again: identical result (cached path).
+    expect(previewYAtSourceLine(anchors, 3.5, wide, 10)).toBe(yWide);
+    expect(sourceLineAtPreviewY(anchors, yNarrow, narrow, 10)).toBeCloseTo(3.5);
+  });
+
+  it("interpolates correctly across many anchors (binary search)", () => {
+    const many = [];
+    for (let i = 0; i < 500; i++) {
+      many.push({ startLine: 2 + i * 2, page: 1, y: 10 + i });
+    }
+    const l = layout();
+    // Lines 500 and 502 are consecutive anchors; 501 is their midpoint.
+    const y = previewYAtSourceLine(many, 501, l, 1200);
+    const y500 = previewYAtSourceLine(many, 500, l, 1200);
+    const y502 = previewYAtSourceLine(many, 502, l, 1200);
+    expect(y).toBeCloseTo((y500 + y502) / 2, 6);
+    expect(sourceLineAtPreviewY(many, y, l, 1200)).toBeCloseTo(501, 6);
+  });
 });
 
 function fakeEditor() {
