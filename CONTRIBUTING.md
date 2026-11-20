@@ -77,11 +77,11 @@ M8 task 2), so they must be in the tagged commit.
 - **git-cliff** — changelog from the conventional-commit history
   (`cargo install git-cliff --locked`, or your package manager). Configured by
   `cliff.toml` in the repo root (v-prefixed tag pattern, header marker).
-- **Screenshot capture** — WebdriverIO with `@wdio/tauri-service` (default
-  embedded provider via `tauri-plugin-wdio-webdriver`; `tauri-driver` +
-  `webkit2gtk-driver` works on Linux too), plus `xvfb`, `openbox`/`mutter`,
-  `picom`, `xdotool`, `maim` (or ImageMagick `import`) and ImageMagick. See
-  <https://v2.tauri.app/develop/tests/webdriver/>.
+- **Screenshot capture** — `scripts/screenshots.sh` drives the real app
+  headlessly (Xvfb + openbox + tauri-driver/WebDriver) and composites the
+  window onto a white background with a soft shadow via ImageMagick. Requires
+  `xvfb xauth dbus-x11 openbox maim xdotool imagemagick webkit2gtk-driver
+  tauri-driver` plus Node. See step 2.
 
 ### 1. Pre-flight
 
@@ -98,22 +98,30 @@ cut on a side branch leaves the Actions tab rebuilding the previous version.
 ### 2. Refresh the screenshots
 
 Screenshots always come from the real binary — a mocked `render_preview`
-cannot reproduce Typst layout, and someone has to pick a good window state
-and content.
+cannot reproduce Typst layout. `scripts/screenshots.sh` regenerates all four
+`docs/screenshots/` images headlessly and reproducibly:
 
-1. Start the release binary on a virtual display with a window manager and
-   compositor (`picom`) so the window gets its native shadow. Pass the
-   document to show as a positional path (`target/release/MarkdownBláthy
-   docs/demo.md`, or `markdown-blathy docs/demo.md`); with no argument the app
-   shows the built-in sample.
-2. Drive it to the state to show (open the Document or Page popover, …) and
-   wait for the render.
-3. Capture the app window by id with `maim` (ImageMagick `import` works
-   too) — `browser.takeScreenshot()` only captures the webview viewport.
-4. Follow Flathub's screenshot quality guidelines: window-only, no desktop
-   background, native shadow and rounded corners, ~1000×700 (2000×1400
-   HiDPI), one-sentence captions, first screenshot `type="default"`.
-5. Save to `docs/screenshots/` and update the metainfo `<screenshots>`.
+```bash
+npm run build
+cargo build -p markdown-blathy-tauri --features tauri/custom-protocol
+scripts/screenshots.sh        # or pass a release binary path as $1
+```
+
+It starts Xvfb + openbox (a window manager, for the title bar), launches the
+app through tauri-driver, and drives it via WebDriver to each state — light
+main screen, Document popover, Page popover, dark main screen — reloading
+between states so popovers never leak into later shots. Each shot is a
+full-screen `maim` grab trimmed to the window (title bar included) and
+composited onto white with a soft shadow by ImageMagick, so the result is
+independent of the root window color or a running compositor. App data is
+isolated per run, so persisted settings (e.g. the theme) never leak between
+runs.
+
+To change the content or the captured states, edit `scripts/screenshots.mjs`
+(the WebDriver driver). Follow Flathub's screenshot quality guidelines:
+window-only, no desktop background, ~1000×700, one-sentence captions, first
+screenshot `type="default"`. Update the metainfo `<screenshots>` URLs to the
+new tag.
 
 Validate the metainfo locally with `AS_VALIDATE_NONET=1` set —
 `appstreamcli` otherwise fetches the screenshot URLs, which do not resolve
@@ -132,10 +140,11 @@ rewrites the whole file — do not use it for routine releases.) The
 `cliff.toml` `header_marker` lets git-cliff replace a templated header on
 later runs without disturbing the body.
 
-The repo has no tags yet, so the first run covers the whole history. For that
-first run only, `CHANGELOG.md` does not exist yet and `--prepend` cannot
-create it — use `--output CHANGELOG.md` once, then switch to `--prepend` for
-every later release. Commits follow conventional commits (`feat:`,
+Releases are bounded by the previous version tag, so `--unreleased --tag
+"$VERSION"` covers exactly the commits since the last release. (For a brand-new
+repo with no tags and no `CHANGELOG.md`, `--prepend` cannot create the file —
+use `--output CHANGELOG.md` once, then `--prepend` for every later release.)
+Commits follow conventional commits (`feat:`,
 `fix(scope):`, `refactor:`, `chore:`, `doc:`); any commit git-cliff reports as
 skipped (e.g. a subject with a parenthetical it misreads as a body) must be
 added to the section by hand. Add the matching

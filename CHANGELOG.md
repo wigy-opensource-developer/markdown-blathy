@@ -1,4 +1,38 @@
 Changelog
+## [1.1.0] - 2026-11-20
+
+### 🚀 Features
+
+- *(files)* Save in place on Mod+S, Save As on Mod+Shift+S
+- *(ui)* Guard unsaved changes on close, new and open
+- *(recovery)* Autosave snapshots and startup restore
+- *(export)* Surface compile warnings after PDF export
+- *(preview)* Single cached render + virtualized page list
+- *(preview)* Current/total page badge in the preview pane
+- *(ui)* Synchronized editor/preview scrolling via leaf-block source anchors
+- *(preview)* Render pages as PNG rasters for non-blocking scrolling
+
+### 🐛 Bug Fixes
+
+- Documentation lags were fixed
+- *(ui)* Drop the non-functional Custom margin preset
+- *(ci)* Build the smoke-test binary with custom-protocol and require a render
+
+### 📚 Documentation
+
+- Mark M9 done and reconcile the save/recovery documentation
+
+### ⚡ Performance
+
+- *(ui)* Make the preview render cycle debounced and single-flight
+- *(ui)* Cache scroll-sync interpolation knots per source map and geometry
+
+### ⚙️ Miscellaneous Tasks
+
+- *(headless)* Gate the GUI on an Xvfb smoke test
+- *(deny)* Ignore the chrono unmaintained advisory
+- *(recovery)* Keep the AppHandle out of command tracing spans
+
 ## [1.0.0] - 2026-11-01
 
 ### 🚀 Features

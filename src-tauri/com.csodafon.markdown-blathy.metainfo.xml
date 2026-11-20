@@ -52,24 +52,35 @@
 
   <screenshots>
     <screenshot type="default">
-      <image>https://raw.githubusercontent.com/wigy-opensource-developer/markdown-blathy/v1.0.0/docs/screenshots/main-screen.png</image>
+      <image>https://raw.githubusercontent.com/wigy-opensource-developer/markdown-blathy/v1.1.0/docs/screenshots/main-screen.png</image>
       <caption>The main editing window with the live preview</caption>
     </screenshot>
     <screenshot>
-      <image>https://raw.githubusercontent.com/wigy-opensource-developer/markdown-blathy/v1.0.0/docs/screenshots/main-screen-dark.png</image>
+      <image>https://raw.githubusercontent.com/wigy-opensource-developer/markdown-blathy/v1.1.0/docs/screenshots/main-screen-dark.png</image>
       <caption>The same document with the dark UI theme</caption>
     </screenshot>
     <screenshot>
-      <image>https://raw.githubusercontent.com/wigy-opensource-developer/markdown-blathy/v1.0.0/docs/screenshots/document-options.png</image>
+      <image>https://raw.githubusercontent.com/wigy-opensource-developer/markdown-blathy/v1.1.0/docs/screenshots/document-options.png</image>
       <caption>Document settings: title, author, flavor, and language</caption>
     </screenshot>
     <screenshot>
-      <image>https://raw.githubusercontent.com/wigy-opensource-developer/markdown-blathy/v1.0.0/docs/screenshots/page-settings.png</image>
+      <image>https://raw.githubusercontent.com/wigy-opensource-developer/markdown-blathy/v1.1.0/docs/screenshots/page-settings.png</image>
       <caption>Page settings: paper size, margins, and template</caption>
     </screenshot>
   </screenshots>
 
   <releases>
+    <release version="1.1.0" date="2026-11-20">
+      <description>
+        <p>Synchronized editor/preview scrolling and a much snappier preview.</p>
+        <p>
+          The editor and preview now scroll together via leaf-block source
+          anchors. Preview pages render as PNG rasters decoded off the main
+          thread, so scrolling and editing no longer block the interface,
+          with clickable link overlays on each page.
+        </p>
+      </description>
+    </release>
     <release version="1.0.0" date="2026-11-01">
       <description>
         <p>First stable release.</p>
