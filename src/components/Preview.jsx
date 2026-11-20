@@ -61,7 +61,15 @@ export function Sheet({ index, slot, svg }) {
   );
 }
 
-function Preview({ preview, fetchPages, onViewport, busy, onExternalLink }) {
+function Preview({
+  preview,
+  fetchPages,
+  onViewport,
+  onScroller,
+  onSyncScroll,
+  busy,
+  onExternalLink,
+}) {
   const seq = preview?.seq ?? null;
   const pageCount = preview?.pageCount ?? 0;
   const pageSizes = preview?.pageSizes ?? [];
@@ -70,6 +78,10 @@ function Preview({ preview, fetchPages, onViewport, busy, onExternalLink }) {
   const sheetBg = preview?.pageBackground || "var(--preview-bg)";
 
   const scrollRef = useRef(null);
+  useEffect(() => {
+    onScroller?.(scrollRef.current);
+    return () => onScroller?.(null);
+  }, [onScroller]);
   // The scroll window: content-box width, viewport height, scroll offset.
   // Zero until measured — nothing mounts or fetches before that.
   const [view, setView] = useState({ width: 0, height: 0, top: 0 });
@@ -107,6 +119,7 @@ function Preview({ preview, fetchPages, onViewport, busy, onExternalLink }) {
   // Scroll → one rAF-throttled viewport update (the window computation is
   // cheap; the DOM churn of mounting/unmounting sheets is what we bound).
   const onScroll = useCallback(() => {
+    onSyncScroll?.();
     if (rafRef.current) return;
     rafRef.current = requestAnimationFrame(() => {
       rafRef.current = 0;
@@ -116,7 +129,7 @@ function Preview({ preview, fetchPages, onViewport, busy, onExternalLink }) {
       setView(vp);
       onViewport?.(vp);
     });
-  }, [onViewport]);
+  }, [onViewport, onSyncScroll]);
   useEffect(() => () => cancelAnimationFrame(rafRef.current), []);
 
   // The mount/fetch lifecycle: prune to the window, fetch what is missing.

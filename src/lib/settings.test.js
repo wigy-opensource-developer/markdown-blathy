@@ -38,6 +38,7 @@ describe("loadSettings", () => {
       },
       editorFontSize: 18,
       theme: "dark",
+      syncScroll: false,
     };
     saveSettings(next, storage);
     expect(loadSettings(storage)).toEqual(next);

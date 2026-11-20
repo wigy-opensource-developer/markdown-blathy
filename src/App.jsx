@@ -18,6 +18,7 @@ import { resolveColorScheme } from "./lib/uiTheme.js";
 import { SAMPLE_DOC } from "./lib/sample.js";
 import { docTitle, parentDirectory, safeFileName, windowTitle } from "./lib/title.js";
 import { createUnsavedGuard, CHOICE_DISCARD } from "./lib/unsavedGuard.js";
+import { createScrollSyncController } from "./lib/scrollSync.js";
 import { AUTOSAVE_INTERVAL_MS, recoveryDecision } from "./lib/recovery.js";
 import Toolbar from "./components/Toolbar.jsx";
 import Editor from "./components/Editor.jsx";
@@ -34,7 +35,7 @@ export default function App() {
   // through `changeOption`. `marginPreset` is UI-only and stripped when the
   // payload is built (see lib/api.js); the rest mirrors RenderOptions (§6.1).
   const [settings, setSettings] = useState(() => loadSettings(window.localStorage));
-  const { options, editorFontSize, theme } = settings;
+  const { options, editorFontSize, theme, syncScroll } = settings;
   // The OS color scheme, tracked live so "system" follows changes at runtime.
   const [systemDark, setSystemDark] = useState(
     () => window.matchMedia?.("(prefers-color-scheme: dark)").matches ?? false
@@ -73,6 +74,23 @@ export default function App() {
   // outlive a render.
   const [preview, setPreview] = useState(null);
   const previewRef = useRef(null);
+  const editorViewRef = useRef(null);
+  const previewScrollerRef = useRef(null);
+  // Source maps are valid only for the exact editor revision they compiled.
+  // Geometry-only option renders may reuse the same revision; edits and loads
+  // bump it immediately, suspending sync while the last-good preview is stale.
+  const editorRevisionRef = useRef(0);
+  const previewRevisionRef = useRef(-1);
+  const renderRevisionRef = useRef(null);
+  const scrollSyncRef = useRef(null);
+  if (!scrollSyncRef.current) {
+    scrollSyncRef.current = createScrollSyncController({
+      getEditorView: () => editorViewRef.current,
+      getPreviewScroller: () => previewScrollerRef.current,
+      getPreview: () => previewRef.current,
+      isPreviewCurrent: () => editorRevisionRef.current === previewRevisionRef.current,
+    });
+  }
   // The preview pane's scroll window, reported by Preview (no state — a
   // scroll must not commit React). runRender reads it to ask for the pages
   // the user is looking at, so a render swaps old → new atomically.
@@ -174,8 +192,11 @@ export default function App() {
       pageCount: result.pageCount,
       pageSizes: result.pageSizes,
       pageBackground: result.pageBackground ?? null,
+      sourceAnchors: result.sourceAnchors ?? [],
       seed: result.pages ?? [],
     };
+    const revision = renderRevisionRef.current;
+    previewRevisionRef.current = revision?.seq === result.seq ? revision.revision : -1;
     previewRef.current = meta;
     setPreview(meta);
     setWarnings(result.warnings);
@@ -206,6 +227,7 @@ export default function App() {
     }
     renderStatus.current.start();
     const seqId = ++seq.current;
+    renderRevisionRef.current = { seq: seqId, revision: editorRevisionRef.current };
     const { markdown: doc, options: opts, documentPath: docPath } = docRef.current;
     // Ask for the window the user is looking at, so the response can swap
     // old → new in one commit. Sizes come from the previous render (paper
@@ -254,6 +276,8 @@ export default function App() {
   /** Load `text` as a fresh document: the editor remounts with it, the live
    *  buffer follows, and the next render reads the same text. */
   const loadDocument = useCallback((text) => {
+    editorRevisionRef.current += 1;
+    scrollSyncRef.current?.reset();
     docRef.current.markdown = text;
     setMarkdown(text);
     setDocumentVersion((version) => version + 1);
@@ -415,8 +439,23 @@ export default function App() {
   // not a keystroke. (The Rust side prewarms the default engine meanwhile.)
   useEffect(() => {
     requestPreviewNow();
-    return () => scheduler.current.dispose();
+    return () => {
+      scheduler.current.dispose();
+      scrollSyncRef.current?.dispose();
+    };
   }, [requestPreviewNow]);
+
+  // The toggle is UI-only: enabling aligns the last active pane immediately,
+  // disabling never triggers a render.
+  useEffect(() => {
+    scrollSyncRef.current?.setEnabled(syncScroll);
+  }, [syncScroll]);
+
+  // Page sizes and anchors commit together. Re-align once after that commit
+  // so the same source focal point survives layout changes and re-renders.
+  useEffect(() => {
+    scrollSyncRef.current?.resynchronize();
+  }, [preview]);
 
   // `app-request` carries every backend request that needs the dirty guard
   // (M9 task 3): a window close, or a document the CLI asked to open. The
@@ -498,6 +537,7 @@ export default function App() {
       // user edit (loadDocument already set the buffer).
       if (value === docRef.current.markdown) return;
       pristineRef.current = false;
+      editorRevisionRef.current += 1;
       docRef.current.markdown = value;
       if (!dirtyRef.current) {
         dirtyRef.current = true;
@@ -719,6 +759,17 @@ export default function App() {
   // The UI appearance preference (§8.6): persisted like any other setting,
   // but it never touches the render options or the document/page — it only
   // switches the Mantine color scheme (light / system / dark).
+  const handleToggleSyncScroll = useCallback(() => {
+    const next = { ...settings, syncScroll: !settings.syncScroll };
+    setSettings(next);
+    saveSettings(next, window.localStorage);
+    // Clicking the toggle must not cost the user their keyboard focus:
+    // hand it back to the editor. preventScroll keeps the viewport where it
+    // is (no jump to the cursor). While a modal is open the panes are inert
+    // and this is a silent no-op.
+    editorViewRef.current?.contentDOM.focus({ preventScroll: true });
+  }, [settings]);
+
   const handleThemeChange = useCallback(
     (nextTheme) => {
       if (!nextTheme) return; // Mantine Select deselect guard
@@ -876,6 +927,18 @@ export default function App() {
   const handleViewport = useCallback((vp) => {
     viewportRef.current = vp;
   }, []);
+  const handleEditorView = useCallback((view) => {
+    editorViewRef.current = view;
+  }, []);
+  const handlePreviewScroller = useCallback((scroller) => {
+    previewScrollerRef.current = scroller;
+  }, []);
+  const handleEditorSyncScroll = useCallback(() => {
+    scrollSyncRef.current?.onScroll("editor");
+  }, []);
+  const handlePreviewSyncScroll = useCallback(() => {
+    scrollSyncRef.current?.onScroll("preview");
+  }, []);
 
   return (
     <MantineProvider theme={mantineTheme} forceColorScheme={colorScheme}>
@@ -898,6 +961,8 @@ export default function App() {
           onPageSettingsOpenChange={setPageSettingsOpen}
           themeMenuOpen={themeMenuOpen}
           onThemeMenuOpenChange={setThemeMenuOpen}
+          syncScroll={syncScroll}
+          onToggleSyncScroll={handleToggleSyncScroll}
         />
         <main id="panes" inert={modalOpen}>
           <section id="editor-pane">
@@ -908,6 +973,8 @@ export default function App() {
               fontSize={editorFontSize}
               dark={colorScheme === "dark"}
               focusToken={editorFocusToken}
+              onView={handleEditorView}
+              onSyncScroll={handleEditorSyncScroll}
             />
           </section>
           <section id="preview-pane" data-rendering={renderBusy ? "true" : undefined}>
@@ -915,6 +982,8 @@ export default function App() {
               preview={preview}
               fetchPages={handleFetchPages}
               onViewport={handleViewport}
+              onScroller={handlePreviewScroller}
+              onSyncScroll={handlePreviewSyncScroll}
               busy={renderBusy}
               onExternalLink={handleExternalLink}
             />

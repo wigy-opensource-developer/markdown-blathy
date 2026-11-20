@@ -9,14 +9,16 @@
 //!   re-runs the font scan) only when the static source changes.
 //! - `build_engine` + `compile_pdf_with_inputs`: PDF bytes for export.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::error::Error;
 use std::fmt;
 use std::path::{Path, PathBuf};
 
 use comemo::Track;
+use serde::Serialize;
 use typst::diag::EcoString;
-use typst::foundations::Dict;
+use typst::foundations::{Dict, NativeElement, Selector, Value};
+use typst::introspection::{Introspector, MetadataElem};
 use typst::layout::{FrameItem, Point};
 use typst::model::{Destination, LateLinkResolver, ResolvedLink};
 use typst::visualize::Paint;
@@ -237,6 +239,64 @@ pub fn compile_preview(
 /// virtualized preview needs to lay out placeholder sheets before any SVG
 /// is exported, so the scroll height is stable from the moment a render
 /// lands.
+/// One leaf Markdown block's resolved start position in the paged preview.
+/// Lines and pages are one-based; `y` is points from the page's top edge.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SourceAnchor {
+    pub start_line: usize,
+    pub page: usize,
+    pub y: f64,
+}
+
+/// Resolve the converter's invisible source-line metadata against the same
+/// compiled document used for SVG export. Paged positions are available on
+/// Typst 0.15 even though paged SVG link anchors are not, so scroll sync does
+/// not need any DOM markers or mounted destination pages.
+///
+/// Sorting by source line gives the frontend its interpolation domain. The
+/// first occurrence defensively wins if a custom template realizes a marker
+/// more than once.
+pub fn source_anchors(doc: &PagedDocument) -> Vec<SourceAnchor> {
+    let introspector = doc.introspector();
+    let markers = introspector.query(&Selector::Elem(MetadataElem::ELEM, None));
+    let mut by_line: BTreeMap<usize, (usize, f64)> = BTreeMap::new();
+    for content in markers {
+        let Some(metadata) = content.to_packed::<MetadataElem>() else {
+            continue;
+        };
+        let Value::Dict(payload) = &metadata.value else {
+            continue;
+        };
+        let Ok(Value::Int(line)) = payload.get("markdown-blathy-source-line") else {
+            continue;
+        };
+        let Ok(line) = usize::try_from(*line) else {
+            continue;
+        };
+        if line == 0 {
+            continue;
+        }
+        let Some(location) = content.location() else {
+            continue;
+        };
+        let Some(position) = introspector.position(location) else {
+            continue;
+        };
+        by_line
+            .entry(line)
+            .or_insert((position.page.get(), position.point.y.to_pt()));
+    }
+    by_line
+        .into_iter()
+        .map(|(start_line, (page, y))| SourceAnchor {
+            start_line,
+            page,
+            y,
+        })
+        .collect()
+}
+
 pub fn page_sizes(doc: &PagedDocument) -> Vec<(f64, f64)> {
     doc.pages()
         .iter()
@@ -395,12 +455,13 @@ fn render_diagnostic_with_world(
 mod tests {
     use super::{
         build_engine, compile_pdf_with_inputs, compile_preview, export_all_pages, page_background,
-        CompiledPreview, FontOptions, FONT_BOLD_BYTES, FONT_BYTES, FONT_MATH_BYTES,
-        FONT_MONO_BYTES,
+        page_sizes, source_anchors, CompiledPreview, FontOptions, FONT_BOLD_BYTES, FONT_BYTES,
+        FONT_MATH_BYTES, FONT_MONO_BYTES,
     };
     use crate::options::{Flavor, HeadingIds, Margins, Paper, RenderOptions, TextAlign};
     use crate::typst_engine::template::{
-        build_static_source, compose, render_inputs, TemplateArgs, DEFAULT_TEMPLATE, PRELUDE,
+        build_static_source, compose, render_inputs, render_inputs_impl, TemplateArgs,
+        DEFAULT_TEMPLATE, PRELUDE,
     };
     use typst::foundations::{Dict, IntoValue, Value};
     use typst_as_lib::{TypstEngine, TypstTemplateMainFile};
@@ -1608,6 +1669,29 @@ mod tests {
                 &compiled_custom("#set page(fill: gradient.linear(red, blue))", None).paged
             ),
             None
+        );
+    }
+
+    #[test]
+    fn source_metadata_changes_neither_geometry_nor_visible_svg() {
+        let markdown = "# Heading\n\nParagraph.\n\n> Quote\n\n- one\n- two";
+        let source = build_static_source(DEFAULT_TEMPLATE, &gfm_options()).unwrap();
+        let engine = build_engine(&source, &FontOptions::default()).unwrap();
+        let (plain_inputs, ..) = render_inputs(markdown, &gfm_options()).unwrap();
+        let (mapped_inputs, ..) = render_inputs_impl(markdown, &gfm_options(), true).unwrap();
+        let plain = compile_preview(&engine, &plain_inputs).unwrap();
+        let mapped = compile_preview(&engine, &mapped_inputs).unwrap();
+        assert_eq!(page_sizes(&plain.paged), page_sizes(&mapped.paged));
+        assert_eq!(
+            export_all_pages(&plain.paged),
+            export_all_pages(&mapped.paged)
+        );
+        assert_eq!(
+            source_anchors(&mapped.paged)
+                .into_iter()
+                .map(|anchor| anchor.start_line)
+                .collect::<Vec<_>>(),
+            vec![1, 3, 5, 7, 8]
         );
     }
 }

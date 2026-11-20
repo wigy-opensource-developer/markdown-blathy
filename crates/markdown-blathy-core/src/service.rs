@@ -16,7 +16,7 @@ use crate::files;
 use crate::markdown::convert::DocMeta;
 use crate::markdown::frontmatter::{self, Patch};
 use crate::options::RenderOptions;
-use crate::typst_engine::engine::{self, CompiledPreview, FontOptions};
+use crate::typst_engine::engine::{self, CompiledPreview, FontOptions, SourceAnchor};
 use crate::typst_engine::template::{self, PreparedRender};
 
 /// Input for a preview render or PDF export.
@@ -41,6 +41,8 @@ pub struct RenderResult {
     pub page_sizes: Vec<(f64, f64)>,
     /// The template's page background as a CSS color, if it is a solid fill.
     pub page_background: Option<String>,
+    /// Leaf-block source positions for bidirectional editor/preview scroll sync.
+    pub source_anchors: Vec<SourceAnchor>,
     pub warnings: Vec<String>,
     pub doc: DocMeta,
 }
@@ -133,11 +135,13 @@ impl Service {
         let outcome = self.render_prepared(&prepared)?;
         let page_sizes = engine::page_sizes(&outcome.paged);
         let page_background = engine::page_background(&outcome.paged);
+        let source_anchors = engine::source_anchors(&outcome.paged);
         Ok(RenderDetail {
             result: RenderResult {
                 paged: Arc::new(outcome.paged),
                 page_sizes,
                 page_background,
+                source_anchors,
                 warnings: merged_warnings(prepared.warnings.clone(), outcome.warnings),
                 doc: prepared.doc.clone(),
             },
@@ -325,6 +329,56 @@ mod tests {
         let pages = engine::export_all_pages(&rendered.paged);
         assert!(pages[0].contains("<svg"));
         assert_eq!(rendered.doc.title.as_deref(), Some("Service"));
+        assert_eq!(rendered.source_anchors.len(), 1);
+        assert_eq!(rendered.source_anchors[0].start_line, 4);
+        assert_eq!(rendered.source_anchors[0].page, 1);
+        assert!(rendered.source_anchors[0].y > 0.0);
+    }
+
+    #[test]
+    fn source_anchors_compile_for_extended_leaf_constructs() {
+        let markdown = "# Heading\n\n| A | B |\n|---|---|\n| 1 | 2 |\n\n- [ ] task\n\nTerm\n: detail\n\nText[^n].\n\n[^n]: relocated definition";
+        let mut request = request(markdown);
+        request.options.flavor = Flavor::Custom;
+        let rendered = service()
+            .render(&request)
+            .expect("extended document must compile");
+        let lines: Vec<usize> = rendered
+            .source_anchors
+            .iter()
+            .map(|anchor| anchor.start_line)
+            .collect();
+        assert!(lines.contains(&1));
+        assert!(lines.contains(&3), "table anchor: {lines:?}");
+        assert!(lines.contains(&7), "task paragraph anchor: {lines:?}");
+        assert!(
+            lines.contains(&9) && lines.contains(&10),
+            "definition-list anchors: {lines:?}"
+        );
+        assert!(!lines.contains(&14), "footnote definition must be unmapped");
+        assert!(lines.windows(2).all(|pair| pair[0] < pair[1]));
+    }
+
+    #[test]
+    fn source_anchors_follow_leaf_blocks_across_pages() {
+        let markdown = format!(
+            "# First\n\n{}\n\n# Last",
+            "A paragraph with enough text to lay out normally.\n\n".repeat(120)
+        );
+        let rendered = service()
+            .render(&request(&markdown))
+            .expect("render must succeed");
+        assert!(rendered.page_sizes.len() > 1);
+        assert_eq!(rendered.source_anchors.first().unwrap().start_line, 1);
+        let last = rendered.source_anchors.last().unwrap();
+        assert_eq!(last.start_line, markdown.lines().count());
+        assert!(last.page > 1, "{}", rendered.source_anchors.len());
+        let lines: Vec<usize> = rendered
+            .source_anchors
+            .iter()
+            .map(|anchor| anchor.start_line)
+            .collect();
+        assert!(lines.windows(2).all(|pair| pair[0] < pair[1]));
     }
 
     #[test]

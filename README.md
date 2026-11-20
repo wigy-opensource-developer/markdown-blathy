@@ -8,6 +8,7 @@ The name commemorates Ottó Titusz Bláthy who among his other inventions became
 ## Features
 
 - **Split-screen editing** — Markdown on the left, live preview on the right.
+- **Synchronized scrolling** — leaf-block source anchors and per-segment interpolation keep both panes aligned in either direction; the toolbar toggle is remembered.
 - **Pixel-identical preview** — the preview is rendered by the same Typst compiler that produces the PDF, so what you see is what you get.
 - **Save in place** — Ctrl+S overwrites the open file (no dialog); Save As is Ctrl+Shift+S.
 - **Export to PDF** — one click, system save dialog, opens in your default PDF viewer.

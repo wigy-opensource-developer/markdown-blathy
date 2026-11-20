@@ -11,7 +11,7 @@
 use std::fmt::Write;
 use std::path::Path;
 
-use crate::markdown::convert::{md_to_typst, DocMeta};
+use crate::markdown::convert::{md_to_typst, md_to_typst_with_source_map, DocMeta};
 use crate::options::RenderOptions;
 use crate::typst_engine::engine::FontOptions;
 use typst::foundations::{Dict, IntoValue};
@@ -161,7 +161,19 @@ pub fn render_inputs(
     markdown: &str,
     options: &RenderOptions,
 ) -> Result<(Dict, DocMeta, Vec<String>), String> {
-    let converted = md_to_typst(markdown, options.flavor, &options.heading_ids);
+    render_inputs_impl(markdown, options, false)
+}
+
+pub(crate) fn render_inputs_impl(
+    markdown: &str,
+    options: &RenderOptions,
+    source_map: bool,
+) -> Result<(Dict, DocMeta, Vec<String>), String> {
+    let converted = if source_map {
+        md_to_typst_with_source_map(markdown, options.flavor, &options.heading_ids)
+    } else {
+        md_to_typst(markdown, options.flavor, &options.heading_ids)
+    };
     let meta = DocMeta {
         title: converted.title.clone(),
         author: converted.author.clone(),
@@ -323,7 +335,9 @@ pub fn prepare_render(
     if let Some(dir) = document_path.and_then(|p| p.parent()) {
         fonts.asset_roots.insert(0, dir.to_path_buf());
     }
-    let (inputs, doc, warnings) = render_inputs(markdown, options)?;
+    // Preview and PDF share this preparation path. Metadata is invisible in
+    // both, while the preview additionally introspects it for scroll sync.
+    let (inputs, doc, warnings) = render_inputs_impl(markdown, options, true)?;
     Ok(PreparedRender {
         static_source: build_static_source(&template_source, options)?,
         inputs,
@@ -727,7 +741,10 @@ mod tests {
         );
         // …the converted body travels in the inputs, never the static source.
         match prepared.inputs.get("body").unwrap() {
-            Value::Str(s) => assert_eq!(s.as_str(), "= Hi #label(\"hi\")"),
+            Value::Str(s) => assert_eq!(
+                s.as_str(),
+                "= Hi #label(\"hi\") #metadata((markdown-blathy-source-line: 1,))"
+            ),
             other => panic!("body must be a string, got {other:?}"),
         }
         assert_eq!(prepared.fonts.families, Vec::<String>::new());

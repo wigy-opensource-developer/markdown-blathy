@@ -26,6 +26,9 @@ export const DEFAULT_SETTINGS = {
   // UI appearance preference (§8.6): "light" | "system" | "dark". Skins the
   // app chrome only — never the document or the exported PDF.
   theme: "system",
+  // Bidirectional leaf-block scroll synchronization; UI-only, never a
+  // render option, so toggling it does not recompile the document.
+  syncScroll: true,
 };
 
 /** Read settings, falling back to the defaults on corrupt/missing data (§8.6).
@@ -96,7 +99,9 @@ function mergeSettings(parsed) {
   const theme = ["light", "system", "dark"].includes(parsed.theme)
     ? parsed.theme
     : defaults.theme;
-  return { ...defaults, ...parsed, options, theme };
+  const syncScroll =
+    typeof parsed.syncScroll === "boolean" ? parsed.syncScroll : defaults.syncScroll;
+  return { ...defaults, ...parsed, options, theme, syncScroll };
 }
 
 /** True when `margins` is a complete 4-field millimetre object. */

@@ -12,7 +12,7 @@ use markdown_blathy_core::markdown::convert::DocMeta;
 use markdown_blathy_core::markdown::frontmatter::Patch;
 use markdown_blathy_core::options::RenderOptions;
 use markdown_blathy_core::service::{RenderRequest, Service};
-use markdown_blathy_core::typst_engine::engine;
+use markdown_blathy_core::typst_engine::engine::{self, SourceAnchor};
 use markdown_blathy_core::PagedDocument;
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, State, Window};
@@ -67,6 +67,8 @@ pub struct PreviewOutcome {
     /// or not a solid fill (the preview falls back to the UI theme's pane
     /// background for its placeholder sheets).
     pub page_background: Option<String>,
+    /// Markdown leaf-block start positions for synchronized scrolling.
+    pub source_anchors: Vec<SourceAnchor>,
     /// The requested initial window, exported from the same compile so the
     /// frontend can swap old → new pages in one commit (empty when none was
     /// requested).
@@ -244,6 +246,7 @@ pub async fn render_preview(
         page_count,
         page_sizes: detail.result.page_sizes,
         page_background: detail.result.page_background,
+        source_anchors: detail.result.source_anchors,
         pages: exported
             .into_iter()
             .map(|(index, svg)| PageSvg { index, svg })
@@ -706,7 +709,9 @@ fn open_in_viewer(path: &Path) {
 
 #[cfg(test)]
 mod tests {
-    use super::{DocMeta, FileOutcome, PageSvg, PagesOutcome, PreviewOutcome, RenderPayload};
+    use super::{
+        DocMeta, FileOutcome, PageSvg, PagesOutcome, PreviewOutcome, RenderPayload, SourceAnchor,
+    };
     use markdown_blathy_core::options::{FeatureFlags, Flavor, Margins, Paper, TextAlign};
 
     /// Pins the IPC contract: the exact JSON the frontend `lib/api.js` sends
@@ -758,6 +763,11 @@ mod tests {
             page_count: 1,
             page_sizes: vec![(595.0, 842.0)],
             page_background: Some("#0d1117".into()),
+            source_anchors: vec![SourceAnchor {
+                start_line: 4,
+                page: 1,
+                y: 72.5,
+            }],
             pages: vec![PageSvg {
                 index: 0,
                 svg: "<svg>".into(),
@@ -779,6 +789,10 @@ mod tests {
         assert!(json.contains("\"pageCount\":1"), "{json}");
         assert!(json.contains("\"pageSizes\":[[595.0,842.0]]"), "{json}");
         assert!(json.contains("\"pageBackground\":\"#0d1117\""), "{json}");
+        assert!(
+            json.contains("\"sourceAnchors\":[{\"startLine\":4,\"page\":1,\"y\":72.5}]"),
+            "{json}"
+        );
         assert!(
             json.contains("\"pages\":[{\"index\":0,\"svg\":\"<svg>\"}]"),
             "{json}"

@@ -13,6 +13,8 @@ import {
   IconFilePlus,
   IconFileTypePdf,
   IconFolderOpen,
+  IconLink,
+  IconLinkOff,
 } from "@tabler/icons-react";
 import {
   ariaKeyShortcut,
@@ -41,6 +43,8 @@ function Toolbar({
   onPageSettingsOpenChange,
   themeMenuOpen,
   onThemeMenuOpenChange,
+  syncScroll,
+  onToggleSyncScroll,
 }) {
   const tip = (id) => commandTooltip(getCommand(id), platform);
   const aria = (id) => ariaKeyShortcut(getCommand(id), platform);
@@ -95,6 +99,31 @@ function Toolbar({
           ariaShortcut={aria("document.settings")}
         />
       </Group>
+
+      <div className="spacer" />
+
+      {/* Centered between two spacers: the scroll-sync toggle belongs to
+          neither the authoring (left) nor the typesetting (right) group.
+          Clicking it returns focus to the editor (App.jsx) so typing is
+          never interrupted. */}
+      <Tooltip label={syncScroll ? "Disable synchronized scrolling" : "Enable synchronized scrolling"}>
+        <Button
+          variant={syncScroll ? "light" : "subtle"}
+          size="compact-md"
+          leftSection={
+            syncScroll ? (
+              <IconLink size={16} />
+            ) : (
+              <IconLinkOff size={16} />
+            )
+          }
+          aria-label={syncScroll ? "Disable synchronized scrolling" : "Enable synchronized scrolling"}
+          aria-pressed={syncScroll}
+          onClick={onToggleSyncScroll}
+        >
+          Sync scroll
+        </Button>
+      </Tooltip>
 
       <div className="spacer" />
 

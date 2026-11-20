@@ -586,7 +586,7 @@ strings). `Preview.jsx` is a virtualized list:
   pane's bottom-right, fixed to the pane while pages scroll under it.
   `currentPageAt` reports the topmost visible page (no overscan) from the
   scroll geometry alone — it needs no markdown↔page source mapping (that
-  belongs to the planned editor↔preview scroll sync). Hidden until the
+  belongs to synchronized scrolling below). Hidden until the
   pane is measured; pointer-events:none, tabular digits.
 
 The render scheduler is unchanged. Its apply commit swaps the last-good
@@ -602,6 +602,52 @@ above). PDF export is untouched: it compiles fresh, full document.
 Pixel-identity holds — a subset export of the same compiled document is the
 same layout. Browser find-in-page only sees mounted pages, as with any
 virtualized list.
+
+### Editor ↔ preview scroll sync
+
+`md_to_typst_with_source_map` instruments rendered **leaf blocks**, not outer
+lists, quotes, items or footnote-definition containers. A leaf gets
+`#metadata((markdown-blathy-source-line: N,))` for its one-based Comrak start
+line; the first eligible leaf on a line wins. Tables count as converter leaves
+because the table renderer consumes rows/cells directly. Footnote definitions
+emit no markers: their text is relocated to the reference and would violate
+source/preview monotonicity. Markers stay on the content's markup line;
+zero-sized metadata on its own line makes tight lists loose. Heading markers
+follow the heading text because `=` must begin the markup line. The geometry
+test requires identical page sizes and SVG bytes with/without instrumentation.
+
+`engine::source_anchors` queries `MetadataElem` on the one cached
+`PagedDocument` and resolves `PagedIntrospector::position()`. It returns
+`{ startLine, page, y }` (one-based line/page, y in points), sorted by source
+line. This deliberately uses paged positions, which Typst 0.15 already has,
+rather than its unavailable paged SVG anchors. `PreviewOutcome` transports the
+map atomically with page sizes and the render `seq`.
+
+The frontend `scrollSync.js` converts page-local points into the same virtual
+slot geometry used by `Preview.jsx`, then linearly interpolates source-line
+fractions ↔ preview document Y. Synthetic document-boundary knots allow first
+and last lines to reach the scroll ends. At each user scroll it maps the 25%
+focal position, sets the other pane directly, and suppresses the matching
+programmatic scroll event. One rAF processes only the latest source position;
+no React state is committed per scroll. Editor-line geometry comes from
+CodeMirror's `lineBlockAtHeight`/`lineBlockAt`. The view is obtained through
+the wrapper's `onCreateEditor` callback: `@uiw/react-codemirror` creates the
+view in a layout effect and stores it in state, so the forwarded ref's `view`
+is still undefined when a mount effect runs (a mount-effect listener never
+attaches — the original scroll-sync bug). The unmount cleanup detaches the
+listener but must NOT null the parent's view ref: on a keyed remount the old
+passive cleanup runs after the new `onCreateEditor` and would wipe it.
+
+**Focus invariant:** synchronization only writes `scrollTop` — never
+`focus()`/`scrollIntoView()` — so it cannot move keyboard focus or the caret.
+The centered toolbar toggle returns focus to the editor after a click
+(`contentDOM.focus({ preventScroll: true })`, no viewport jump).
+
+An editor revision accompanies each render. An edit immediately suspends sync
+while the last-good map is stale; the matching result resumes it. A successful
+render realigns from the most recently scrolled pane. New/Open resets both
+panes. The toolbar's persisted **Sync scroll** toggle is UI-only and never
+invalidates the Typst engine or requests a render.
 
 ### Use `svg_in_bundle` instead of `svg()` for preview
 

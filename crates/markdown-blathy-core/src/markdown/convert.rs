@@ -85,6 +85,28 @@ pub fn md_to_typst(
     base_flavor: Flavor,
     base_heading_ids: &HeadingIds,
 ) -> ConvertedDocument {
+    md_to_typst_impl(markdown, base_flavor, base_heading_ids, false)
+}
+
+/// Convert Markdown with invisible source-line anchors for scroll sync.
+///
+/// The anchors are `#metadata` elements, so they have no visible output and
+/// the ordinary conversion entry point above remains unchanged for callers
+/// that do not need positions.
+pub fn md_to_typst_with_source_map(
+    markdown: &str,
+    base_flavor: Flavor,
+    base_heading_ids: &HeadingIds,
+) -> ConvertedDocument {
+    md_to_typst_impl(markdown, base_flavor, base_heading_ids, true)
+}
+
+fn md_to_typst_impl(
+    markdown: &str,
+    base_flavor: Flavor,
+    base_heading_ids: &HeadingIds,
+    source_map: bool,
+) -> ConvertedDocument {
     // Front matter is always the first block; scan it before rendering so the
     // document's settings take effect for every heading, including ones
     // inside footnote definitions (§6.2). The scan may hand back a patched
@@ -125,12 +147,16 @@ pub fn md_to_typst(
     let opts = comrak_options(&features);
     let root = parse_document(&arena, &source, &opts);
 
-    let mut renderer = Renderer::new(heading_ids, features.page_break);
+    let mut renderer = Renderer::new(heading_ids, features.page_break, source_map);
     // Footnote definitions are rendered inline at their references —
     // `#footnote[...]` attaches the superscript marker where it is called, so
     // the definition block itself must not emit anything (§6.2). Collect them
     // up front so references resolve anywhere in the document.
+    // Definition text is relocated to its references, so source anchors in
+    // definitions would go backwards in the source → preview mapping.
+    renderer.emit_source_anchors = false;
     renderer.collect_footnotes(root);
+    renderer.emit_source_anchors = source_map;
     // Headings are collected up front so the `[[_TOC_]]` marker can emit a
     // `#markdown-toc(...)` call with all the data (§6.2).
     renderer.collect_headings(root);
@@ -170,6 +196,24 @@ pub fn md_to_typst(
         auto_heading_level: heading_ids.max_level,
         toc: renderer.toc_items,
     }
+}
+
+/// Blocks whose renderer produces a complete visible unit rather than merely
+/// wrapping other block children. Lists, quotes and items are containers;
+/// their paragraph/code/heading descendants supply anchors. Tables are leaves
+/// from the *converter's* perspective because their rows/cells go straight to
+/// `markdown-table` as inline content. Footnote definitions are deliberately
+/// absent: their contents are relocated to the reference site.
+fn is_source_leaf(value: &NodeValue) -> bool {
+    matches!(
+        value,
+        NodeValue::Paragraph
+            | NodeValue::CodeBlock(_)
+            | NodeValue::Heading(_)
+            | NodeValue::ThematicBreak
+            | NodeValue::HtmlBlock(_)
+            | NodeValue::Table(_)
+    )
 }
 
 /// Join rendered blocks with blank lines, dropping empties (footnote
@@ -241,10 +285,16 @@ struct Renderer {
     page_breaks: bool,
     /// Headings collected for the `[[_TOC_]]` marker (Custom flavor).
     toc_items: Vec<TocItem>,
+    /// Whether leaf blocks carry invisible source-line metadata.
+    emit_source_anchors: bool,
+    /// One anchor per Markdown start line. In document traversal order the
+    /// first eligible leaf claims a line; any nested/sibling leaf that starts
+    /// on the same line is deliberately left unmarked.
+    seen_source_lines: HashSet<usize>,
 }
 
 impl Renderer {
-    fn new(heading_ids: HeadingIds, page_breaks: bool) -> Self {
+    fn new(heading_ids: HeadingIds, page_breaks: bool, source_map: bool) -> Self {
         Self {
             footnotes: HashMap::new(),
             heading_ids,
@@ -252,6 +302,8 @@ impl Renderer {
             warnings: Vec::new(),
             page_breaks,
             toc_items: Vec::new(),
+            emit_source_anchors: source_map,
+            seen_source_lines: HashSet::new(),
         }
     }
 
@@ -304,6 +356,28 @@ impl Renderer {
     }
 
     fn render_block_at(&mut self, node: Node, indent: usize) -> String {
+        let rendered = self.render_block_unmarked(node, indent);
+        let line = node.data().sourcepos.start.line;
+        if !self.emit_source_anchors
+            || line == 0
+            || !is_source_leaf(&node.data().value)
+            || !self.seen_source_lines.insert(line)
+        {
+            return rendered;
+        }
+        let marker = format!("#metadata((markdown-blathy-source-line: {line},))");
+        // Keep the marker in the same markup line as its content. A newline
+        // after a zero-sized metadata element makes native tight lists loose.
+        // A heading must still start with '=', so its marker follows the text
+        // (beside the invisible heading label) instead of preceding it.
+        if matches!(&node.data().value, NodeValue::Heading(_)) {
+            format!("{rendered} {marker}")
+        } else {
+            format!("{marker} {rendered}")
+        }
+    }
+
+    fn render_block_unmarked(&mut self, node: Node, indent: usize) -> String {
         match &node.data().value {
             NodeValue::Paragraph => self.render_inlines(node),
             NodeValue::CodeBlock(block) => {
@@ -895,7 +969,7 @@ fn array_literal(cells: &[String]) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::md_to_typst;
+    use super::{md_to_typst, md_to_typst_with_source_map};
     use crate::options::{Flavor, HeadingIds};
 
     /// Default heading ID config: enabled for all 6 levels.
@@ -1793,5 +1867,41 @@ mod tests {
         let toc_call_end = doc.body[toc_call_start..].find(")").unwrap() + toc_call_start;
         let toc_call = &doc.body[toc_call_start..=toc_call_end];
         assert!(!toc_call.contains("No ID"), "TOC call: {toc_call}");
+    }
+
+    #[test]
+    fn source_map_marks_only_leaf_blocks_in_source_order() {
+        let markdown = "# Heading\n\n> quoted\n\n- one\n- two\n\n---\n";
+        let plain = md_to_typst(markdown, Flavor::Github, &default_heading_ids());
+        let mapped = md_to_typst_with_source_map(markdown, Flavor::Github, &default_heading_ids());
+        assert!(!plain.body.contains("markdown-blathy-source-line"));
+        let key = "markdown-blathy-source-line: ";
+        let lines: Vec<usize> = mapped
+            .body
+            .match_indices(key)
+            .map(|(offset, _)| {
+                let rest = &mapped.body[offset + key.len()..];
+                rest.split([',', ')']).next().unwrap().parse().unwrap()
+            })
+            .collect();
+        assert_eq!(lines, vec![1, 3, 5, 6, 8], "{}", mapped.body);
+        // Markers share their content's markup line — a marker-only line
+        // would introduce paragraph breaks (loose lists) or stray spacing.
+        assert!(
+            !mapped
+                .body
+                .lines()
+                .any(|line| line.starts_with("#metadata(") && line.ends_with(",))")),
+            "{}",
+            mapped.body
+        );
+    }
+
+    #[test]
+    fn source_map_skips_relocated_footnote_definition_blocks() {
+        let markdown = "Text[^n].\n\n[^n]: definition\n";
+        let doc = md_to_typst_with_source_map(markdown, Flavor::Custom, &default_heading_ids());
+        assert!(doc.body.contains("markdown-blathy-source-line: 1"));
+        assert!(!doc.body.contains("markdown-blathy-source-line: 3"));
     }
 }
