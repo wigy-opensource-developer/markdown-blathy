@@ -60,6 +60,7 @@ describe("renderPreview", () => {
         seq: 7,
         documentPath: null,
         pages: [],
+        pixelWidth: null,
       },
     });
   });
@@ -73,6 +74,7 @@ describe("renderPreview", () => {
         seq: 8,
         documentPath: "/home/u/docs/report.md",
         pages: [],
+        pixelWidth: null,
       },
     });
   });
@@ -86,15 +88,29 @@ describe("renderPreview", () => {
         seq: 9,
         documentPath: null,
         pages: [3, 4, 5],
+        pixelWidth: null,
       },
     });
+  });
+
+  it("forwards the target raster pixel width", () => {
+    renderPreview("# Hi", OPTIONS, 10, null, [0], 1640);
+    expect(invoke).toHaveBeenCalledWith(
+      "render_preview",
+      expect.objectContaining({ payload: expect.objectContaining({ pixelWidth: 1640 }) })
+    );
   });
 });
 
 describe("exportPages", () => {
   it("invokes export_pages with the render seq and page indices", () => {
     exportPages(7, [0, 1, 2]);
-    expect(invoke).toHaveBeenCalledWith("export_pages", { seq: 7, pages: [0, 1, 2] });
+    expect(invoke).toHaveBeenCalledWith("export_pages", { seq: 7, pages: [0, 1, 2], pixelWidth: null });
+  });
+
+  it("forwards the target raster pixel width", () => {
+    exportPages(7, [0], 1640);
+    expect(invoke).toHaveBeenCalledWith("export_pages", { seq: 7, pages: [0], pixelWidth: 1640 });
   });
 });
 

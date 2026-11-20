@@ -71,27 +71,35 @@ describe("Sheet", () => {
   const slot = { top: 24, width: 400, height: 600 };
 
   it("a placeholder is a sheet in the paper color with a tilted Rendering note", () => {
-    const html = renderToStaticMarkup(<Sheet index={2} slot={slot} svg={undefined} />);
+    const html = renderToStaticMarkup(<Sheet index={2} slot={slot} page={undefined} pageWidth={600} />);
     expect(html).toContain('data-page="3"');
     expect(html).toContain("tilted-note");
     expect(html).toContain("Rendering…");
     // Decorative: the pane-level role="status" note owns the announcement.
     expect(html).toContain('aria-hidden="true"');
     expect(html).not.toContain('role="status"');
-    expect(html).not.toContain("<svg");
+    expect(html).not.toContain("<img");
   });
 
-  it("a mounted sheet injects its SVG and drops the note", () => {
+  it("a mounted sheet shows the PNG raster and link overlays, no note", () => {
+    const page = {
+      png: "aGVsbG8=",
+      links: [{ x: 10, y: 20, w: 30, h: 8, href: "https://example.com" }],
+    };
     const html = renderToStaticMarkup(
-      <Sheet index={0} slot={slot} svg="<svg><rect/></svg>" />
+      <Sheet index={0} slot={slot} page={page} pageWidth={600} />
     );
     expect(html).toContain('data-page="1"');
-    expect(html).toContain("<svg><rect/></svg>");
+    expect(html).toContain("data:image/png;base64,aGVsbG8=");
+    expect(html).toContain('class="page-link"');
+    expect(html).toContain('href="https://example.com"');
+    // Link rect scaled from page points into the sheet box (400/600).
+    expect(html).toContain("width:20px"); // 30 * 400/600
     expect(html).not.toContain("tilted-note");
   });
 
   it("carries the layout geometry inline", () => {
-    const html = renderToStaticMarkup(<Sheet index={0} slot={slot} svg={undefined} />);
+    const html = renderToStaticMarkup(<Sheet index={0} slot={slot} page={undefined} pageWidth={600} />);
     expect(html).toContain("top:24px");
     expect(html).toContain("width:400px");
     expect(html).toContain("height:600px");

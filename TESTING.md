@@ -95,10 +95,11 @@
 | Render scheduler debounces edits (200 ms), keeps one compile in flight, catches up once after it settles (only for edits ≥200 ms old), and freezes/stashes around modals | renderScheduler.js | high |
 | Virtualized-preview geometry: sheets scale to the pane keeping aspect ratio, total height known from metadata, visible range ± overscan clamped, current page = topmost visible (null when unmeasured) | previewWindow.js | high |
 | Scroll mapping is linear per segment and invertible, includes document boundaries, skips duplicate/non-monotonic anchors, pauses for stale/disabled maps, never moves keyboard focus; programmatic writes cause no feedback | scrollSync.js | high |
-| Mounted-only page cache: SVGs pruned to the visible window, render-seeded window held without refetch, fetches deduplicated, new seq resets, late/stale responses dropped | previewPages.js | high |
-| export_pages exports indexed SVGs from the single cached render; a seq mismatch serializes stale:true | commands.rs | high |
+| Keep-all page cache: every page exported for the seq held (instant scroll-back, no refetch), render-seeded window held, fetches deduplicated top-first, new seq resets, stale responses dropped | previewPages.js | high |
+| export_pages exports indexed PNG rasters (base64) + link rects from the single cached render at a target pixel width; a seq mismatch serializes stale:true | commands.rs | high |
+| export_pages_png renders valid PNG bytes (magic) of the paged document and emits external-link rectangles by recursing group subframes | engine.rs | high |
 | page_background resolves the template's page fill for placeholder sheets (auto → white, solid → hex, transparent/gradient → None) | engine.rs | medium |
-| Placeholder sheets wear the template paper color and a tilted aria-hidden "Rendering…" note; mounted sheets inject their SVG | Preview.jsx (Sheet) | medium |
+| Placeholder sheets wear the template paper color and a tilted aria-hidden "Rendering…" note; mounted sheets show the PNG raster as a data-URL img with scaled link overlays, and stay mounted so scroll-back never re-decodes | Preview.jsx (Sheet) | medium |
 | Dirty guard resumes the interrupted Close/New/Open only after a successful save; cancel/failed save keeps the request pending | unsavedGuard.js | high |
 | Recovery is offered only to a pristine editor, and only for the opened document's own snapshot | recovery.js | high |
 | Export warnings name the PDF, count/list the warnings and offer an explicit dismiss | ExportWarnings.jsx | medium |

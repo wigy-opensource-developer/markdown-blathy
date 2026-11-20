@@ -112,9 +112,9 @@ impl Service {
         .map_err(CoreError::render)
     }
 
-    /// Compile an already-prepared render with the cached engine. No SVG
+    /// Compile an already-prepared render with the cached engine. No raster
     /// export here: the adapter caches the document and exports pages on
-    /// demand (`engine::export_pages`).
+    /// demand (`engine::export_pages_png`).
     pub fn render_prepared(&self, prepared: &PreparedRender) -> Result<CompiledPreview, CoreError> {
         let mut cache = self.cache.lock().map_err(|_| CoreError::CachePoisoned)?;
         let engine = cache

@@ -19,11 +19,13 @@ use serde::Serialize;
 use typst::diag::EcoString;
 use typst::foundations::{Dict, NativeElement, Selector, Value};
 use typst::introspection::{Introspector, MetadataElem};
-use typst::layout::{FrameItem, Point};
+use typst::layout::{Frame, FrameItem, Point, Size, Transform};
 use typst::model::{Destination, LateLinkResolver, ResolvedLink};
+use typst::utils::Scalar;
 use typst::visualize::Paint;
 use typst_as_lib::{TypstEngine, TypstTemplateMainFile};
-use typst_layout::PagedDocument;
+use typst_layout::{Page, PagedDocument};
+use typst_render::{render as render_raster, RenderOptions as RasterOptions};
 
 /// Embedded default fonts (DejaVu, permissive license — §6.3). The mono
 /// face is required by `raw()`: the default template's font book loads no
@@ -39,9 +41,9 @@ pub const FONT_MONO_BYTES: &[u8] = include_bytes!("../../fonts/DejaVuSansMono.tt
 pub const FONT_MATH_BYTES: &[u8] = include_bytes!("../../fonts/DejaVuMathTeXGyre.ttf");
 
 /// A compiled preview: the finished paged document plus any compile
-/// warnings (never fatal). SVG export is a separate step (`export_pages`)
-/// so the GUI can cache ONE document per render and export only the pages
-/// the virtualized preview actually mounts (§7.5).
+/// warnings (never fatal). Raster export is a separate step
+/// (`export_pages_png`) so the GUI can cache ONE document per render and
+/// export only the pages the virtualized preview actually mounts (§7.5).
 #[derive(Debug)]
 pub struct CompiledPreview {
     pub paged: PagedDocument,
@@ -55,6 +57,8 @@ pub enum EngineError {
     Compile(String),
     /// PDF export failed.
     Pdf(String),
+    /// Raster (PNG) export failed.
+    Raster(String),
 }
 
 impl fmt::Display for EngineError {
@@ -62,6 +66,7 @@ impl fmt::Display for EngineError {
         match self {
             EngineError::Compile(msg) => write!(f, "Preview failed: {msg}"),
             EngineError::Pdf(msg) => write!(f, "PDF export failed: {msg}"),
+            EngineError::Raster(msg) => write!(f, "Preview raster failed: {msg}"),
         }
     }
 }
@@ -214,7 +219,7 @@ pub fn build_engine(
 ///
 /// Layout is whole-document by nature (page breaks, footnotes and counters
 /// flow across pages); the result is cached by the adapter and pages are
-/// exported from it on demand — see `export_pages`.
+/// exported from it on demand — see `export_pages_png`.
 pub fn compile_preview(
     engine: &TypstEngine<TypstTemplateMainFile>,
     inputs: &Dict,
@@ -320,6 +325,9 @@ pub fn page_background(doc: &PagedDocument) -> Option<String> {
 /// Export the requested pages as SVG with internal link resolution
 /// (footnotes, heading anchors, cross-references).
 ///
+/// Retained for integration tests that inspect rendered structure (link
+/// hrefs, fills, fonts); the application preview uses PNG (`export_pages_png`).
+///
 /// Walks only the wanted pages' frames for `FrameItem::Link(Destination::
 /// Location, …)`, resolves each location via the `LateLinkResolver` to get
 /// the anchor string, then calls `svg_in_bundle` with the collected anchors
@@ -382,6 +390,138 @@ pub fn export_all_pages(doc: &PagedDocument) -> Vec<String> {
         .into_iter()
         .map(|(_, svg)| svg)
         .collect()
+}
+
+/// A clickable link rectangle on a page, in page-local points. The preview
+/// renders pages as raster images (no interactive SVG DOM), so these rects
+/// are overlaid as transparent anchors to keep SPEC §9 link behavior.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PageLink {
+    pub x: f64,
+    pub y: f64,
+    pub w: f64,
+    pub h: f64,
+    /// External URL, or `#anchor` for a resolved internal link.
+    pub href: String,
+}
+
+/// One exported raster page: its index, PNG bytes, and link rectangles.
+pub type ExportedRasterPage = (usize, Vec<u8>, Vec<PageLink>);
+
+/// Render one page to PNG bytes at `pixel_per_pt` (pixels per typographic
+/// point). Uses the same paged layout as PDF/SVG, so the raster is
+/// pixel-identical at the rendered resolution.
+pub fn render_page_png(page: &Page, pixel_per_pt: f32) -> Result<Vec<u8>, EngineError> {
+    let opts = RasterOptions {
+        pixel_per_pt: Scalar::new(pixel_per_pt.max(0.1) as f64),
+        render_bleed: false,
+    };
+    let pixmap = render_raster(page, &opts);
+    pixmap
+        .encode_png()
+        .map_err(|e| EngineError::Raster(e.to_string()))
+}
+
+/// Export the requested pages as PNG (at a target physical pixel width) plus
+/// each page's link rectangles for the image overlay. `pixel_width` is the
+/// desired PNG width in physical pixels; the per-page scale is derived from
+/// the page's point width so mixed page sizes all render to the same width.
+/// Out-of-range indices are ignored; the result is in ascending page order.
+pub fn export_pages_png(
+    doc: &PagedDocument,
+    indices: &[usize],
+    pixel_width: f32,
+) -> Result<Vec<ExportedRasterPage>, EngineError> {
+    let wanted: HashSet<usize> = indices
+        .iter()
+        .copied()
+        .filter(|&i| i < doc.pages().len())
+        .collect();
+    if wanted.is_empty() {
+        return Ok(Vec::new());
+    }
+    let resolver = LateLinkResolver::new(None, doc.introspector().as_ref());
+    let tracked = resolver.track();
+
+    let mut out: Vec<ExportedRasterPage> = Vec::new();
+    for &page_idx in &wanted {
+        let page = &doc.pages()[page_idx];
+        let mut links = Vec::new();
+        walk_links(
+            &page.frame,
+            Transform::identity(),
+            &|dest| match dest {
+                Destination::Url(url) => Some(url.as_str().to_string()),
+                Destination::Location(loc) => match tracked.resolve(*loc) {
+                    Some(ResolvedLink::Local { anchor }) => Some(format!("#{anchor}")),
+                    _ => None,
+                },
+                Destination::Position(_) => None,
+            },
+            &mut links,
+        );
+        let page_width_pt = page.frame.width().to_pt() as f32;
+        let pixel_per_pt = if page_width_pt > 0.0 {
+            pixel_width / page_width_pt
+        } else {
+            2.0
+        };
+        let png = render_page_png(page, pixel_per_pt)?;
+        out.push((page_idx, png, links));
+    }
+    out.sort_by_key(|(idx, _, _)| *idx);
+    Ok(out)
+}
+
+/// Recursively collect link rectangles from a frame, accumulating the affine
+/// transform (item translation + group transforms) the same way typst-svg's
+/// renderer does, so the overlay rects land exactly on the glyphs. `href_of`
+/// resolves a destination to an overlay href (external URL, or `#anchor` once
+/// internal links resolve).
+fn walk_links(
+    frame: &Frame,
+    transform: Transform,
+    href_of: &impl Fn(&Destination) -> Option<String>,
+    out: &mut Vec<PageLink>,
+) {
+    for (pos, item) in frame.items() {
+        let t = transform.pre_concat(Transform::translate(pos.x, pos.y));
+        match item {
+            FrameItem::Group(group) => {
+                walk_links(&group.frame, t.pre_concat(group.transform), href_of, out);
+            }
+            FrameItem::Link(dest, size) => {
+                if let Some(href) = href_of(dest) {
+                    let (x, y, w, h) = link_bbox(t, *size);
+                    out.push(PageLink { x, y, w, h, href });
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+/// Page-local bounding box (points) of a link rect of `size` placed at the
+/// origin of `transform`. Maps the four corners through the affine matrix so
+/// scale/rotation are handled, not just translation.
+fn link_bbox(t: Transform, size: Size) -> (f64, f64, f64, f64) {
+    let (sx, kx, ky, sy) = (t.sx.get(), t.kx.get(), t.ky.get(), t.sy.get());
+    let (tx, ty) = (t.tx.to_pt(), t.ty.to_pt());
+    let (w, h) = (size.x.to_pt(), size.y.to_pt());
+    let map = |x: f64, y: f64| (sx * x + kx * y + tx, ky * x + sy * y + ty);
+    let corners = [map(0.0, 0.0), map(w, 0.0), map(0.0, h), map(w, h)];
+    let min_x = corners.iter().map(|c| c.0).fold(f64::INFINITY, f64::min);
+    let max_x = corners
+        .iter()
+        .map(|c| c.0)
+        .fold(f64::NEG_INFINITY, f64::max);
+    let min_y = corners.iter().map(|c| c.1).fold(f64::INFINITY, f64::min);
+    let max_y = corners
+        .iter()
+        .map(|c| c.1)
+        .fold(f64::NEG_INFINITY, f64::max);
+    (min_x, min_y, max_x - min_x, max_y - min_y)
 }
 
 /// Compile the engine's static source with the per-render `sys.inputs` and
@@ -454,9 +594,9 @@ fn render_diagnostic_with_world(
 #[cfg(test)]
 mod tests {
     use super::{
-        build_engine, compile_pdf_with_inputs, compile_preview, export_all_pages, page_background,
-        page_sizes, source_anchors, CompiledPreview, FontOptions, FONT_BOLD_BYTES, FONT_BYTES,
-        FONT_MATH_BYTES, FONT_MONO_BYTES,
+        build_engine, compile_pdf_with_inputs, compile_preview, export_all_pages, export_pages_png,
+        page_background, page_sizes, source_anchors, CompiledPreview, FontOptions, FONT_BOLD_BYTES,
+        FONT_BYTES, FONT_MATH_BYTES, FONT_MONO_BYTES,
     };
     use crate::options::{Flavor, HeadingIds, Margins, Paper, RenderOptions, TextAlign};
     use crate::typst_engine::template::{
@@ -1670,6 +1810,25 @@ mod tests {
             ),
             None
         );
+    }
+
+    #[test]
+    fn export_pages_png_renders_valid_png_and_link_rects() {
+        let (engine, inputs) =
+            engine_for_body("Go to #link(\"https://example.com\")[example] now.");
+        let compiled = compile_preview(&engine, &inputs).expect("must compile");
+        let pages = export_pages_png(&compiled.paged, &[0], 800.0).expect("png export");
+        assert_eq!(pages.len(), 1);
+        let (_, png, links) = &pages[0];
+        assert!(
+            png.starts_with(&[0x89, 0x50, 0x4E, 0x47]),
+            "PNG magic bytes"
+        );
+        let link = links
+            .iter()
+            .find(|l| l.href == "https://example.com")
+            .unwrap_or_else(|| panic!("external link rect missing: {links:?}"));
+        assert!(link.w > 0.0 && link.h > 0.0, "{link:?}");
     }
 
     #[test]

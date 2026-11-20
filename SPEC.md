@@ -51,7 +51,7 @@ User-visible behaviour:
 │  React 19 + Mantine 8                                                  │
 │  CodeMirror 6 (markdown, via @uiw/react-codemirror) → debounce 200ms    │
 │      → invoke("render_preview")                                         │
-│  Preview pane: <div> of inline SVG pages (one per printed page)          │
+│  Preview pane: virtualized PNG page rasters (one per printed page)       │
 │  Mantine toolbar / status bar / error banner                             │
 └───────────────▲──────────────────────────────────────────┬───────────────┘
         invoke()│  (JSON over Tauri IPC)                    │invoke()
@@ -64,7 +64,7 @@ User-visible behaviour:
 │  markdown::convert      comrak → AST → Typst markup (escaped)            │
 │  typst_engine::template compose prelude + user template + invocation     │
 │  typst_engine::engine   TypstEngine (typst-as-lib) → compile             │
-│      ├── typst_svg  → per-page SVG strings  (preview)                    │
+│      ├── typst_render → per-page PNG rasters (preview)                  │
 │      └── typst_pdf  → PDF bytes             (export)                     │
 └──────────────────────────────────────────────────────────────────────────┘
 ```
@@ -75,7 +75,7 @@ User-visible behaviour:
 
 **The render cycle is single-flight.** The frontend debounces edits by 200 ms and keeps at most one preview compile in flight: edits during a render only mark a catch-up owed, which starts when the render settles and the last edit is ≥200 ms old (`src/lib/renderScheduler.js`). Loads invalidate an in-flight response through the seq guard but still wait for it to settle. Save and close never wait for a render.
 
-**The preview is virtualized.** A render lands as metadata (page count + intrinsic sizes + the template's page fill) plus the visible window's SVGs, so the swap from the last-good pages is atomic — they stay up, dimmed under the delayed "Rendering…" note, until the new ones land. The backend keeps the ONE compiled document; scrolling exports further pages on demand (`export_pages`), dropping their markup when they scroll away. Unexported pages show as placeholder sheets in the template's paper color with a "Rendering…" note. A current/total page badge floats in the preview pane (the topmost visible page, from scroll geometry alone). Layout is still whole-document — Typst page breaks flow across pages — but export, IPC and DOM cost scale with the visible window, not the document.
+**The preview is virtualized.** A render lands as metadata (page count + intrinsic sizes + the template's page fill) plus the visible window's page rasters, so the swap from the last-good pages is atomic — they stay up, dimmed under the delayed "Rendering…" note, until the new ones land. Pages are **PNG rasters of the same paged document the PDF uses** (`typst-render`), shown as data-URL `<img>`s: image insertion is near-free and the browser decodes asynchronously off the main thread, so scrolling never blocks the UI thread (see IMPLEMENTATION.md, "Preview rendering: PNG rasters", for why not SVG). Rasters are rendered at pane width × `devicePixelRatio` for HiDPI crispness, keeping the preview pixel-identical to the PDF at the displayed resolution. An `<img>` has no clickable DOM, so the backend also emits each page's link rectangles, overlaid as transparent anchors (external links open in the system browser, §9). The backend keeps the ONE compiled document; every exported page stays cached and mounted for the life of the render, so scroll-back needs no re-export and no re-decode. Unexported pages show as placeholder sheets in the template's paper color with a "Rendering…" note. A current/total page badge floats in the preview pane (the topmost visible page, from scroll geometry alone). Layout is still whole-document — Typst page breaks flow across pages — but export and IPC scale with the visible window.
 
 **Editor and preview scrolling are synchronized.** The converter adds one invisible `#metadata((markdown-blathy-source-line: N,))` marker per rendered leaf-block start line — first leaf on a line wins; outer containers and relocated footnote definitions emit none. The backend resolves these against the cached `PagedDocument` with the introspector's paged `position()` (available independently of SVG anchors) and returns `{ startLine, page, y }` anchors with the preview. `src/lib/scrollSync.js` linearly interpolates between neighboring anchors in both directions, using the virtual page layout so targets need not be mounted. Scrolling is rAF-throttled with programmatic-write suppression; maps from an older editor revision pause synchronization. A persisted **Sync scroll** toolbar toggle controls the behavior without recompiling.
 
@@ -335,11 +335,11 @@ one closes only when the upstream crate is patched — there is no in-repo fix.
 - No incremental compilation — full recompile per change.
 - **Linux UI text is grayscale-antialiased** — WebKitGTK renders text onto composited transparent layers. The Typst SVG preview is vector paths and unaffected.
 - **Non-UTF-8 filenames on legacy-locale Linux** — paths travel over IPC as JSON strings (UTF-8), so a filename in e.g. latin-2 bytes is echoed back lossily: the title bar and dialog defaults may show replacement characters. File *contents* load, save-in-place and crash recovery use the backend's exact `PathBuf` (and the snapshot's exact path bytes), so writes always go to the correct file.
-- SVG preview text is not selectable (inline SVG).
+- Preview text is not selectable (pages are rendered as images).
 - **Emoji shortcodes** (`:smile:`) are not expanded — the author pastes actual emoji characters.
 - **Automatic URL linking** is not enabled — users write explicit bare links (`<https://example.com>`) when they want a link.
 - **Table of contents**: the `[[_TOC_]]` marker (GitLab convention) triggers an auto-generated table of contents in Custom flavor.
-- **Internal links in the SVG preview are inert on typst 0.15** — the paged introspector has no anchors, so footnote/heading/TOC links carry no `href` in the preview; they work in the exported PDF. The resolution machinery is in place and activates once typst grows paged anchors (see §5, Upstream dependencies — patch required upstream).
+- **Internal links in the preview are inert on typst 0.15** — the paged introspector has no anchors, so footnote/heading/TOC links carry no `href`; they work in the exported PDF. External links work in the preview via the raster link overlays. The resolution machinery is in place and activates once typst grows paged anchors (see §5, Upstream dependencies — patch required upstream).
 - **Pathologically nested Markdown can crash the preview** — comrak caps list nesting (`MAX_LIST_DEPTH`) but not blockquote nesting, so AST depth is unbounded. The converter's footnote collection walks iteratively, but the block renderer recurses with the AST depth, so a contrived document (tens of KB of `> ` markers) can overflow the render thread's stack. The proper fix is a general AST depth limit upstream in comrak, alongside the existing list cap (see §5, Upstream dependencies — patch required upstream).
 
 ## 7. References

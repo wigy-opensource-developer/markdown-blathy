@@ -5,7 +5,7 @@ import { listen } from "@tauri-apps/api/event";
 import * as api from "./lib/api.js";
 import { marginsForPreset } from "./lib/presets.js";
 import { createRenderScheduler } from "./lib/renderScheduler.js";
-import { computeLayout, visibleRange } from "./lib/previewWindow.js";
+import { computeLayout, visibleRange, MAX_PAGE_WIDTH } from "./lib/previewWindow.js";
 import { createRenderStatus } from "./lib/renderStatus.js";
 import { isStaleResponse } from "./lib/seq.js";
 import { getCommand } from "./lib/commands.js";
@@ -239,8 +239,12 @@ export default function App() {
     const { first, last } = visibleRange(layout, vp.top, vp.height);
     const window = [];
     for (let i = first; i <= last; i++) window.push(i);
+    // Target raster width in physical pixels: the sheet's CSS width (capped)
+    // times the device pixel ratio, so the PNG is crisp on HiDPI displays.
+    const pixelWidth =
+      Math.min(vp.width || MAX_PAGE_WIDTH, MAX_PAGE_WIDTH) * (globalThis.devicePixelRatio || 1);
     try {
-      const result = await api.renderPreview(doc, opts, seqId, docPath, window);
+      const result = await api.renderPreview(doc, opts, seqId, docPath, window, pixelWidth);
       // Invalidated by a load: drop the pages, keep the "Rendering…" note —
       // the load's render is the live episode now.
       if (isStaleResponse(result.seq, seq.current)) return null;
@@ -906,7 +910,7 @@ export default function App() {
     [runFileAction]
   );
 
-  // Export-on-demand for the virtualized preview: SVG pages from the
+  // Export-on-demand for the virtualized preview: PNG pages from the
   // backend's single cached render (no recompile). Reads the live seq ref;
   // a response superseded by a newer render is dropped. Rejects on failure
   // so Preview clears its in-flight marks (the banner shows why).
@@ -914,7 +918,9 @@ export default function App() {
     const seq = previewRef.current?.seq;
     if (seq == null) return [];
     try {
-      const res = await api.exportPages(seq, indices);
+      const w = viewportRef.current.width || MAX_PAGE_WIDTH;
+      const pixelWidth = Math.min(w, MAX_PAGE_WIDTH) * (globalThis.devicePixelRatio || 1);
+      const res = await api.exportPages(seq, indices, pixelWidth);
       if (res.stale || previewRef.current?.seq !== seq) return [];
       return res.pages;
     } catch (err) {

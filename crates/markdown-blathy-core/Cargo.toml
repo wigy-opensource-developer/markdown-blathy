@@ -59,3 +59,5 @@ comemo = "0.5"
 # `font:` rules. Already in the tree via typst, declared directly because
 # template.rs uses it at runtime.
 regex = "1"
+typst-render = "0.15"
+tiny-skia = { version = "0.12", features = ["png-format"] }

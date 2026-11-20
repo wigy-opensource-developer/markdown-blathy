@@ -29,6 +29,8 @@ pub fn init_logging() {
         .with_env_filter(
             EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("warn")),
         )
+        .with_target(true)
+        .with_line_number(true)
         .init();
 }
 

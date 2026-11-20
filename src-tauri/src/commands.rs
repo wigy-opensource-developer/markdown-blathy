@@ -8,11 +8,12 @@
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
+use base64::Engine as _;
 use markdown_blathy_core::markdown::convert::DocMeta;
 use markdown_blathy_core::markdown::frontmatter::Patch;
 use markdown_blathy_core::options::RenderOptions;
 use markdown_blathy_core::service::{RenderRequest, Service};
-use markdown_blathy_core::typst_engine::engine::{self, SourceAnchor};
+use markdown_blathy_core::typst_engine::engine::{self, PageLink, SourceAnchor};
 use markdown_blathy_core::PagedDocument;
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, State, Window};
@@ -23,6 +24,10 @@ use crate::document::DocumentPath;
 use crate::recovery::{self, RecoverySnapshot, RestoredSnapshot};
 use crate::requests::{AppRequest, CloseGate, APP_REQUEST_EVENT};
 use crate::startup::StartupDocument;
+
+/// Default physical pixel width for preview rasters when the frontend has not
+/// measured its pane yet: the max sheet width (820 CSS px) at 2× device scale.
+const DEFAULT_PIXEL_WIDTH: f32 = 1640.0;
 
 /// The recovery-snapshot directory inside the app-data dir (M9 task 4).
 fn recovery_dir(app: &AppHandle) -> Option<PathBuf> {
@@ -49,6 +54,10 @@ pub struct RenderPayload {
     /// further pages via `export_pages`.
     #[serde(default)]
     pub pages: Vec<usize>,
+    /// Target physical pixel width for the page rasters (pane width × device
+    /// pixel ratio). The backend derives each page's pixels-per-point from it.
+    #[serde(default)]
+    pub pixel_width: Option<f32>,
 }
 
 /// Render metadata echoed back with the request's `seq`: the compile is
@@ -72,7 +81,7 @@ pub struct PreviewOutcome {
     /// The requested initial window, exported from the same compile so the
     /// frontend can swap old → new pages in one commit (empty when none was
     /// requested).
-    pub pages: Vec<PageSvg>,
+    pub pages: Vec<PageImage>,
     pub warnings: Vec<String>,
     pub doc: DocMeta,
     pub seq: u64,
@@ -90,11 +99,13 @@ struct CachedRender {
     paged: Arc<PagedDocument>,
 }
 
-/// One exported page: its index in the document plus the SVG markup.
+/// One exported page: its index, the PNG raster (base64), and the link
+/// rectangles overlaid on the image (SPEC §9).
 #[derive(Debug, Serialize)]
-pub struct PageSvg {
+pub struct PageImage {
     pub index: usize,
-    pub svg: String,
+    pub png: String,
+    pub links: Vec<PageLink>,
 }
 
 /// `export_pages` result. `stale` means the requested `seq` is not the
@@ -104,7 +115,7 @@ pub struct PageSvg {
 pub struct PagesOutcome {
     pub seq: u64,
     pub stale: bool,
-    pub pages: Vec<PageSvg>,
+    pub pages: Vec<PageImage>,
 }
 
 /// Result of a dialog-bearing file command (§7.4, M4).
@@ -192,11 +203,13 @@ pub async fn render_preview(
     let t0 = std::time::Instant::now();
     let request = render_request(&payload);
     let window = payload.pages;
+    let pixel_width = payload.pixel_width.unwrap_or(DEFAULT_PIXEL_WIDTH);
     let service = state.inner().clone();
 
     let (detail, exported) = tauri::async_runtime::spawn_blocking(move || {
         let detail = service.render_detailed(&request)?;
-        let exported = engine::export_pages(&detail.result.paged, &window);
+        let exported = engine::export_pages_png(&detail.result.paged, &window, pixel_width)
+            .map_err(|e| markdown_blathy_core::CoreError::render(e.to_string()))?;
         Ok::<_, markdown_blathy_core::CoreError>((detail, exported))
     })
     .await
@@ -210,6 +223,21 @@ pub async fn render_preview(
         exported = exported.len(),
         "preview rendered"
     );
+    // Diagnostics: geometry + source-map size + each seed page's payload, so
+    // a misrender can be correlated with a specific page's SVG.
+    debug!(
+        anchors = detail.result.source_anchors.len(),
+        page_sizes = ?detail.result.page_sizes,
+        "preview geometry"
+    );
+    for (index, png, links) in &exported {
+        debug!(
+            page = index,
+            png_bytes = png.len(),
+            links = links.len(),
+            "seed page"
+        );
+    }
 
     // The single cached render: replace, never accumulate. Exports read it
     // back under the same seq; a newer render supersedes it (§7.5).
@@ -249,7 +277,11 @@ pub async fn render_preview(
         source_anchors: detail.result.source_anchors,
         pages: exported
             .into_iter()
-            .map(|(index, svg)| PageSvg { index, svg })
+            .map(|(index, png, links)| PageImage {
+                index,
+                png: base64::engine::general_purpose::STANDARD.encode(png),
+                links,
+            })
             .collect(),
         warnings: detail.result.warnings,
         doc: detail.result.doc,
@@ -257,7 +289,7 @@ pub async fn render_preview(
     })
 }
 
-/// Export SVG pages from the single cached render — no recompile (§7.5).
+/// Export PNG pages from the single cached render — no recompile (§7.5).
 ///
 /// The virtualized preview asks for the pages it is about to mount; export
 /// is CPU-bound but small (a window of pages), and still runs off the UI
@@ -269,6 +301,7 @@ pub async fn export_pages(
     last: State<'_, LastRender>,
     seq: u64,
     pages: Vec<usize>,
+    pixel_width: Option<f32>,
 ) -> Result<PagesOutcome, String> {
     let cached = {
         let guard = last
@@ -286,17 +319,36 @@ pub async fn export_pages(
             }
         }
     };
+    let t0 = std::time::Instant::now();
+    let pw = pixel_width.unwrap_or(DEFAULT_PIXEL_WIDTH);
     let exported =
-        tauri::async_runtime::spawn_blocking(move || engine::export_pages(&cached, &pages))
+        tauri::async_runtime::spawn_blocking(move || engine::export_pages_png(&cached, &pages, pw))
             .await
-            .map_err(|e| format!("Export task failed: {e}"))?;
-    info!(count = exported.len(), "pages exported");
+            .map_err(|e| format!("Export task failed: {e}"))?
+            .map_err(|e| e.to_string())?;
+    for (index, png, links) in &exported {
+        debug!(
+            page = index,
+            png_bytes = png.len(),
+            links = links.len(),
+            "page exported"
+        );
+    }
+    info!(
+        count = exported.len(),
+        ms = t0.elapsed().as_millis(),
+        "pages exported"
+    );
     Ok(PagesOutcome {
         seq,
         stale: false,
         pages: exported
             .into_iter()
-            .map(|(index, svg)| PageSvg { index, svg })
+            .map(|(index, png, links)| PageImage {
+                index,
+                png: base64::engine::general_purpose::STANDARD.encode(png),
+                links,
+            })
             .collect(),
     })
 }
@@ -710,7 +762,8 @@ fn open_in_viewer(path: &Path) {
 #[cfg(test)]
 mod tests {
     use super::{
-        DocMeta, FileOutcome, PageSvg, PagesOutcome, PreviewOutcome, RenderPayload, SourceAnchor,
+        DocMeta, FileOutcome, PageImage, PageLink, PagesOutcome, PreviewOutcome, RenderPayload,
+        SourceAnchor,
     };
     use markdown_blathy_core::options::{FeatureFlags, Flavor, Margins, Paper, TextAlign};
 
@@ -768,9 +821,16 @@ mod tests {
                 page: 1,
                 y: 72.5,
             }],
-            pages: vec![PageSvg {
+            pages: vec![PageImage {
                 index: 0,
-                svg: "<svg>".into(),
+                png: "aGVsbG8=".into(),
+                links: vec![PageLink {
+                    x: 10.0,
+                    y: 20.0,
+                    w: 30.0,
+                    h: 8.0,
+                    href: "https://example.com".into(),
+                }],
             }],
             warnings: vec!["font warning".into()],
             doc: DocMeta {
@@ -794,7 +854,7 @@ mod tests {
             "{json}"
         );
         assert!(
-            json.contains("\"pages\":[{\"index\":0,\"svg\":\"<svg>\"}]"),
+            json.contains("\"pages\":[{\"index\":0,\"png\":\"aGVsbG8=\",\"links\":[{\"x\":10.0,\"y\":20.0,\"w\":30.0,\"h\":8.0,\"href\":\"https://example.com\"}]}]"),
             "{json}"
         );
         assert!(json.contains("\"warnings\":[\"font warning\"]"), "{json}");
@@ -811,20 +871,21 @@ mod tests {
     /// Pins the `export_pages` contract: indexed SVGs, and the stale marker
     /// the frontend drops superseded responses by (§7.5).
     #[test]
-    fn pages_outcome_serializes_indexed_svgs_and_stale() {
+    fn pages_outcome_serializes_indexed_pngs_and_stale() {
         let outcome = PagesOutcome {
             seq: 7,
             stale: false,
-            pages: vec![PageSvg {
+            pages: vec![PageImage {
                 index: 2,
-                svg: "<svg>".into(),
+                png: "aGVsbG8=".into(),
+                links: vec![],
             }],
         };
         let json = serde_json::to_string(&outcome).unwrap();
         assert!(json.contains("\"seq\":7"), "{json}");
         assert!(json.contains("\"stale\":false"), "{json}");
         assert!(json.contains("\"index\":2"), "{json}");
-        assert!(json.contains("\"svg\":\"<svg>\""), "{json}");
+        assert!(json.contains("\"png\":\"aGVsbG8=\""), "{json}");
         let stale = PagesOutcome {
             seq: 7,
             stale: true,

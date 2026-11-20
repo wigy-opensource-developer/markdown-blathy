@@ -212,10 +212,18 @@ body {
   box-shadow: 0 2px 8px rgba(0, 0, 0, 0.35);
 }
 
-.page svg {
+.page-img {
+  position: absolute;
+  inset: 0;
   display: block;
   width: 100%;
-  height: auto;
+  height: 100%;
+}
+/* Transparent link rectangles overlaid on the page raster (SPEC §9): the
+   backend emits page-local point rects, scaled into the sheet's CSS box. */
+.page-link {
+  position: absolute;
+  cursor: pointer;
 }
 
 .preview-hint {

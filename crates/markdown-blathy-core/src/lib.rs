@@ -23,6 +23,6 @@ pub use error::CoreError;
 pub use options::RenderOptions;
 pub use service::{EngineKey, PdfResult, RenderDetail, RenderRequest, RenderResult, Service};
 // The compiled preview document: adapters cache ONE of these per render and
-// export pages on demand (`typst_engine::engine::export_pages`). Re-exported
+// export pages on demand (`typst_engine::engine::export_pages_png`). Re-exported
 // so adapters need no direct typst dependency.
 pub use typst_layout::PagedDocument;

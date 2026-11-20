@@ -107,7 +107,9 @@ comrak = { version = "0.54", default-features = false, features = ["bon", "attri
 typst = "0.15"
 typst-layout = "0.15"       # PagedDocument type (re-exported as typst_layout::PagedDocument)
 typst-pdf = "0.15"
-typst-svg = "0.15"
+typst-svg = "0.15"          # SVG export (test convenience; preview uses PNG)
+typst-render = "0.15"       # raster export: PagedDocument page -> tiny-skia pixmap
+tiny-skia = { version = "0.12", features = ["png-format"] }  # pixmap.encode_png()
 typst-as-lib = "0.16"       # TypstWorld wrapper (pins typst ^0.15)
 tracing = "0.1"             # core emits events
 thiserror = "2"             # CoreError derives
@@ -455,7 +457,7 @@ src/
 │   ├── docSettings.js # Document popover form → front-matter patch (tri-state hyphenate)
 │   ├── renderScheduler.js # the render cycle: 200ms debounce, single flight, catch-up, modal freeze
 │   ├── previewWindow.js # virtualized-preview geometry: sheet layout, visible range, current page
-│   ├── previewPages.js # mounted-only SVG cache: prune/fetch/dedupe per viewport
+│   ├── previewPages.js # keep-all page cache per render: fetch/dedupe top-first
 │   ├── renderStatus.js # delayed "Rendering…" note (350 ms into a pending render)
 │   ├── seq.js        # stale-response guard (response seq vs latest sent/invalidated)
 │   ├── unsavedGuard.js # dirty guard: defer Close/New/Open, resume after a successful save
@@ -560,48 +562,74 @@ compile is window-sized (next section).
 
 ### Single cached render, virtualized preview
 
-A render lands as metadata (page count + intrinsic page sizes + paper
-color) PLUS the initial visible window's SVGs, exported from the same
-compile so the swap from the last-good pages is atomic. The backend keeps
-exactly ONE compiled document (`LastRender` in commands.rs, keyed by the
-render seq, replaced on every render — deliberately not a cache of SVG
-strings). `Preview.jsx` is a virtualized list:
+A render lands as metadata (page count + intrinsic page sizes + paper color)
+plus the initial visible window's page rasters, exported from the same compile
+so the swap from the last-good pages is atomic. The backend keeps exactly ONE
+compiled document (`LastRender` in commands.rs, keyed by the render seq and
+replaced on every render — not a raster cache). `Preview.jsx` is a virtualized
+list:
 
-- `lib/previewWindow.js` lays out every page as a placeholder sheet with
-  the correct aspect ratio, so the full scroll height is known the moment
-  a render lands and the scrollbar never jumps when pages arrive. Sheets
-  wear the template's page fill (`page_background` metadata; the UI theme's
-  pane background for transparent/non-solid fills), and each placeholder
-  carries the same tilted "Rendering…" note the pane shows for slow
-  renders (aria-hidden — the pane-level status note owns the announcement).
-- Only the visible window ± overscan mounts real SVG. `export_pages`
-  fetches those pages from the cached document — no recompile, so scrolling
-  is cheap and needs no debounce (rAF-throttled).
-- `lib/previewPages.js` holds SVG strings ONLY for mounted pages: scrolling
-  away drops the markup, scrolling back re-exports it. A new render seq
-  resets everything, seeding the window the response already exported (no
-  refetch, no placeholder gap); late or stale responses never resurrect
-  unmounted pages. RAM holds the window, not the document.
-- A current/total page badge (`currentPage / pageCount`) floats in the
-  pane's bottom-right, fixed to the pane while pages scroll under it.
-  `currentPageAt` reports the topmost visible page (no overscan) from the
-  scroll geometry alone — it needs no markdown↔page source mapping (that
-  belongs to synchronized scrolling below). Hidden until the
-  pane is measured; pointer-events:none, tabular digits.
+- `lib/previewWindow.js` lays out every page as a placeholder sheet with the
+  correct aspect ratio, so the full scroll height is known the moment a render
+  lands and the scrollbar never jumps. Sheets wear the template's page fill
+  (`page_background`; the pane background for transparent/non-solid fills) and
+  an aria-hidden tilted "Rendering…" note (the pane-level role="status" note
+  owns the announcement).
+- Pages are **PNG rasters** of the same paged document the PDF uses
+  (`typst-render` → tiny-skia pixmap → PNG), shown as data-URL `<img>`s. The
+  frontend passes a target physical pixel width (pane width × `devicePixelRatio`);
+  the backend derives each page's pixels-per-point, so mixed page sizes render
+  to a uniform width and HiDPI stays crisp. See the decision record below.
+- An `<img>` has no clickable DOM, so `export_pages_png` also emits each page's
+  **link rectangles** (page-local points, from a frame walk recursing group
+  subframes with the accumulated transform). `Sheet` overlays them as
+  transparent `<a>`s scaled into the sheet box; click interception (SPEC §9)
+  opens http(s) in the system browser. Internal links stay inert on typst 0.15
+  (no resolved anchor) and activate once upstream lands.
+- `lib/previewPages.js` keeps **every** page exported for the current seq, and
+  `Preview.jsx` renders all cached pages (even off-screen) plus the visible
+  window's placeholders. A page mounts once and stays mounted: scrolling back
+  needs no IPC and no re-decode, and there is no unmount/remount churn at the
+  window edge. Off-screen pages are not painted, so the cost is memory, bounded
+  by one render. A new seq resets everything, seeding the window the response
+  already exported (atomic swap, no placeholder gap); stale responses never
+  resurrect a superseded document. Fetches go top-first.
+- A current/total page badge floats bottom-right (`currentPageAt`, topmost
+  visible page from scroll geometry alone). Hidden until measured;
+  pointer-events:none, tabular digits.
 
-The render scheduler is unchanged. Its apply commit swaps the last-good
-pages for the new window in one step: the old pages stay up — dimmed under
-the delayed pane note — for the whole compile, exactly as before
-virtualization, and full renders never flash placeholders or eager sheet
-notes. Placeholders (with their tilted note) appear only for pages scrolled
-to that are not exported yet. The multi-MB DOM swap (and the busy-note
-repaint that used to delay shortcuts under software rendering) scales with
-the visible window instead of the document. Export, IPC and DOM cost are
-window-sized; the layout compile remains whole-document (known limit
-above). PDF export is untouched: it compiles fresh, full document.
-Pixel-identity holds — a subset export of the same compiled document is the
-same layout. Browser find-in-page only sees mounted pages, as with any
-virtualized list.
+The render scheduler is unchanged: its apply commit swaps last-good pages for
+the new window in one step (old pages stay up, dimmed under the delayed pane
+note, for the whole compile). Placeholders appear only for pages not yet
+exported. PNG decode is asynchronous, so a fast scroll never blocks the UI
+thread. Export and IPC stay window-sized; the layout compile remains
+whole-document (known limit above). PDF export compiles fresh, full document.
+Pixel-identity holds at the rendered resolution — the raster is the same
+compiled paged document as the PDF. Find-in-page only sees mounted pages.
+
+### Preview rendering: PNG rasters (decision record)
+
+The preview displays each page as a PNG raster rather than SVG. This is
+deliberate — do not revert to SVG without re-reading these findings:
+
+- **Inline SVG blocks the UI thread.** A dense page is thousands of glyph
+  nodes; parsing/layouting them synchronously on mount cost ~150 ms–1.7 s per
+  page on real hardware and stalled the editor's own viewport repaint.
+- **SVG-as-image crashes WebKitGTK.** Serving the SVG as a blob/data-URL
+  `<img>` looked like a fix (async decode), but WebKitGTK's SVG image decoder
+  crashes on Typst's `<use>`/`<symbol>`-based SVGs on some systems — the
+  webview went black right after the first image decoded. Canvas/bitmap paths
+  that use the same decoder do not avoid it.
+- **PNG avoids both.** `typst-render` rasterizes the same paged document; PNG
+  decode is asynchronous and off the main thread on every webview (WebKitGTK,
+  WKWebView, WebView2), so mounting is near-free and scrolling stays smooth.
+  Tradeoffs accepted: raster not vector (no infinite zoom; the preview is
+  fixed-width), text not selectable, and decoded-bitmap memory (bounded per
+  render, browser-managed).
+
+`typst-svg` is retained only for integration tests that inspect rendered
+structure (link hrefs, fills, fonts) — assertions opaque PNG pixels cannot
+make. The application preview path is PNG exclusively.
 
 ### Editor ↔ preview scroll sync
 
